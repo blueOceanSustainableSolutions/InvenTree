@@ -493,7 +493,7 @@ def WrapWithQuotes(text, quote='"'):
 
 def GetExportOptions() -> list:
     """Return a set of allowable import / export file formats."""
-    return [['csv', 'CSV'], ['xlsx', 'Excel'], ['tsv', 'TSV']]
+    return [['csv', 'CSV'], ['xlsx', 'Excel'], ['tsv', 'TSV'], ['json', 'JSON']]
 
 
 def GetExportFormats() -> list:

@@ -207,7 +207,96 @@ class DataExportSerializerMixin:
         for row in data:
             dataset.append([self.get_nested_value(row, f) for f in field_names])
 
-        return dataset.export(file_format)
+        result = dataset.export(file_format)
+
+        # BlueOasis: apply consistent styled formatting to XLSX exports
+        if file_format == 'xlsx':
+            result = self._format_xlsx(result, headers)
+
+        return result
+
+    @staticmethod
+    def _format_xlsx(datafile, headers):
+        """Apply consistent XLSX formatting to any exported spreadsheet.
+
+        Styling:
+          - Blue header row (#4472C4, white bold text)
+          - Alternating row fills (#F2F7FB)
+          - Price/total columns: #,##0.00 number format
+          - Link columns: wider width (55)
+          - All columns: auto-fitted width (min 12, max 50)
+        """
+        try:
+            from io import BytesIO
+
+            import openpyxl
+            from openpyxl.styles import Alignment, Font, PatternFill
+            from openpyxl.utils import get_column_letter
+
+            wb = openpyxl.load_workbook(BytesIO(datafile))
+            ws = wb.active
+
+            header_fill = PatternFill(
+                start_color='4472C4', end_color='4472C4', fill_type='solid'
+            )
+            header_font = Font(bold=True, size=11, color='FFFFFF')
+            alt_fill = PatternFill(
+                start_color='F2F7FB', end_color='F2F7FB', fill_type='solid'
+            )
+
+            # Detect column types by key name
+            price_cols = set()
+            link_cols = set()
+            for col_idx, key in enumerate(headers.keys(), 1):
+                kl = str(key).lower()
+                if any(x in kl for x in ['price', 'total', 'cost', 'rate']):
+                    price_cols.add(col_idx)
+                if 'link' in kl:
+                    link_cols.add(col_idx)
+
+            # Style header row
+            for col_idx in range(1, ws.max_column + 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            # Alternating row fill + price number format
+            for row_idx in range(2, ws.max_row + 1):
+                if row_idx % 2 == 0:
+                    for col_idx in range(1, ws.max_column + 1):
+                        ws.cell(row=row_idx, column=col_idx).fill = alt_fill
+                for col_idx in price_cols:
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    try:
+                        cell.value = (
+                            float(cell.value) if cell.value is not None else cell.value
+                        )
+                        cell.number_format = '#,##0.00'
+                    except (ValueError, TypeError):
+                        pass
+
+            # Auto-fit column widths
+            for col_idx in range(1, ws.max_column + 1):
+                max_len = 0
+                for row_idx in range(1, min(ws.max_row + 1, 51)):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    if cell.value is not None:
+                        cell_len = len(str(cell.value))
+                        if cell_len > max_len:
+                            max_len = cell_len
+                adjusted = min(max_len + 4, 50)
+                if col_idx in link_cols:
+                    adjusted = 55
+                ws.column_dimensions[get_column_letter(col_idx)].width = max(
+                    adjusted, 12
+                )
+
+            buf = BytesIO()
+            wb.save(buf)
+            return buf.getvalue()
+        except Exception:
+            return datafile
 
 
 class DataExportViewMixin:
