@@ -26,6 +26,7 @@ import common.settings
 import company.serializers
 import InvenTree.helpers
 import part.filters
+import part.models as part_models
 import part.serializers as part_serializers
 import stock.models as stock_models
 from common.settings import get_global_setting
@@ -857,8 +858,13 @@ class BuildAllocationItemSerializer(serializers.Serializer):
         """Check if the parts match."""
         build = self.context['build']
 
-        # BomItem should point to the same 'part' as the parent build
-        if build.part != build_line.bom_item.part:
+        if build_line.build != build:
+            raise ValidationError(
+                _('Build line must point to the selected build order')
+            )
+
+        # A BOM-backed line should belong to this assembly (or be inherited).
+        if build_line.bom_item_id and build.part != build_line.bom_item.part:
             # If not, it may be marked as "inherited" from a parent part
             if (
                 build_line.bom_item.inherited
@@ -930,7 +936,7 @@ class BuildAllocationItemSerializer(serializers.Serializer):
             raise ValidationError({'quantity': _(f'Available quantity ({q}) exceeded')})
 
         # Output *must* be set for trackable parts
-        if output is None and build_line.bom_item.sub_part.trackable:
+        if output is None and build_line.part.trackable:
             raise ValidationError({
                 'output': _(
                     'Build output must be specified for allocation of tracked parts'
@@ -938,7 +944,7 @@ class BuildAllocationItemSerializer(serializers.Serializer):
             })
 
         # Output *cannot* be set for un-tracked parts
-        if output is not None and not build_line.bom_item.sub_part.trackable:
+        if output is not None and not build_line.part.trackable:
             raise ValidationError({
                 'output': _(
                     'Build output cannot be specified for allocation of untracked parts'
@@ -983,7 +989,7 @@ class BuildAllocationSerializer(serializers.Serializer):
                 output = item.get('output', None)
 
                 # Ignore allocation for consumable BOM items
-                if build_line.bom_item.consumable:
+                if build_line.consumable:
                     continue
 
                 params = {
@@ -1139,23 +1145,24 @@ class BuildItemSerializer(
         ]
 
     # Export-only fields
-    bom_reference = serializers.CharField(
-        source='build_line.bom_item.reference', label=_('BOM Reference'), read_only=True
-    )
+    bom_reference = serializers.SerializerMethodField(label=_('BOM Reference'))
 
     # BOM Item Part ID (it may be different to the allocated part)
-    bom_part_id = serializers.PrimaryKeyRelatedField(
-        source='build_line.bom_item.sub_part',
-        label=_('BOM Part ID'),
-        many=False,
-        read_only=True,
-    )
+    bom_part_id = serializers.SerializerMethodField(label=_('BOM Part ID'))
 
-    bom_part_name = serializers.CharField(
-        source='build_line.bom_item.sub_part.name',
-        label=_('BOM Part Name'),
-        read_only=True,
-    )
+    bom_part_name = serializers.SerializerMethodField(label=_('BOM Part Name'))
+
+    def get_bom_reference(self, obj):
+        """Return the source BOM reference for standard requirements."""
+        return obj.bom_item.reference if obj.bom_item else _('Build specific')
+
+    def get_bom_part_id(self, obj):
+        """Return the effective requirement part identifier."""
+        return obj.build_line.part_id
+
+    def get_bom_part_name(self, obj):
+        """Return the effective requirement part name."""
+        return obj.build_line.part.name
 
     # Annotated fields
     build = serializers.PrimaryKeyRelatedField(
@@ -1299,6 +1306,8 @@ class BuildLineSerializer(
             'pk',
             'build',
             'bom_item',
+            'custom_part',
+            'is_custom',
             'quantity',
             'consumed',
             'allocations',
@@ -1333,7 +1342,7 @@ class BuildLineSerializer(
             'category_detail',
             'build_detail',
         ]
-        read_only_fields = ['build', 'bom_item', 'allocations']
+        read_only_fields = ['bom_item', 'consumed', 'allocations']
 
     # Build info fields
     build_reference = serializers.CharField(
@@ -1341,14 +1350,22 @@ class BuildLineSerializer(
     )
 
     # Part info fields
+    custom_part = serializers.PrimaryKeyRelatedField(
+        queryset=part_models.Part.objects.all(),
+        required=False,
+        allow_null=True,
+        write_only=True,
+        label=_('Build-specific Part'),
+    )
+
+    is_custom = serializers.BooleanField(read_only=True)
+
     part = serializers.PrimaryKeyRelatedField(
-        source='bom_item.sub_part', label=_('Part'), many=False, read_only=True
+        label=_('Part'), many=False, read_only=True
     )
 
     part_category_name = serializers.CharField(
-        source='bom_item.sub_part.category.name',
-        label=_('Part Category Name'),
-        read_only=True,
+        source='part.category.name', label=_('Part Category Name'), read_only=True
     )
 
     allocations = OptionalField(
@@ -1372,27 +1389,17 @@ class BuildLineSerializer(
     )
 
     # BOM item info fields
-    reference = serializers.CharField(
-        source='bom_item.reference', label=_('Reference'), read_only=True
-    )
-    consumable = serializers.BooleanField(
-        source='bom_item.consumable', label=_('Consumable'), read_only=True
-    )
-    optional = serializers.BooleanField(
-        source='bom_item.optional', label=_('Optional'), read_only=True
-    )
+    reference = serializers.SerializerMethodField(label=_('Reference'))
+    consumable = serializers.BooleanField(label=_('Consumable'), read_only=True)
+    optional = serializers.BooleanField(label=_('Optional'), read_only=True)
     testable = serializers.BooleanField(
-        source='bom_item.sub_part.testable', label=_('Testable'), read_only=True
+        source='part.testable', label=_('Testable'), read_only=True
     )
     trackable = serializers.BooleanField(
-        source='bom_item.sub_part.trackable', label=_('Trackable'), read_only=True
+        source='part.trackable', label=_('Trackable'), read_only=True
     )
-    inherited = serializers.BooleanField(
-        source='bom_item.inherited', label=_('Inherited'), read_only=True
-    )
-    allow_variants = serializers.BooleanField(
-        source='bom_item.allow_variants', label=_('Allow Variants'), read_only=True
-    )
+    inherited = serializers.BooleanField(label=_('Inherited'), read_only=True)
+    allow_variants = serializers.BooleanField(label=_('Allow Variants'), read_only=True)
 
     quantity = serializers.FloatField(label=_('Quantity'))
     consumed = serializers.FloatField(label=_('Consumed'))
@@ -1422,43 +1429,87 @@ class BuildLineSerializer(
         serializer_class=part_serializers.PartBriefSerializer,
         serializer_kwargs={
             'label': _('Assembly'),
-            'source': 'bom_item.part',
+            'source': 'build.part',
             'many': False,
             'read_only': True,
             'allow_null': True,
             'pricing': False,
         },
         default_include=False,
-        prefetch_fields=['bom_item__part', 'bom_item__part__pricing_data'],
+        prefetch_fields=['build__part', 'build__part__pricing_data'],
     )
 
     part_detail = OptionalField(
         serializer_class=part_serializers.PartBriefSerializer,
         serializer_kwargs={
             'label': _('Part'),
-            'source': 'bom_item.sub_part',
+            'source': 'part',
             'many': False,
             'read_only': True,
             'allow_null': True,
             'pricing': False,
         },
         default_include=False,
-        prefetch_fields=['bom_item__sub_part', 'bom_item__sub_part__pricing_data'],
+        prefetch_fields=[
+            'bom_item__sub_part',
+            'bom_item__sub_part__pricing_data',
+            'custom_part',
+            'custom_part__pricing_data',
+        ],
     )
 
     category_detail = OptionalField(
         serializer_class=part_serializers.CategorySerializer,
         serializer_kwargs={
             'label': _('Category'),
-            'source': 'bom_item.sub_part.category',
+            'source': 'part.category',
             'many': False,
             'read_only': True,
             'allow_null': True,
             'path_detail': False,
         },
         default_include=False,
-        prefetch_fields=['bom_item__sub_part__category'],
+        prefetch_fields=['bom_item__sub_part__category', 'custom_part__category'],
     )
+
+    def get_reference(self, obj):
+        """Return the BOM reference, or identify a build-only requirement."""
+        return obj.bom_item.reference if obj.bom_item_id else _('Build specific')
+
+    def validate(self, data):
+        """Allow creation of explicit requirements without changing the product BOM."""
+        data = super().validate(data)
+        if self.instance is None:
+            part = data.get('custom_part')
+            build = data.get('build')
+            if not part:
+                raise ValidationError({'custom_part': _('A part must be selected')})
+            if data.get('quantity', 0) <= 0:
+                raise ValidationError({
+                    'quantity': _('Quantity must be greater than zero')
+                })
+            if (
+                BuildLine.objects
+                .filter(build=build)
+                .filter(Q(custom_part=part) | Q(bom_item__sub_part=part))
+                .exists()
+            ):
+                raise ValidationError({
+                    'custom_part': _(
+                        'This part is already required by the build order; edit that line instead.'
+                    )
+                })
+        elif 'custom_part' in data and data['custom_part'] != self.instance.custom_part:
+            raise ValidationError({'custom_part': _('The part cannot be changed')})
+        if self.instance is not None and 'quantity' in data:
+            minimum = self.instance.consumed + self.instance.allocated_quantity()
+            if data['quantity'] < minimum:
+                raise ValidationError({
+                    'quantity': _(
+                        'Quantity cannot be lower than the consumed and allocated total.'
+                    )
+                })
+        return data
 
     build_detail = OptionalField(
         serializer_class=BuildSerializer,
@@ -1544,6 +1595,7 @@ class BuildLineSerializer(
         )
 
         ref = 'bom_item__sub_part__'
+        custom_ref = 'custom_part__'
 
         stock_filter = None
 
@@ -1561,27 +1613,73 @@ class BuildLineSerializer(
 
         # Annotate the "in_production" quantity
         queryset = queryset.annotate(
-            in_production=part.filters.annotate_in_production_quantity(reference=ref),
-            scheduled_to_build=part.filters.annotate_scheduled_to_build_quantity(
-                reference=ref
+            in_production=Case(
+                When(
+                    custom_part__isnull=False,
+                    then=part.filters.annotate_in_production_quantity(
+                        reference=custom_ref
+                    ),
+                ),
+                default=part.filters.annotate_in_production_quantity(reference=ref),
+            ),
+            scheduled_to_build=Case(
+                When(
+                    custom_part__isnull=False,
+                    then=part.filters.annotate_scheduled_to_build_quantity(
+                        reference=custom_ref
+                    ),
+                ),
+                default=part.filters.annotate_scheduled_to_build_quantity(
+                    reference=ref
+                ),
             ),
         )
 
         # Annotate the "on_order" quantity
         queryset = queryset.annotate(
-            on_order=part.filters.annotate_on_order_quantity(reference=ref)
+            on_order=Case(
+                When(
+                    custom_part__isnull=False,
+                    then=part.filters.annotate_on_order_quantity(reference=custom_ref),
+                ),
+                default=part.filters.annotate_on_order_quantity(reference=ref),
+            )
         )
 
         # Annotate the "available" quantity
         queryset = queryset.alias(
-            total_stock=part.filters.annotate_total_stock(
-                reference=ref, filter=stock_filter
+            total_stock=Case(
+                When(
+                    custom_part__isnull=False,
+                    then=part.filters.annotate_total_stock(
+                        reference=custom_ref, filter=stock_filter
+                    ),
+                ),
+                default=part.filters.annotate_total_stock(
+                    reference=ref, filter=stock_filter
+                ),
             ),
-            allocated_to_sales_orders=part.filters.annotate_sales_order_allocations(
-                reference=ref, location=location
+            allocated_to_sales_orders=Case(
+                When(
+                    custom_part__isnull=False,
+                    then=part.filters.annotate_sales_order_allocations(
+                        reference=custom_ref, location=location
+                    ),
+                ),
+                default=part.filters.annotate_sales_order_allocations(
+                    reference=ref, location=location
+                ),
             ),
-            allocated_to_build_orders=part.filters.annotate_build_order_allocations(
-                reference=ref, location=location
+            allocated_to_build_orders=Case(
+                When(
+                    custom_part__isnull=False,
+                    then=part.filters.annotate_build_order_allocations(
+                        reference=custom_ref, location=location
+                    ),
+                ),
+                default=part.filters.annotate_build_order_allocations(
+                    reference=ref, location=location
+                ),
             ),
         )
 
@@ -1606,8 +1704,16 @@ class BuildLineSerializer(
 
         # Add 'external stock' annotations
         queryset = queryset.annotate(
-            external_stock=part.filters.annotate_total_stock(
-                reference=ref, filter=external_stock_filter
+            external_stock=Case(
+                When(
+                    custom_part__isnull=False,
+                    then=part.filters.annotate_total_stock(
+                        reference=custom_ref, filter=external_stock_filter
+                    ),
+                ),
+                default=part.filters.annotate_total_stock(
+                    reference=ref, filter=external_stock_filter
+                ),
             )
         )
 

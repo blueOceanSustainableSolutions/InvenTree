@@ -457,26 +457,53 @@ class BuildLineFilter(FilterSet):
 
     # Fields on related models
     consumable = rest_filters.BooleanFilter(
-        label=_('Consumable'), field_name='bom_item__consumable'
+        label=_('Consumable'), method='filter_consumable'
     )
-    optional = rest_filters.BooleanFilter(
-        label=_('Optional'), field_name='bom_item__optional'
-    )
-    assembly = rest_filters.BooleanFilter(
-        label=_('Assembly'), field_name='bom_item__sub_part__assembly'
-    )
-    tracked = rest_filters.BooleanFilter(
-        label=_('Tracked'), field_name='bom_item__sub_part__trackable'
-    )
-    testable = rest_filters.BooleanFilter(
-        label=_('Testable'), field_name='bom_item__sub_part__testable'
-    )
+    optional = rest_filters.BooleanFilter(label=_('Optional'), method='filter_optional')
+    assembly = rest_filters.BooleanFilter(label=_('Assembly'), method='filter_assembly')
+    tracked = rest_filters.BooleanFilter(label=_('Tracked'), method='filter_tracked')
+
+    def filter_tracked(self, queryset, name, value):
+        """Include BOM-backed and build-specific requirements."""
+        return queryset.filter(
+            Q(bom_item__sub_part__trackable=value) | Q(custom_part__trackable=value)
+        )
+
+    testable = rest_filters.BooleanFilter(label=_('Testable'), method='filter_testable')
+
+    def filter_consumable(self, queryset, name, value):
+        """Custom lines are non-consumable."""
+        query = Q(bom_item__consumable=value)
+        if not value:
+            query |= Q(custom_part__isnull=False)
+        return queryset.filter(query)
+
+    def filter_optional(self, queryset, name, value):
+        """Custom lines are required rather than optional."""
+        query = Q(bom_item__optional=value)
+        if not value:
+            query |= Q(custom_part__isnull=False)
+        return queryset.filter(query)
+
+    def filter_assembly(self, queryset, name, value):
+        """Filter both standard and custom parts by assembly status."""
+        return queryset.filter(
+            Q(bom_item__sub_part__assembly=value) | Q(custom_part__assembly=value)
+        )
+
+    def filter_testable(self, queryset, name, value):
+        """Filter both standard and custom parts by testable status."""
+        return queryset.filter(
+            Q(bom_item__sub_part__testable=value) | Q(custom_part__testable=value)
+        )
 
     part = rest_filters.ModelChoiceFilter(
-        queryset=part_models.Part.objects.all(),
-        label=_('Part'),
-        field_name='bom_item__sub_part',
+        queryset=part_models.Part.objects.all(), label=_('Part'), method='filter_part'
     )
+
+    def filter_part(self, queryset, name, value):
+        """Filter against either requirement source."""
+        return queryset.filter(Q(bom_item__sub_part=value) | Q(custom_part=value))
 
     order_outstanding = rest_filters.BooleanFilter(
         label=_('Order Outstanding'), method='filter_order_outstanding'
@@ -683,6 +710,9 @@ class BuildLineList(
         'bom_item__sub_part__IPN',
         'bom_item__sub_part__description',
         'bom_item__reference',
+        'custom_part__name',
+        'custom_part__IPN',
+        'custom_part__description',
     ]
 
     def get_source_build(self) -> Build | None:
@@ -707,6 +737,14 @@ class BuildLineDetail(BuildLineMixin, OutputOptionsMixin, RetrieveUpdateDestroyA
     def get_source_build(self) -> Build | None:
         """Return the target source location for the BuildLine queryset."""
         return None
+
+    def perform_destroy(self, instance):
+        """Only remove requirements which have no allocation or consumption history."""
+        if instance.consumed > 0 or instance.allocations.exists():
+            raise ValidationError(
+                _('A consumed or allocated build requirement cannot be removed')
+            )
+        super().perform_destroy(instance)
 
 
 class BuildOrderContextMixin:

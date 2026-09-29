@@ -1,6 +1,10 @@
 import { t } from '@lingui/core/macro';
-import { Skeleton } from '@mantine/core';
-import { IconUnlink } from '@tabler/icons-react';
+import { Alert, Skeleton } from '@mantine/core';
+import {
+  IconFlame,
+  IconReplace,
+  IconUnlink
+} from '@tabler/icons-react';
 import { useCallback, useMemo, useState } from 'react';
 
 import { AddItemButton } from '@lib/components/AddItemButton';
@@ -10,10 +14,6 @@ import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
 import useTable from '@lib/hooks/UseTable';
 import type { TableColumn } from '@lib/types/Tables';
-import {
-  useStockItemInstallFields,
-  useStockItemUninstallFields
-} from '../../forms/StockForms';
 import { useCreateApiFormModal } from '../../hooks/UseForm';
 import { useUserState } from '../../states/UserState';
 import { PartColumn, StatusColumn, StockColumn } from '../ColumnRenderers';
@@ -27,32 +27,122 @@ export default function InstalledItemsTable({
   const table = useTable('stock_item_install');
   const user = useUserState();
 
-  const installItemFields = useStockItemInstallFields({
-    stockItem: stockItem
-  });
-
   const installItem = useCreateApiFormModal({
-    url: apiUrl(ApiEndpoints.stock_install),
+    url: apiUrl(ApiEndpoints.stock_components),
     pk: stockItem.pk,
-    title: t`Install Item`,
+    title: t`Add Component`,
     table: table,
-    successMessage: t`Item installed`,
-    fields: installItemFields
+    successMessage: t`Component installed`,
+    fields: {
+      action: {
+        hidden: true
+      },
+      stock_item: {
+        field_type: 'related field',
+        model: ModelType.stockitem,
+        api_url: apiUrl(ApiEndpoints.stock_item_list),
+        filters: {
+          part_detail: true,
+          location_detail: true,
+          in_stock: true,
+          available: true
+        }
+      },
+      quantity: {},
+      notes: {}
+    },
+    initialData: {
+      action: 'add',
+      quantity: 1
+    }
   });
 
   const [selectedRecord, setSelectedRecord] = useState<any>({});
 
-  const uninstallItemFields = useStockItemUninstallFields();
-
   const uninstallItem = useCreateApiFormModal({
-    url: apiUrl(ApiEndpoints.stock_uninstall),
-    pk: selectedRecord.pk,
-    title: t`Uninstall Item`,
+    url: apiUrl(ApiEndpoints.stock_components),
+    pk: stockItem.pk,
+    title: t`Remove Component`,
     table: table,
-    successMessage: t`Item uninstalled`,
-    fields: uninstallItemFields,
+    successMessage: t`Component removed`,
+    fields: {
+      action: { hidden: true },
+      component: { hidden: true },
+      quantity: {},
+      location: {
+        filters: { structural: false }
+      },
+      disposition: {},
+      notes: {}
+    },
     initialData: {
-      location: stockItem.location ?? stockItem.part_detail?.default_location
+      action: 'remove',
+      component: selectedRecord.pk,
+      quantity: selectedRecord.quantity ?? 1,
+      location: stockItem.location ?? stockItem.part_detail?.default_location,
+      disposition: 'keep'
+    }
+  });
+
+  const destroyItem = useCreateApiFormModal({
+    url: apiUrl(ApiEndpoints.stock_components),
+    pk: stockItem.pk,
+    title: t`Mark Component Destroyed`,
+    table: table,
+    successMessage: t`Component marked as destroyed`,
+    preFormContent: (
+      <Alert color='red'>
+        {t`The component remains installed and is marked as destroyed. You can remove or replace it separately.`}
+      </Alert>
+    ),
+    fields: {
+      action: { hidden: true },
+      component: { hidden: true },
+      quantity: {},
+      notes: {}
+    },
+    initialData: {
+      action: 'destroy',
+      component: selectedRecord.pk,
+      quantity: selectedRecord.quantity ?? 1
+    }
+  });
+
+  const replaceItem = useCreateApiFormModal({
+    url: apiUrl(ApiEndpoints.stock_components),
+    pk: stockItem.pk,
+    title: t`Replace Component`,
+    table: table,
+    successMessage: t`Component replaced`,
+    fields: {
+      action: { hidden: true },
+      component: { hidden: true },
+      quantity: {},
+      stock_item: {
+        field_type: 'related field',
+        model: ModelType.stockitem,
+        api_url: apiUrl(ApiEndpoints.stock_item_list),
+        filters: {
+          part_detail: true,
+          location_detail: true,
+          in_stock: true,
+          available: true
+        }
+      },
+      replacement_quantity: {},
+      location: {
+        filters: { structural: false }
+      },
+      disposition: {},
+      notes: {}
+    },
+    initialData: {
+      action: 'replace',
+      component: selectedRecord.pk,
+      quantity: selectedRecord.quantity ?? 1,
+      replacement_quantity: selectedRecord.quantity ?? 1,
+      location: stockItem.location ?? stockItem.part_detail?.default_location,
+      disposition: 'keep'
     }
   });
 
@@ -78,14 +168,14 @@ export default function InstalledItemsTable({
     return [
       <AddItemButton
         key='install'
-        tooltip={t`Install Item`}
+        tooltip={t`Add Component`}
         onClick={() => {
           installItem.open();
         }}
         hidden={
           !user.hasChangeRole(UserRoles.stock) ||
           stockItem.is_building ||
-          stockItem.part_detail?.assembly != true
+          Number(stockItem.quantity) !== 1
         }
       />
     ];
@@ -103,6 +193,28 @@ export default function InstalledItemsTable({
           },
           icon: <IconUnlink />,
           hidden: !user.hasChangeRole(UserRoles.stock)
+        },
+        {
+          title: t`Mark Destroyed`,
+          tooltip: t`Keep the component installed and mark it as destroyed`,
+          onClick: () => {
+            setSelectedRecord(record);
+            destroyItem.open();
+          },
+          icon: <IconFlame />,
+          color: 'red',
+          hidden:
+            !user.hasChangeRole(UserRoles.stock) || record.status == 60
+        },
+        {
+          title: t`Replace Component`,
+          tooltip: t`Remove this component and install another stock item`,
+          onClick: () => {
+            setSelectedRecord(record);
+            replaceItem.open();
+          },
+          icon: <IconReplace />,
+          hidden: !user.hasChangeRole(UserRoles.stock)
         }
       ];
     },
@@ -113,6 +225,8 @@ export default function InstalledItemsTable({
     <>
       {installItem.modal}
       {uninstallItem.modal}
+      {destroyItem.modal}
+      {replaceItem.modal}
       {stockItem.pk ? (
         <InvenTreeTable
           url={apiUrl(ApiEndpoints.stock_item_list)}

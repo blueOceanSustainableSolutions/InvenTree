@@ -488,7 +488,9 @@ class Build(
     @property
     def tracked_line_items(self) -> QuerySet:
         """Returns the "trackable" BOM lines for this BuildOrder."""
-        return self.build_lines.filter(bom_item__sub_part__trackable=True)
+        return self.build_lines.filter(
+            Q(bom_item__sub_part__trackable=True) | Q(custom_part__trackable=True)
+        )
 
     def has_tracked_line_items(self) -> bool:
         """Returns True if this BuildOrder has trackable BomItems."""
@@ -497,7 +499,9 @@ class Build(
     @property
     def untracked_line_items(self) -> QuerySet:
         """Returns the "non trackable" BOM items for this BuildOrder."""
-        return self.build_lines.filter(bom_item__sub_part__trackable=False)
+        return self.build_lines.filter(
+            Q(bom_item__sub_part__trackable=False) | Q(custom_part__trackable=False)
+        )
 
     @property
     def are_untracked_parts_allocated(self) -> bool:
@@ -1018,7 +1022,8 @@ class Build(
         """Removes the allocated untracked items from stock."""
         # Find all BuildItem objects which point to this build
         items = self.allocated_stock.filter(
-            build_line__bom_item__sub_part__trackable=False
+            Q(build_line__bom_item__sub_part__trackable=False)
+            | Q(build_line__custom_part__trackable=False)
         )
 
         # Remove stock
@@ -1233,18 +1238,18 @@ class Build(
         if not output.serialized:
             return allocations
 
-        tracked_line_items = self.tracked_line_items.filter(
-            bom_item__consumable=False, bom_item__sub_part__virtual=False
-        )
+        tracked_line_items = self.tracked_line_items.exclude(
+            bom_item__consumable=True
+        ).filter(Q(bom_item__sub_part__virtual=False) | Q(custom_part__virtual=False))
 
         for line_item in tracked_line_items:
             bom_item = line_item.bom_item
 
-            if bom_item.consumable:
+            if line_item.consumable:
                 # Do not auto-allocate stock to consumable BOM items
                 continue
 
-            if bom_item.optional and not optional_items:
+            if line_item.optional and not optional_items:
                 # User has specified that optional_items are to be ignored
                 continue
 
@@ -1257,8 +1262,12 @@ class Build(
                 continue
 
             # Find available parts (may include variants and substitutes)
-            available_parts = bom_item.get_valid_parts_for_allocation(
-                allow_variants=True, allow_substitutes=substitutes
+            available_parts = (
+                bom_item.get_valid_parts_for_allocation(
+                    allow_variants=True, allow_substitutes=substitutes
+                )
+                if bom_item
+                else [line_item.part]
             )
 
             # Find stock items which match the output serial number
@@ -1347,6 +1356,8 @@ class Build(
         line_ids = kwargs.get('line_ids')
 
         def stock_sort(item, bom_item, variant_parts):
+            if bom_item is None:
+                return 1
             if item.part == bom_item.sub_part:
                 return 1
             elif item.part in variant_parts:
@@ -1364,15 +1375,19 @@ class Build(
             # Find the referenced BomItem
             bom_item = line_item.bom_item
 
-            if bom_item.consumable:
+            if line_item.consumable:
                 # Do not auto-allocate stock to consumable BOM items
                 continue
 
-            if bom_item.optional and not optional_items:
+            if line_item.optional and not optional_items:
                 # User has specified that optional_items are to be ignored
                 continue
 
-            variant_parts = bom_item.sub_part.get_descendants(include_self=False)
+            variant_parts = (
+                bom_item.sub_part.get_descendants(include_self=False)
+                if bom_item
+                else part.models.Part.objects.none()
+            )
 
             unallocated_quantity = line_item.unallocated_quantity()
 
@@ -1381,8 +1396,14 @@ class Build(
                 continue
 
             # Check which parts we can "use" (may include variants and substitutes)
-            available_parts = bom_item.get_valid_parts_for_allocation(
-                allow_variants=True, allow_inactive=False, allow_substitutes=substitutes
+            available_parts = (
+                bom_item.get_valid_parts_for_allocation(
+                    allow_variants=True,
+                    allow_inactive=False,
+                    allow_substitutes=substitutes,
+                )
+                if bom_item
+                else [line_item.part]
             )
 
             # Look for available stock items
@@ -1487,9 +1508,13 @@ class Build(
         lines = lines.exclude(bom_item__consumable=True)
 
         if tracked is True:
-            lines = lines.filter(bom_item__sub_part__trackable=True)
+            lines = lines.filter(
+                Q(bom_item__sub_part__trackable=True) | Q(custom_part__trackable=True)
+            )
         elif tracked is False:
-            lines = lines.filter(bom_item__sub_part__trackable=False)
+            lines = lines.filter(
+                Q(bom_item__sub_part__trackable=False) | Q(custom_part__trackable=False)
+            )
 
         lines = lines.prefetch_related('allocations')
 
@@ -1520,7 +1545,7 @@ class Build(
         To determine if the output has been fully allocated,
         we need to test all "trackable" BuildLine objects
         """
-        lines = self.build_lines.filter(bom_item__sub_part__trackable=True)
+        lines = self.tracked_line_items
         lines = lines.exclude(bom_item__consumable=True)
 
         # Find any lines which have not been fully allocated
@@ -1533,7 +1558,12 @@ class Build(
             )
 
             # The amount allocated against an output must at least equal the BOM quantity
-            if allocated['q'] < line.bom_item.quantity:
+            required_per_output = (
+                line.bom_item.quantity
+                if line.bom_item_id
+                else line.quantity / self.quantity
+            )
+            if allocated['q'] < required_per_output:
                 return False
 
         # At this stage, we can assume that the output is fully allocated
@@ -1612,7 +1642,7 @@ class Build(
         """Rebuild required quantity field for each BuildLine object."""
         lines_to_update = []
 
-        for line in self.build_lines.all():
+        for line in self.build_lines.filter(bom_item__isnull=False):
             line.quantity = line.bom_item.get_required_quantity(self.quantity)
             lines_to_update.append(line)
 
@@ -1673,18 +1703,19 @@ class BuildLineReportContext(report.mixins.BaseReportContext, TypedDict):
 
 
 class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeModel):
-    """A BuildLine object links a BOMItem to a Build.
+    """A required part for one build, sourced from a BOM item or custom part.
 
     When a new Build is created, the BuildLine objects are created automatically.
     - A BuildLine entry is created for each BOM item associated with the part
     - The quantity is set to the quantity required to build the part
     - BuildItem objects are associated with a particular BuildLine
 
-    Once a build has been created, BuildLines can (optionally) be removed from the Build
+    Once created, unallocated and unconsumed lines can be removed from the Build.
 
     Attributes:
         build: Link to a Build object
-        bom_item: Link to a BomItem object
+        bom_item: Optional link to the source BomItem
+        custom_part: Optional build-specific part which does not modify the BOM
         quantity: Number of units required for the Build
         consumed: Number of units which have been consumed against this line item
     """
@@ -1694,6 +1725,20 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
 
         verbose_name = _('Build Order Line Item')
         unique_together = [('build', 'bom_item')]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(bom_item__isnull=False, custom_part__isnull=True)
+                    | Q(bom_item__isnull=True, custom_part__isnull=False)
+                ),
+                name='buildline_exactly_one_part_source',
+            ),
+            models.UniqueConstraint(
+                fields=['build', 'custom_part'],
+                condition=Q(custom_part__isnull=False),
+                name='buildline_unique_custom_part',
+            ),
+        ]
 
     @staticmethod
     def get_api_url():
@@ -1709,7 +1754,7 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
             'bom_item': self.bom_item,
             'build': self.build,
             'build_line': self,
-            'part': self.bom_item.sub_part,
+            'part': self.part,
             'quantity': self.quantity,
         }
 
@@ -1721,7 +1766,22 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
     )
 
     bom_item = models.ForeignKey(
-        part.models.BomItem, on_delete=models.CASCADE, related_name='build_lines'
+        part.models.BomItem,
+        on_delete=models.CASCADE,
+        related_name='build_lines',
+        null=True,
+        blank=True,
+    )
+
+    custom_part = models.ForeignKey(
+        part.models.Part,
+        on_delete=models.PROTECT,
+        related_name='custom_build_lines',
+        null=True,
+        blank=True,
+        help_text=_(
+            'Build-specific required part which does not alter the product BOM'
+        ),
     )
 
     quantity = models.DecimalField(
@@ -1745,7 +1805,37 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
     @property
     def part(self):
         """Return the sub_part reference from the link bom_item."""
-        return self.bom_item.sub_part
+        return self.custom_part or self.bom_item.sub_part
+
+    @property
+    def part_id(self):
+        """Return the effective required part identifier."""
+        return self.custom_part_id or self.bom_item.sub_part_id
+
+    @property
+    def is_custom(self):
+        """Return whether this requirement exists only on this build order."""
+        return self.custom_part_id is not None
+
+    @property
+    def consumable(self):
+        """Build-specific requirements are physical, non-consumable components."""
+        return self.bom_item.consumable if self.bom_item_id else False
+
+    @property
+    def optional(self):
+        """Build-specific requirements are required by definition."""
+        return self.bom_item.optional if self.bom_item_id else False
+
+    @property
+    def allow_variants(self):
+        """Custom requirements currently require the selected part exactly."""
+        return self.bom_item.allow_variants if self.bom_item_id else False
+
+    @property
+    def inherited(self):
+        """Custom requirements belong directly to this build order."""
+        return self.bom_item.inherited if self.bom_item_id else False
 
     def allocated_quantity(self, output: Optional[stock.models.StockItem] = None):
         """Calculate the total allocated quantity for this BuildLine."""
@@ -1774,7 +1864,7 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
 
     def is_fully_allocated(self) -> bool:
         """Return True if this BuildLine is fully allocated."""
-        if self.bom_item.consumable:
+        if self.consumable:
             return True
 
         required = max(0, self.quantity - self.consumed)
@@ -1859,7 +1949,10 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
 
         valid = False
 
-        if self.bom_item and self.build:
+        if self.build_line and self.build_line.custom_part_id:
+            valid = self.stock_item.part_id == self.build_line.custom_part_id
+
+        elif self.bom_item and self.build:
             """
             A BomItem object has already been assigned. This is valid if:
 
@@ -1894,7 +1987,7 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
                 if build_line.exists():
                     line = build_line.first()
 
-                    if idx == 0 or line.bom_item.allow_variants:
+                    if idx == 0 or line.allow_variants:
                         valid = True
                         self.build_line = line
                         break

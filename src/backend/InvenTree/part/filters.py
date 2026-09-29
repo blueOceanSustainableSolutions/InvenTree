@@ -174,7 +174,7 @@ def annotate_build_order_requirements(reference: str = '') -> QuerySet:
     # Active build orders only
     build_filter = Q(build__status__in=BuildStatusGroups.ACTIVE_CODES)
 
-    return Coalesce(
+    bom_requirements = Coalesce(
         SubquerySum(
             ExpressionWrapper(
                 F(f'{reference}used_in__build_lines__quantity')
@@ -186,6 +186,19 @@ def annotate_build_order_requirements(reference: str = '') -> QuerySet:
         Decimal(0),
         output_field=models.DecimalField(),
     )
+    custom_requirements = Coalesce(
+        SubquerySum(
+            ExpressionWrapper(
+                F(f'{reference}custom_build_lines__quantity')
+                - F(f'{reference}custom_build_lines__consumed'),
+                output_field=DecimalField(),
+            ),
+            filter=build_filter,
+        ),
+        Decimal(0),
+        output_field=models.DecimalField(),
+    )
+    return bom_requirements + custom_requirements
 
 
 def annotate_build_order_allocations(reference: str = '', location=None) -> QuerySet:

@@ -1,6 +1,10 @@
 import { ActionButton } from '@lib/components/ActionButton';
 import { ProgressBar } from '@lib/components/ProgressBar';
-import { RowEditAction, RowViewAction } from '@lib/components/RowActions';
+import {
+  RowDeleteAction,
+  RowEditAction,
+  RowViewAction
+} from '@lib/components/RowActions';
 import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
 import { ModelType } from '@lib/enums/ModelType';
 import { UserRoles } from '@lib/enums/Roles';
@@ -17,6 +21,7 @@ import {
   IconCircleDashedCheck,
   IconCircleMinus,
   IconCircleX,
+  IconPlus,
   IconShoppingCart,
   IconTool,
   IconWand
@@ -348,33 +353,33 @@ export default function BuildLineTable({
         accessor: 'part_detail.description'
       }),
       {
-        accessor: 'bom_item_detail.reference',
+        accessor: 'reference',
         ordering: 'reference',
         sortable: true,
         title: t`Reference`
       },
       BooleanColumn({
-        accessor: 'bom_item_detail.optional',
+        accessor: 'optional',
         ordering: 'optional',
         filter: 'optional',
         hidden: hasOutput,
         defaultVisible: false
       }),
       BooleanColumn({
-        accessor: 'bom_item_detail.consumable',
+        accessor: 'consumable',
         ordering: 'consumable',
         filter: 'consumable',
         hidden: hasOutput,
         defaultVisible: false
       }),
       BooleanColumn({
-        accessor: 'bom_item_detail.allow_variants',
+        accessor: 'allow_variants',
         ordering: 'allow_variants',
         hidden: hasOutput,
         defaultVisible: false
       }),
       BooleanColumn({
-        accessor: 'bom_item_detail.inherited',
+        accessor: 'inherited',
         ordering: 'inherited',
         title: t`Gets Inherited`,
         hidden: hasOutput,
@@ -388,7 +393,7 @@ export default function BuildLineTable({
         defaultVisible: false
       }),
       {
-        accessor: 'bom_item_detail.quantity',
+        accessor: 'unit_quantity',
         sortable: true,
         title: t`Unit Quantity`,
         defaultVisible: false,
@@ -396,7 +401,14 @@ export default function BuildLineTable({
         render: (record: any) => {
           return (
             <Group justify='space-between' wrap='nowrap'>
-              <Text>{record.bom_item_detail?.quantity}</Text>
+              <Text>
+                {formatDecimal(
+                  record.bom_item_detail?.quantity ??
+                    (build.quantity
+                      ? record.quantity / build.quantity
+                      : record.quantity)
+                )}
+              </Text>
               {record?.part_detail?.units && (
                 <Text size='xs'>[{record.part_detail.units}]</Text>
               )}
@@ -496,7 +508,7 @@ export default function BuildLineTable({
         hidden: !isActive,
         minWidth: 125,
         render: (record: any) => {
-          if (record?.bom_item_detail?.consumable) {
+          if (record.consumable) {
             return (
               <Text
                 size='sm'
@@ -542,7 +554,7 @@ export default function BuildLineTable({
         hidden: !!output?.pk,
         minWidth: 125,
         render: (record: any) => {
-          return record?.bom_item_detail?.consumable ? (
+          return record.consumable ? (
             <Text
               size='sm'
               style={{ fontStyle: 'italic' }}
@@ -557,7 +569,7 @@ export default function BuildLineTable({
         }
       }
     ];
-  }, [hasOutput, isActive, table, output]);
+  }, [hasOutput, isActive, table, output, build.quantity]);
 
   const buildOrderFields = useBuildOrderFields({
     create: true,
@@ -568,7 +580,56 @@ export default function BuildLineTable({
 
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
 
+  const [selectedRequirement, setSelectedRequirement] = useState<number>(0);
+
   const [selectedRows, setSelectedRows] = useState<any[]>([]);
+
+  const addRequirement = useCreateApiFormModal({
+    url: ApiEndpoints.build_line_list,
+    title: t`Add Required Part`,
+    fields: {
+      build: {
+        hidden: true
+      },
+      custom_part: {
+        label: t`Part`,
+        filters: {
+          active: true
+        }
+      },
+      quantity: {}
+    },
+    initialData: {
+      build: build.pk
+    },
+    modelType: ModelType.buildline,
+    onFormSuccess: table.refreshTable
+  });
+
+  const editRequirement = useEditApiFormModal({
+    url: ApiEndpoints.build_line_list,
+    pk: selectedRequirement,
+    title: t`Edit Required Part`,
+    fields: {
+      quantity: {}
+    },
+    modelType: ModelType.buildline,
+    onFormSuccess: table.refreshTable
+  });
+
+  const deleteRequirement = useDeleteApiFormModal({
+    url: ApiEndpoints.build_line_list,
+    pk: selectedRequirement,
+    title: t`Remove Required Part`,
+    submitText: t`Remove`,
+    preFormContent: (
+      <Alert color='red' title={t`Confirm Removal`}>
+        {t`Remove this required part from this build order? This does not change the part's bill of materials.`}
+      </Alert>
+    ),
+    modelType: ModelType.buildline,
+    onFormSuccess: table.refreshTable
+  });
 
   const newBuildOrder = useCreateApiFormModal({
     url: ApiEndpoints.build_order_list,
@@ -744,7 +805,7 @@ export default function BuildLineTable({
     (record: any): RowAction[] => {
       const part = record.part_detail ?? {};
       const in_production = build.status == buildStatus.PRODUCTION;
-      const consumable: boolean = record.bom_item_detail?.consumable ?? false;
+      const consumable: boolean = record.consumable ?? false;
       const trackable: boolean = part?.trackable ?? false;
 
       const hasOutput: boolean = !!output?.pk;
@@ -789,6 +850,30 @@ export default function BuildLineTable({
         !consumable && user.hasAddRole(UserRoles.build) && part.assembly;
 
       return [
+        RowEditAction({
+          title: t`Edit Required Part`,
+          hidden: hasOutput || !user.hasChangeRole(UserRoles.build),
+          onClick: () => {
+            setSelectedRequirement(record.pk);
+            editRequirement.open();
+          }
+        }),
+        RowDeleteAction({
+          title: t`Remove Required Part`,
+          hidden: hasOutput || !user.hasDeleteRole(UserRoles.build),
+          disabled:
+            Number(record.consumed ?? 0) > 0 ||
+            Number(record.allocated ?? 0) > 0,
+          tooltip:
+            Number(record.consumed ?? 0) > 0 ||
+            Number(record.allocated ?? 0) > 0
+              ? t`A required part with allocated or consumed stock cannot be removed`
+              : t`Remove Required Part`,
+          onClick: () => {
+            setSelectedRequirement(record.pk);
+            deleteRequirement.open();
+          }
+        }),
         {
           icon: <IconArrowRight />,
           title: t`Allocate Stock`,
@@ -864,6 +949,14 @@ export default function BuildLineTable({
     const visible = production && canEdit;
     return [
       <ActionButton
+        key='add-required-part'
+        icon={<IconPlus />}
+        tooltip={t`Add Required Part`}
+        hidden={hasOutput || !user.hasAddRole(UserRoles.build)}
+        color='blue'
+        onClick={addRequirement.open}
+      />,
+      <ActionButton
         key='auto-allocate'
         icon={<IconWand />}
         tooltip={t`Auto Allocate Stock`}
@@ -904,7 +997,7 @@ export default function BuildLineTable({
         onClick={() => {
           let rows = table.selectedRecords
             .filter((r) => r.allocatedQuantity < r.requiredQuantity)
-            .filter((r) => !r.bom_item_detail?.consumable);
+            .filter((r) => !r.consumable);
 
           if (hasOutput) {
             rows = rows.filter((r) => r.trackable);
@@ -975,8 +1068,11 @@ export default function BuildLineTable({
         });
 
         // Calculate the required quantity (based on the build output)
-        if (output?.quantity && record.bom_item_detail) {
-          requiredQuantity = output.quantity * record.bom_item_detail.quantity;
+        if (output?.quantity) {
+          const unitQuantity =
+            record.bom_item_detail?.quantity ??
+            (build.quantity ? record.quantity / build.quantity : record.quantity);
+          requiredQuantity = output.quantity * unitQuantity;
         }
 
         return {
@@ -987,7 +1083,7 @@ export default function BuildLineTable({
         };
       });
     },
-    [output]
+    [output, build.quantity]
   );
 
   // Control row expansion
@@ -1019,6 +1115,9 @@ export default function BuildLineTable({
   return (
     <>
       {autoAllocateStock.modal}
+      {addRequirement.modal}
+      {editRequirement.modal}
+      {deleteRequirement.modal}
       {newBuildOrder.modal}
       {allocateStock.modal}
       {deallocateStock.modal}

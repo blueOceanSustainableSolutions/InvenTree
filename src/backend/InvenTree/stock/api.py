@@ -63,6 +63,7 @@ from order.serializers import (
 )
 from part.models import BomItem, Part, PartCategory
 from part.serializers import PartBriefSerializer
+from stock.components import StockItemComponents
 from stock.generators import generate_batch_code, generate_serial_number
 from stock.models import (
     StockItem,
@@ -1771,6 +1772,11 @@ stock_api_urls = [
         '<int:pk>/',
         include([
             path('convert/', StockItemConvert.as_view(), name='api-stock-item-convert'),
+            path(
+                'components/',
+                StockItemComponents.as_view(),
+                name='api-stock-item-components',
+            ),
             path('install/', StockItemInstall.as_view(), name='api-stock-item-install'),
             meta_path(StockItem),
             path(
