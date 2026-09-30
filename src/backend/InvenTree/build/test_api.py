@@ -13,7 +13,7 @@ from common.settings import set_global_setting
 from InvenTree.unit_test import InvenTreeAPITestCase
 from part.models import BomItem, BomItemSubstitute, Part
 from stock.models import StockItem, StockLocation, StockSortOrder
-from stock.status_codes import StockStatus
+from stock.status_codes import StockHistoryCode, StockStatus
 
 
 class TestBuildAPI(InvenTreeAPITestCase):
@@ -1551,6 +1551,131 @@ class BuildOutputScrapTest(BuildAPITest):
         self.assertEqual(completed_output.quantity, 4)
         self.assertEqual(completed_output.status, StockStatus.OK)
         self.assertFalse(completed_output.is_building)
+
+
+class BuildOutputDisassembleTest(BuildAPITest):
+    """Tests for disassembling a completed build output."""
+
+    def test_disassemble_output(self):
+        """Installed and untracked components are returned to stock."""
+        product = Part.objects.create(name='Disassembly product', assembly=True)
+        tracked_part = Part.objects.create(
+            name='Tracked disassembly component', component=True, trackable=True
+        )
+        untracked_part = Part.objects.create(
+            name='Untracked disassembly component', component=True
+        )
+        consumed_variant_a = Part.objects.create(
+            name='Consumed component variant A', component=True
+        )
+        consumed_variant_b = Part.objects.create(
+            name='Consumed component variant B', component=True
+        )
+        incomplete_part = Part.objects.create(
+            name='Incomplete disassembly component', component=True, trackable=True
+        )
+        location = StockLocation.objects.create(name='Disassembly location')
+        second_location = StockLocation.objects.create(
+            name='Second disassembly location'
+        )
+        build = Build.objects.create(
+            part=product,
+            reference='BO-9901',
+            quantity=1,
+            completed=1,
+            status=BuildStatus.COMPLETE,
+        )
+        output = StockItem.objects.create(
+            part=product, quantity=1, build=build, location=location, is_building=False
+        )
+        installed = StockItem.objects.create(
+            part=tracked_part, quantity=1, belongs_to=output, consumed_by=build
+        )
+        BuildLine.objects.create(
+            build=build, custom_part=untracked_part, quantity=2, consumed=2
+        )
+        consumed_a = StockItem.objects.create(
+            part=consumed_variant_a, quantity=1, consumed_by=build
+        )
+        consumed_b = StockItem.objects.create(
+            part=consumed_variant_b, quantity=1, consumed_by=build
+        )
+        BuildLine.objects.create(
+            build=build, custom_part=incomplete_part, quantity=1, consumed=0
+        )
+
+        preview = self.post(
+            reverse('api-build-output-disassemble-from-stock') + '?preview=true',
+            {'output': output.pk},
+            expected_code=200,
+        )
+        self.assertEqual(len(preview.data['items']), 3)
+        consumed_parts = {
+            item['part_name']
+            for item in preview.data['items']
+            if item['stock_item'] in {consumed_a.pk, consumed_b.pk}
+        }
+        self.assertEqual(
+            consumed_parts,
+            {'Consumed component variant A', 'Consumed component variant B'},
+        )
+        # Parts which were never consumed must not be offered for recovery
+        self.assertFalse(
+            any(
+                item['part'] == incomplete_part.pk
+                for item in preview.data['items']
+            )
+        )
+
+        response = self.post(
+            reverse('api-build-output-disassemble-from-stock'),
+            {
+                'output': output.pk,
+                'items': [
+                    {
+                        'stock_item': installed.pk,
+                        'location': location.pk,
+                        'status': StockStatus.ATTENTION.value,
+                    },
+                    {
+                        'stock_item': consumed_a.pk,
+                        'location': second_location.pk,
+                        'status': StockStatus.QUARANTINED.value,
+                    },
+                    {
+                        'stock_item': consumed_b.pk,
+                        'location': location.pk,
+                        'status': StockStatus.ATTENTION.value,
+                    },
+                ],
+                'notes': 'Disassembled in test',
+            },
+            expected_code=200,
+        )
+
+        self.assertEqual(response.data['status'], StockStatus.DISASSEMBLED.value)
+        self.assertEqual(response.data['status_text'], 'Disassembled')
+        output.refresh_from_db()
+        installed.refresh_from_db()
+        self.assertEqual(output.status, StockStatus.DISASSEMBLED)
+        self.assertIsNone(installed.belongs_to)
+        self.assertIsNone(installed.consumed_by)
+        self.assertEqual(installed.location, location)
+        self.assertEqual(installed.status, StockStatus.ATTENTION)
+        consumed_a.refresh_from_db()
+        consumed_b.refresh_from_db()
+        self.assertIsNone(consumed_a.consumed_by)
+        self.assertEqual(consumed_a.location, second_location)
+        self.assertEqual(consumed_a.status, StockStatus.QUARANTINED)
+        self.assertIsNone(consumed_b.consumed_by)
+        self.assertEqual(consumed_b.location, location)
+        self.assertEqual(consumed_b.status, StockStatus.ATTENTION)
+        self.assertFalse(StockItem.objects.filter(part=incomplete_part).exists())
+        self.assertTrue(
+            output.tracking_info.filter(
+                tracking_type=StockHistoryCode.BUILD_DISASSEMBLED.value
+            ).exists()
+        )
 
 
 class BuildOutputCancelTest(BuildAPITest):

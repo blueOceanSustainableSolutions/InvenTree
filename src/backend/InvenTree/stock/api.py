@@ -563,6 +563,25 @@ class StockFilter(FilterSet):
             'tags__slug',
         ]
 
+    disassembled = rest_filters.BooleanFilter(
+        label=_('Disassembled'), method='filter_disassembled'
+    )
+
+    has_build = rest_filters.BooleanFilter(label=_('Has Build Order'), method='filter_has_build')
+
+    def filter_has_build(self, queryset, name, value):
+        """Filter stock items by whether they were created by a build order."""
+        return queryset.filter(build__isnull=not str2bool(value))
+
+    def filter_disassembled(self, queryset, name, value):
+        """Filter outputs which have been processed by a disassembly operation."""
+        query = Q(tracking_info__tracking_type=StockHistoryCode.BUILD_DISASSEMBLED)
+
+        if str2bool(value):
+            return queryset.filter(query).distinct()
+
+        return queryset.exclude(query).distinct()
+
     # Relationship filters
     manufacturer = rest_filters.ModelChoiceFilter(
         label='Manufacturer',

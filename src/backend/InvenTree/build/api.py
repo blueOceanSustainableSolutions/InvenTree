@@ -42,6 +42,7 @@ from InvenTree.mixins import (
     RetrieveUpdateDestroyAPI,
     SerializerContextMixin,
 )
+from stock.status_codes import StockStatus
 from users.models import Owner
 
 
@@ -842,6 +843,117 @@ class BuildOutputScrap(BuildOrderContextMixin, CreateAPI):
         return Response(response, status=response['http_status'])
 
 
+def disassembly_preview(output):
+    """Return the component disposition rows for a build output."""
+    build = output.build
+    build.validate_disassemble_build_output(output)
+    items = []
+
+    for item in output.installed_parts.select_related('part'):
+        location = output.location or item.part.get_default_location()
+        items.append({
+            'stock_item': item.pk,
+            'part': item.part_id,
+            'part_name': item.part.name,
+            'part_ipn': item.part.IPN,
+            'quantity': float(item.quantity),
+            'location': location.pk if location else None,
+            'status': StockStatus.QUARANTINED.value,
+        })
+
+    for item in stock.models.StockItem.objects.filter(
+        consumed_by=build, belongs_to__isnull=True
+    ).select_related('part'):
+        location = output.location or item.part.get_default_location()
+        items.append({
+            'stock_item': item.pk,
+            'part': item.part_id,
+            'part_name': item.part.name,
+            'part_ipn': item.part.IPN,
+            'quantity': float(item.quantity),
+            'location': location.pk if location else None,
+            'status': StockStatus.QUARANTINED.value,
+        })
+
+    # Only stock which was actually installed or consumed can be recovered.
+    # BOM quantities which were never consumed are not part of the output.
+    return {'output': output.pk, 'items': items}
+
+
+class BuildOutputDisassemble(BuildOrderContextMixin, CreateAPI):
+    """Disassemble one completed, single-unit build output."""
+
+    queryset = Build.objects.none()
+    serializer_class = build.serializers.BuildOutputDisassembleSerializer
+
+    @extend_schema(responses={200: stock.serializers.StockItemSerializer})
+    def post(self, *args, **kwargs):
+        """Disassemble the requested output and return its updated record."""
+        build = self.get_build()
+        preview = str2bool(self.request.query_params.get('preview', False))
+        serializer_class = (
+            build.serializers.BuildOutputDisassemblePreviewSerializer
+            if preview
+            else self.serializer_class
+        )
+        serializer = serializer_class(
+            data=self.request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if preview:
+            return Response(disassembly_preview(data['output']))
+
+        build.disassemble_build_output(
+            data['output'], data['items'], self.request.user, data.get('notes', '')
+        )
+
+        return Response(
+            stock.serializers.StockItemSerializer(
+                data['output'], context=self.get_serializer_context()
+            ).data
+        )
+
+
+class BuildOutputDisassembleFromStock(CreateAPI):
+    """Disassemble a build output selected from the Manufacturing page."""
+
+    queryset = Build.objects.none()
+    serializer_class = build.serializers.BuildOutputDisassembleSerializer
+
+    @extend_schema(responses={200: stock.serializers.StockItemSerializer})
+    def post(self, *args, **kwargs):
+        """Disassemble the selected output and return its updated record."""
+        preview = str2bool(self.request.query_params.get('preview', False))
+        serializer_class = (
+            build.serializers.BuildOutputDisassemblePreviewSerializer
+            if preview
+            else self.serializer_class
+        )
+        serializer = serializer_class(
+            data=self.request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        output = data['output']
+
+        if preview:
+            if output.build is None:
+                raise ValidationError({'output': _('Stock item is not a build output')})
+            return Response(disassembly_preview(output))
+
+        output.build.disassemble_build_output(
+            output, data['items'], self.request.user, data.get('notes', '')
+        )
+
+        return Response(
+            stock.serializers.StockItemSerializer(
+                output, context=self.get_serializer_context()
+            ).data
+        )
+
+
 class BuildOutputComplete(BuildOrderContextMixin, CreateAPI):
     """API endpoint for completing build outputs."""
 
@@ -1230,6 +1342,11 @@ class BuildItemList(
 
 
 build_api_urls = [
+    path(
+        'disassemble/',
+        BuildOutputDisassembleFromStock.as_view(),
+        name='api-build-output-disassemble-from-stock',
+    ),
     # Build lines
     path(
         'line/',
@@ -1282,6 +1399,11 @@ build_api_urls = [
                 'scrap-outputs/',
                 BuildOutputScrap.as_view(),
                 name='api-build-output-scrap',
+            ),
+            path(
+                'disassemble/',
+                BuildOutputDisassemble.as_view(),
+                name='api-build-output-disassemble',
             ),
             path('issue/', BuildIssue.as_view(), name='api-build-issue'),
             path('hold/', BuildHold.as_view(), name='api-build-hold'),

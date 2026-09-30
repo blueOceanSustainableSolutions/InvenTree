@@ -1098,6 +1098,86 @@ class Build(
             },
         )
 
+    def validate_disassemble_build_output(self, output):
+        """Validate that a build output can be automatically disassembled."""
+        if self.quantity != 1:
+            raise ValidationError(
+                _(
+                    'Automatic disassembly is only available for a build order of one item'
+                )
+            )
+
+        if (
+            output.build_id != self.pk
+            or output.is_building
+            or output.quantity != 1
+            or not output.in_stock
+        ):
+            raise ValidationError(_('Build output cannot be disassembled'))
+
+        completed_outputs = self.build_outputs.filter(is_building=False).exclude(
+            status__in=[
+                StockStatus.REJECTED.value,
+                StockStatus.DISASSEMBLED.value,
+            ]
+        )
+
+        if completed_outputs.count() != 1 or completed_outputs.first().pk != output.pk:
+            raise ValidationError(
+                _('Automatic disassembly requires exactly one completed build output')
+            )
+
+    @transaction.atomic
+    def disassemble_build_output(self, output, items, user=None, notes=''):
+        """Disassemble a completed, single-unit build output.
+
+        Untracked consumption is recorded only against a Build Order. Consequently,
+        automatic recovery is deliberately limited to a build order for one unit and
+        one completed output. Tracked items remain individually traceable through
+        their existing installation records.
+        """
+        self.validate_disassemble_build_output(output)
+
+        stock_items = {
+            item['stock_item'].pk: item for item in items if item.get('stock_item')
+        }
+
+        # Return installed (tracked) components to stock. uninstall_into_location
+        # writes history entries on both the parent and every child item.
+        for item in output.installed_parts.select_for_update():
+            disposition = stock_items[item.pk]
+            item.uninstall_into_location(disposition['location'], user, notes)
+            item.set_status(disposition['status'])
+            item.save(add_note=False)
+
+        # Return each consumed stock record individually. This preserves the
+        # exact part or variant which was issued to the build order.
+        consumed_items = stock.models.StockItem.objects.select_for_update().filter(
+            consumed_by=self, belongs_to__isnull=True
+        )
+        for item in consumed_items:
+            disposition = stock_items[item.pk]
+            item.return_to_stock(
+                disposition['location'],
+                user,
+                merge=False,
+                notes=notes,
+                status=disposition['status'],
+                tracking_code=StockHistoryCode.DISASSEMBLY_RECOVERED,
+            )
+
+        # BOM quantities which were never consumed are not recovered, as that
+        # stock was never part of the build output.
+
+        output.status = StockStatus.DISASSEMBLED.value
+        output.save(add_note=False)
+        output.add_tracking_entry(
+            StockHistoryCode.BUILD_DISASSEMBLED,
+            user,
+            notes=notes,
+            deltas={'buildorder': self.pk},
+        )
+
     @transaction.atomic
     def complete_build_output(
         self,

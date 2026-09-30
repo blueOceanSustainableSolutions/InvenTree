@@ -68,6 +68,7 @@ import { StatusRenderer } from '../../components/render/StatusRenderer';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
 import { useApi } from '../../contexts/ApiContext';
 import { formatCurrency, formatDecimal } from '../../defaults/formatters';
+import { useDisassembleBuildOutputForm } from '../../forms/BuildForms';
 import {
   useFindSerialNumberForm,
   useStockFields,
@@ -855,6 +856,11 @@ export default function StockDetail() {
     successMessage: t`Stock item serialized`
   });
 
+  const disassembleBuildOutput = useDisassembleBuildOutputForm({
+    output: stockitem,
+    onFormSuccess: refreshInstance
+  });
+
   const orderPartsWizard = OrderPartsWizard({
     parts: stockitem.part_detail ? [stockitem.part_detail] : []
   });
@@ -972,6 +978,17 @@ export default function StockDetail() {
             hidden: !user.hasChangeRole(UserRoles.stock) || !canConvert,
             icon: <IconTransform color='blue' />,
             onClick: () => convertStockItem.open()
+          },
+          {
+            name: t`Disassemble`,
+            tooltip: t`Recover components from this build output`,
+            hidden:
+              !user.hasChangeRole(UserRoles.stock) ||
+              !stockitem.build ||
+              stockitem.is_building ||
+              stockitem.quantity != 1,
+            icon: <IconBoxPadding color='blue' />,
+            onClick: () => disassembleBuildOutput.open()
           },
           DeleteItemAction({
             hidden: !user.hasDeleteRole(UserRoles.stock),
@@ -1109,6 +1126,7 @@ export default function StockDetail() {
       {convertStockItem.modal}
       {duplicateStockItem.modal}
       {serializeStockItem.modal}
+      {disassembleBuildOutput.modal}
       {stockAdjustActions.modals.map((modal) => modal.modal)}
       {orderPartsWizard.wizard}
     </>

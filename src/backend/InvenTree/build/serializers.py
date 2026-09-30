@@ -514,6 +514,71 @@ class BuildOutputScrapSerializer(serializers.Serializer):
         return data
 
 
+class BuildOutputDisassemblePreviewSerializer(serializers.Serializer):
+    """Select a completed output before configuring its recovered items."""
+
+    output = serializers.PrimaryKeyRelatedField(
+        queryset=StockItem.objects.all(), required=True, label=_('Build Output')
+    )
+
+    def validate(self, data):
+        """Ensure that the selected output belongs to the requested build order."""
+        output = data['output']
+        build = self.context.get('build') or output.build
+
+        if build is None:
+            raise ValidationError({'output': _('Stock item is not a build output')})
+
+        if output.build_id != build.pk:
+            raise ValidationError({'output': _('Build output does not match Build Order')})
+
+        return data
+
+
+class BuildOutputDisassembleItemSerializer(serializers.Serializer):
+    """Configure the destination of one recovered component."""
+
+    stock_item = serializers.PrimaryKeyRelatedField(
+        queryset=StockItem.objects.all(), required=True
+    )
+    location = serializers.PrimaryKeyRelatedField(
+        queryset=StockLocation.objects.all(), required=True, label=_('Location')
+    )
+    status = StockStatusCustomSerializer(default=StockStatus.QUARANTINED.value)
+
+
+class BuildOutputDisassembleSerializer(BuildOutputDisassemblePreviewSerializer):
+    """Disassemble a completed single-unit build output."""
+
+    items = BuildOutputDisassembleItemSerializer(many=True, required=True)
+
+    notes = serializers.CharField(required=False, allow_blank=True, default='', label=_('Notes'))
+
+    def validate(self, data):
+        """Ensure that the selected output belongs to this build order."""
+        data = super().validate(data)
+        output = data['output']
+        build = self.context.get('build') or output.build
+
+        expected_stock_items = set(output.installed_parts.values_list('pk', flat=True))
+        expected_stock_items.update(
+            StockItem.objects.filter(
+                consumed_by=build, belongs_to__isnull=True
+            ).values_list('pk', flat=True)
+        )
+        supplied_stock_items = [item['stock_item'].pk for item in data['items']]
+
+        if (
+            len(supplied_stock_items) != len(set(supplied_stock_items))
+            or set(supplied_stock_items) != expected_stock_items
+        ):
+            raise ValidationError(
+                {'items': _('A disposition is required for every recovered item')}
+            )
+
+        return data
+
+
 class BuildOutputCompleteSerializer(serializers.Serializer):
     """DRF serializer for completing one or more build outputs."""
 

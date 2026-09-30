@@ -352,6 +352,7 @@ class StockItemSerializer(
             'location',
             'belongs_to',
             'build',
+            'build_reference',
             'consumed_by',
             'customer',
             'delete_on_deplete',
@@ -422,6 +423,10 @@ class StockItemSerializer(
         allow_null=False,
         help_text=_('Base Part'),
         label=_('Part'),
+    )
+
+    build_reference = serializers.CharField(
+        source='build.reference', read_only=True, allow_null=True
     )
 
     parent = serializers.PrimaryKeyRelatedField(

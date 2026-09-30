@@ -19,6 +19,11 @@ class StockStatus(StatusCode):
         _('Quarantined'),
         ColorEnum.info,
     )  # Item has been quarantined and is unavailable
+    DISASSEMBLED = (
+        80,
+        _('Disassembled'),
+        ColorEnum.dark,
+    )  # Item has been disassembled and is unavailable
     RETURNED = (
         85,
         _('Returned'),
@@ -83,6 +88,8 @@ class StockHistoryCode(StatusCode):
     BUILD_OUTPUT_COMPLETED = 55, _('Build order output completed')
     BUILD_OUTPUT_REJECTED = 56, _('Build order output rejected')
     BUILD_CONSUMED = 57, _('Consumed by build order')
+    BUILD_DISASSEMBLED = 58, _('Build output disassembled')
+    DISASSEMBLY_RECOVERED = 59, _('Recovered by disassembly')
 
     # Sales order codes
     SHIPPED_AGAINST_SALES_ORDER = 60, _('Shipped against Sales Order')

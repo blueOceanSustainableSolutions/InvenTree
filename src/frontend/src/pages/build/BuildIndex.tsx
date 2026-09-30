@@ -1,6 +1,7 @@
 import { t } from '@lingui/core/macro';
 import { Stack } from '@mantine/core';
 import {
+  IconBoxPadding,
   IconCalendar,
   IconListDetails,
   IconTable,
@@ -25,6 +26,7 @@ import { useUserState } from '../../states/UserState';
 import BuildOrderFilters from '../../tables/build/BuildOrderFilters';
 import BuildOrderParametricTable from '../../tables/build/BuildOrderParametricTable';
 import { BuildOrderTable } from '../../tables/build/BuildOrderTable';
+import { StockItemTable } from '../../tables/stock/StockItemTable';
 
 function BuildOrderCalendar() {
   const globalSettings = useGlobalSettingsState();
@@ -108,7 +110,19 @@ export default function BuildIndex() {
             content: <BuildOrderParametricTable />
           }
         ]
-      })
+      }),
+      {
+        name: 'disassembly',
+        label: t`Disassembly`,
+        icon: <IconBoxPadding />,
+        content: (
+          <StockItemTable
+            tableName='build-outputs-for-disassembly'
+            params={{ disassembled: true }}
+            allowDisassemble
+          />
+        )
+      }
     ];
   }, [user, buildOrderView]);
 

@@ -49,7 +49,13 @@ export const useGlobalStatusState = create<ServerStateProps>()(
     }),
     {
       name: 'global-status-state',
-      storage: createJSONStorage(() => sessionStorage)
+      // Invalidate status metadata cached before the disassembly status existed.
+      version: 1,
+      storage: createJSONStorage(() => sessionStorage),
+      onRehydrateStorage: () => (state) => {
+        // Status definitions can change when the backend is updated.
+        void state?.fetchStatus();
+      }
     }
   )
 );

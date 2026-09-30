@@ -1,5 +1,14 @@
 import { t } from '@lingui/core/macro';
-import { Alert, Divider, Group, List, Stack, Table, Text } from '@mantine/core';
+import {
+  Alert,
+  Divider,
+  Group,
+  List,
+  Paper,
+  Stack,
+  Table,
+  Text
+} from '@mantine/core';
 import {
   IconCalendar,
   IconCircleCheck,
@@ -36,6 +45,7 @@ import {
 } from '../hooks/UseGenerator';
 import { useGlobalSettingsState } from '../states/SettingsStates';
 import { RenderPartColumn } from '../tables/ColumnRenderers';
+import { StatusFilterOptions } from '../tables/Filter';
 import { TagsField } from './CommonFields';
 
 /**
@@ -789,6 +799,175 @@ export function useAllocateStockToBuildForm({
     },
     size: '80%'
   });
+}
+
+function DisassemblyItemRow({ row }: Readonly<{ row: TableFieldRowProps }>) {
+  const statusOptions = useMemo(
+    () =>
+      StatusFilterOptions(ModelType.stockitem)()?.map((choice) => ({
+        value: choice.value,
+        display_name: choice.label
+      })) ?? [],
+    []
+  );
+
+  return (
+    <Table.Tr>
+      <Table.Td>
+        <Text size='sm'>{row.item.part_name}</Text>
+      </Table.Td>
+      <Table.Td>
+        <Text size='sm'>{row.item.part_ipn || '-'}</Text>
+      </Table.Td>
+      <Table.Td>
+        <Text size='sm'>{row.item.quantity}</Text>
+      </Table.Td>
+      <Table.Td>
+        <StandaloneField
+          fieldName='location'
+          hideLabels
+          fieldDefinition={{
+            field_type: 'related field',
+            api_url: apiUrl(ApiEndpoints.stock_location_list),
+            model: ModelType.stocklocation,
+            value: row.item.location,
+            required: true,
+            filters: { structural: false },
+            onValueChange: (value: any) =>
+              row.changeFn(row.idx, 'location', value)
+          }}
+          error={row.rowErrors?.location?.message}
+        />
+      </Table.Td>
+      <Table.Td>
+        <StandaloneField
+          fieldName='status'
+          hideLabels
+          fieldDefinition={{
+            field_type: 'choice',
+            value: row.item.status,
+            required: true,
+            choices: statusOptions,
+            onValueChange: (value: any) => row.changeFn(row.idx, 'status', value)
+          }}
+          error={row.rowErrors?.status?.message}
+        />
+      </Table.Td>
+    </Table.Tr>
+  );
+}
+
+function DisassemblyOutputOption({
+  instance,
+  context
+}: Readonly<{ instance: any; context?: 'menu' | 'value' }>) {
+  // Only show the build order box in the dropdown list, not the selected value
+  if (context !== 'menu') {
+    return <RenderStockItem instance={instance} />;
+  }
+
+  return (
+    <Stack gap={4} py={2}>
+      <RenderStockItem instance={instance} />
+      {instance.build_reference && (
+        <Paper withBorder radius='sm' px='xs' py={4}>
+          <Text size='xs'>
+            {t`Build Order`}: {instance.build_reference}
+          </Text>
+        </Paper>
+      )}
+    </Stack>
+  );
+}
+
+/** Two-stage form for selecting and configuring a build output disassembly. */
+export function useDisassembleBuildOutputForm({
+  output,
+  table,
+  onFormSuccess
+}: {
+  output?: any;
+  table?: any;
+  onFormSuccess?: () => void;
+}) {
+  const [preview, setPreview] = useState<any>();
+
+  const dispositionFields: ApiFormFieldSet = useMemo(
+    () => ({
+      output: { hidden: true, value: preview?.output },
+      items: {
+        field_type: 'table',
+        value: preview?.items ?? [],
+        headers: [
+          { title: t`Part`, style: { minWidth: '180px' } },
+          { title: t`IPN`, style: { minWidth: '100px' } },
+          { title: t`Quantity`, style: { minWidth: '90px' } },
+          { title: t`Location`, style: { minWidth: '240px' } },
+          { title: t`Status`, style: { minWidth: '180px' } }
+        ],
+        modelRenderer: (row: TableFieldRowProps) => (
+          <DisassemblyItemRow key={row.idx} row={row} />
+        )
+      },
+      notes: {}
+    }),
+    [preview]
+  );
+
+  const configure = useCreateApiFormModal({
+    url: ApiEndpoints.build_output_disassemble_from_stock,
+    title: t`Configure Recovered Items`,
+    modalId: 'configure-build-output-disassembly',
+    fields: dispositionFields,
+    initialData: {
+      output: preview?.output,
+      items: preview?.items ?? []
+    },
+    size: '80%',
+    submitText: t`Disassemble`,
+    table,
+    successMessage: t`Build output disassembled`,
+    onFormSuccess
+  });
+
+  const select = useCreateApiFormModal({
+    url: ApiEndpoints.build_output_disassemble_from_stock,
+    queryParams: new URLSearchParams({ preview: 'true' }),
+    title: t`Disassemble Build Output`,
+    modalId: output?.pk
+      ? 'disassemble-build-output'
+      : 'select-build-output-for-disassembly',
+    fields: {
+      output: {
+        field_type: 'related field',
+        model: ModelType.stockitem,
+        api_url: apiUrl(ApiEndpoints.stock_item_list),
+        value: output?.pk,
+        hidden: !!output?.pk,
+        filters: { has_build: true, in_stock: true, is_building: false },
+        modelRenderer: DisassemblyOutputOption
+      }
+    },
+    initialData: { output: output?.pk },
+    submitText: t`Continue`,
+    successMessage: null,
+    onFormSuccess: (data: any) => {
+      setPreview(data);
+      setTimeout(() => configure.open(), 0);
+    }
+  });
+
+  return {
+    open: select.open,
+    close: select.close,
+    toggle: select.toggle,
+    modal: (
+      <>
+        {select.modal}
+        {configure.modal}
+      </>
+    )
+  };
 }
 
 function BuildConsumeItemRow({

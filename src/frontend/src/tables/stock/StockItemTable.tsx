@@ -15,6 +15,7 @@ import type { StockOperationProps } from '@lib/types/Forms';
 import type { TableColumn } from '@lib/types/Tables';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
 import { formatCurrency, formatPriceRange } from '../../defaults/formatters';
+import { useDisassembleBuildOutputForm } from '../../forms/BuildForms';
 import { useStockFields } from '../../forms/StockForms';
 import { InvenTreeIcon } from '../../functions/icons';
 import { useCreateApiFormModal } from '../../hooks/UseForm';
@@ -334,6 +335,7 @@ export function StockItemTable({
   showLocation = true,
   showPricing = true,
   allowReturn = false,
+  allowDisassemble = false,
   initialFilters,
   defaultInStock = true,
   tableName = 'stockitems'
@@ -343,6 +345,7 @@ export function StockItemTable({
   showLocation?: boolean;
   showPricing?: boolean;
   allowReturn?: boolean;
+  allowDisassemble?: boolean;
   defaultInStock?: boolean | null;
   initialFilters?: TableFilter[];
   tableName: string;
@@ -441,6 +444,8 @@ export function StockItemTable({
     keepOpenOption: true
   });
 
+  const disassembleBuildOutput = useDisassembleBuildOutputForm({ table });
+
   const [partsToOrder, setPartsToOrder] = useState<any[]>([]);
 
   const orderPartsWizard = OrderPartsWizard({
@@ -470,6 +475,12 @@ export function StockItemTable({
         }}
       />,
       <AddItemButton
+        key='disassemble-build-output'
+        hidden={!allowDisassemble || !user.hasAddRole(UserRoles.build)}
+        tooltip={t`Disassemble a build output`}
+        onClick={disassembleBuildOutput.open}
+      />,
+      <AddItemButton
         key='add-stock-item'
         hidden={!allowAdd || !user.hasAddRole(UserRoles.stock)}
         tooltip={t`Add Stock Item`}
@@ -481,12 +492,14 @@ export function StockItemTable({
     allowAdd,
     table.hasSelectedRecords,
     table.selectedRecords,
-    stockAdjustActions.dropdown
+    stockAdjustActions.dropdown,
+    allowDisassemble
   ]);
 
   return (
     <>
       {newStockItem.modal}
+      {disassembleBuildOutput.modal}
       {orderPartsWizard.wizard}
       {stockAdjustActions.modals.map((modal) => modal.modal)}
       <InvenTreeTable

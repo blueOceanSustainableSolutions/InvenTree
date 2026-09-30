@@ -379,11 +379,11 @@ export function RelatedModelField({
    * Format an option for display in the select field
    */
   const formatOption = useCallback(
-    (option: any) => {
+    (option: any, context?: 'menu' | 'value') => {
       const data = option.data ?? option;
 
       if (definition.modelRenderer) {
-        return <definition.modelRenderer instance={data} />;
+        return <definition.modelRenderer instance={data} context={context} />;
       }
 
       return (
@@ -547,7 +547,9 @@ export function RelatedModelField({
                 ':hover': { color: 'red' }
               })
             }}
-            formatOptionLabel={(option: any) => formatOption(option)}
+            formatOptionLabel={(option: any, meta: any) =>
+              formatOption(option, meta?.context)
+            }
             theme={(theme) => {
               return {
                 ...theme,
