@@ -578,7 +578,14 @@ function BuildAllocateLineRow({
         available: true,
         part_detail: true,
         location_detail: true,
-        bom_item: record.bom_item,
+        // BOM-backed lines use their BOM filter (including substitutes). Custom
+        // build requirements have no BOM entry, so explicitly filter by part.
+        ...(record.bom_item
+          ? { bom_item: record.bom_item }
+          : {
+              part: record.part,
+              include_variants: record.allow_variants ?? false
+            }),
         location: sourceLocation,
         cascade: sourceLocation ? true : undefined
       },

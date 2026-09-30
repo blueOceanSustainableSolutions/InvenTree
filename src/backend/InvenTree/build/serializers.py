@@ -1280,6 +1280,24 @@ class BuildItemSerializer(
     quantity = InvenTreeDecimalField(label=_('Allocated Quantity'))
 
 
+class BuildLineBooleanField(serializers.BooleanField):
+    """Expose a BOM setting or its build-specific equivalent through one field."""
+
+    def __init__(self, custom_field, **kwargs):
+        self.custom_field = custom_field
+        self.model_property = custom_field.removeprefix('custom_')
+        super().__init__(**kwargs)
+
+    def get_attribute(self, instance):
+        return instance
+
+    def to_representation(self, value):
+        return getattr(value, self.model_property)
+
+    def to_internal_value(self, data):
+        return {self.custom_field: super().to_internal_value(data)}
+
+
 class BuildLineSerializer(
     FilterableSerializerMixin, DataImportExportSerializerMixin, InvenTreeModelSerializer
 ):
@@ -1390,8 +1408,12 @@ class BuildLineSerializer(
 
     # BOM item info fields
     reference = serializers.SerializerMethodField(label=_('Reference'))
-    consumable = serializers.BooleanField(label=_('Consumable'), read_only=True)
-    optional = serializers.BooleanField(label=_('Optional'), read_only=True)
+    consumable = BuildLineBooleanField(
+        'custom_consumable', source='*', label=_('Consumable'), required=False
+    )
+    optional = BuildLineBooleanField(
+        'custom_optional', source='*', label=_('Optional'), required=False
+    )
     testable = serializers.BooleanField(
         source='part.testable', label=_('Testable'), read_only=True
     )
@@ -1399,7 +1421,9 @@ class BuildLineSerializer(
         source='part.trackable', label=_('Trackable'), read_only=True
     )
     inherited = serializers.BooleanField(label=_('Inherited'), read_only=True)
-    allow_variants = serializers.BooleanField(label=_('Allow Variants'), read_only=True)
+    allow_variants = BuildLineBooleanField(
+        'custom_allow_variants', source='*', label=_('Allow Variants'), required=False
+    )
 
     quantity = serializers.FloatField(label=_('Quantity'))
     consumed = serializers.FloatField(label=_('Consumed'))

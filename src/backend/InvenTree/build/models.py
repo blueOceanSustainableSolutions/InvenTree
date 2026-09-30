@@ -1267,6 +1267,10 @@ class Build(
                     allow_variants=True, allow_substitutes=substitutes
                 )
                 if bom_item
+                else line_item.part.get_descendants(
+                    include_self=True
+                )
+                if line_item.allow_variants
                 else [line_item.part]
             )
 
@@ -1403,6 +1407,10 @@ class Build(
                     allow_substitutes=substitutes,
                 )
                 if bom_item
+                else line_item.part.get_descendants(
+                    include_self=True
+                )
+                if line_item.allow_variants
                 else [line_item.part]
             )
 
@@ -1793,6 +1801,21 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
         help_text=_('Required quantity for build order'),
     )
 
+    custom_allow_variants = models.BooleanField(
+        default=False,
+        help_text=_('Allow stock from part variants to be allocated'),
+    )
+
+    custom_optional = models.BooleanField(
+        default=False,
+        help_text=_('This build-specific requirement is optional'),
+    )
+
+    custom_consumable = models.BooleanField(
+        default=False,
+        help_text=_('This build-specific requirement is consumable'),
+    )
+
     consumed = models.DecimalField(
         decimal_places=5,
         max_digits=15,
@@ -1819,18 +1842,22 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
 
     @property
     def consumable(self):
-        """Build-specific requirements are physical, non-consumable components."""
-        return self.bom_item.consumable if self.bom_item_id else False
+        """Return whether this requirement is consumable."""
+        return self.bom_item.consumable if self.bom_item_id else self.custom_consumable
 
     @property
     def optional(self):
-        """Build-specific requirements are required by definition."""
-        return self.bom_item.optional if self.bom_item_id else False
+        """Return whether this requirement is optional."""
+        return self.bom_item.optional if self.bom_item_id else self.custom_optional
 
     @property
     def allow_variants(self):
-        """Custom requirements currently require the selected part exactly."""
-        return self.bom_item.allow_variants if self.bom_item_id else False
+        """Return the applicable variant-allocation setting for this line."""
+        return (
+            self.bom_item.allow_variants
+            if self.bom_item_id
+            else self.custom_allow_variants
+        )
 
     @property
     def inherited(self):
@@ -1950,7 +1977,16 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
         valid = False
 
         if self.build_line and self.build_line.custom_part_id:
-            valid = self.stock_item.part_id == self.build_line.custom_part_id
+            valid_parts = [self.build_line.custom_part_id]
+
+            if self.build_line.allow_variants:
+                valid_parts.extend(
+                    self.build_line.custom_part.get_descendants(
+                        include_self=False
+                    ).values_list('pk', flat=True)
+                )
+
+            valid = self.stock_item.part_id in valid_parts
 
         elif self.bom_item and self.build:
             """
@@ -1980,8 +2016,8 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
             )
 
             for idx, ancestor in enumerate(ancestors):
-                build_line = BuildLine.objects.filter(
-                    build=self.build, bom_item__part=ancestor
+                build_line = BuildLine.objects.filter(build=self.build).filter(
+                    Q(bom_item__part=ancestor) | Q(custom_part=ancestor)
                 )
 
                 if build_line.exists():

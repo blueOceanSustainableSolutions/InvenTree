@@ -104,6 +104,38 @@ class CustomBuildRequirementTests(InvenTreeAPITestCase):
         )
         self.assertFalse(BuildItem.objects.filter(build_line=line).exists())
 
+    def test_custom_requirement_can_allow_variants(self):
+        """A custom requirement can be configured to accept its variants."""
+        variant = Part.objects.create(
+            name='Order-specific component variant', variant_of=self.component
+        )
+        variant_stock = StockItem.objects.create(part=variant, quantity=2)
+
+        response = self.post(
+            reverse('api-build-line-list'),
+            {
+                'build': self.build.pk,
+                'custom_part': self.component.pk,
+                'quantity': 2,
+                'allow_variants': True,
+            },
+        )
+        line = BuildLine.objects.get(pk=response.data['pk'])
+
+        self.post(
+            reverse('api-build-allocate', kwargs={'pk': self.build.pk}),
+            {
+                'items': [
+                    {
+                        'build_line': line.pk,
+                        'stock_item': variant_stock.pk,
+                        'quantity': 2,
+                    }
+                ]
+            },
+            expected_code=201,
+        )
+
     def test_auto_allocate_custom_requirement(self):
         """Normal automatic allocation includes build-specific required parts."""
         line = BuildLine.objects.get(pk=self.create_requirement().data['pk'])

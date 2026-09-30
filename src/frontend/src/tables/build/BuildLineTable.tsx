@@ -597,7 +597,19 @@ export default function BuildLineTable({
           active: true
         }
       },
-      quantity: {}
+      quantity: {},
+      consumable: {
+        label: t`Consumable`,
+        description: t`Do not allocate or track this item during the build`
+      },
+      optional: {
+        label: t`Optional`,
+        description: t`Do not require this item for allocation`
+      },
+      allow_variants: {
+        label: t`Allow Variants`,
+        description: t`Allow stock for variants of this part to be allocated`
+      }
     },
     initialData: {
       build: build.pk
