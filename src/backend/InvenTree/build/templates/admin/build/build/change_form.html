@@ -1,0 +1,9 @@
+{% extends "admin/change_form.html" %}
+{% load i18n %}
+
+{% block object-tools-items %}
+  {% if original.is_complete %}
+    <li><a href="{% url 'admin:build_build_split' original.pk %}">{% translate "Split build order" %}</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

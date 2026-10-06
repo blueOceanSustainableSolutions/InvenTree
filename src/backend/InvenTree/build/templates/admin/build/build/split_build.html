@@ -1,0 +1,193 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .split-table { width: 100%; }
+  .split-table td, .split-table th { vertical-align: middle; }
+  .split-table tr.line-row td { border-top: 2px solid var(--hairline-color); font-weight: 600; }
+  .split-table tr.stock-row td:first-child { padding-left: 2.5em; }
+  .split-table .num { text-align: right; white-space: nowrap; }
+  .split-table .muted { color: var(--body-quiet-color); font-weight: normal; }
+  .split-kind { display: inline-block; min-width: 6em; color: var(--body-quiet-color); }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; <a href="{{ change_url }}">{{ build.reference }}</a>
+  &rsaquo; {% translate 'Split' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+
+<p>
+  <strong>{{ build.reference }}</strong> &middot; {{ build.part.full_name }}
+  &middot; {% translate "Quantity" %}: {{ build.quantity }}
+  &middot; {% translate "Completed" %}: {{ build.completed }}
+</p>
+
+{% if not output %}
+
+  <h2>{% translate "1. Select the output to move into a new build order" %}</h2>
+
+  {% if outputs %}
+  <table class="split-table">
+    <thead>
+      <tr>
+        <th>{% translate "Output" %}</th>
+        <th>{% translate "Serial" %}</th>
+        <th>{% translate "Batch" %}</th>
+        <th class="num">{% translate "Quantity" %}</th>
+        <th>{% translate "Status" %}</th>
+        <th>{% translate "Location" %}</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for item in outputs %}
+      <tr>
+        <td>#{{ item.pk }}</td>
+        <td>{{ item.serial|default:"-" }}</td>
+        <td>{{ item.batch|default:"-" }}</td>
+        <td class="num">{{ item.quantity|floatformat:"-5" }}</td>
+        <td>{{ item.status_text }}</td>
+        <td>{{ item.location|default:"-" }}</td>
+        <td><a class="button" href="?output={{ item.pk }}">{% translate "Select" %}</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>{% translate "This build order has no completed outputs." %}</p>
+  {% endif %}
+
+{% else %}
+
+  <h2>{% translate "2. Choose what moves to the new build order with this output" %}</h2>
+  <p>
+    {% translate "Output" %}: <strong>#{{ output.pk }}{% if output.serial %} &middot; {% translate "Serial" %} {{ output.serial }}{% endif %}</strong>
+    ({% translate "quantity" %} {{ output.quantity|floatformat:"-5" }})
+    &middot; <a href="?">{% translate "choose another output" %}</a>
+  </p>
+  <p class="help">
+    {% blocktranslate %}Values are pre-filled with this output's proportional share. Each value is the quantity
+    moved to the new build order; whatever is left stays on {{ build }}. Components installed in the output
+    always move with it.{% endblocktranslate %}
+  </p>
+
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="output" value="{{ output.pk }}">
+
+    {% if form.non_field_errors %}{{ form.non_field_errors }}{% endif %}
+    {% if form.errors and not form.non_field_errors %}
+      <p class="errornote">{% translate "Please correct the errors below." %}</p>
+    {% endif %}
+
+    <fieldset class="module aligned">
+      <div class="form-row">
+        {{ form.reference.errors }}
+        {{ form.reference.label_tag }} {{ form.reference }}
+      </div>
+      <div class="form-row">
+        {{ form.notes.errors }}
+        {{ form.notes.label_tag }} {{ form.notes }}
+      </div>
+    </fieldset>
+
+    <table class="split-table">
+      <thead>
+        <tr>
+          <th>{% translate "Required item / stock" %}</th>
+          <th class="num">{% translate "Required" %}</th>
+          <th class="num">{% translate "Consumed" %}</th>
+          <th class="num">{% translate "Stock quantity" %}</th>
+          <th class="num">{% translate "Move to new build order" %}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in form.line_rows %}
+        <tr class="line-row">
+          <td>
+            {{ row.line.part.full_name }}
+            {% if row.line.is_custom %}<span class="muted">({% translate "build-specific" %})</span>{% endif %}
+          </td>
+          <td class="num">{{ row.line.quantity|floatformat:"-5" }}</td>
+          <td class="num">{{ row.line.consumed|floatformat:"-5" }}</td>
+          <td></td>
+          <td class="num">{{ row.field.errors }}<span class="split-kind">{% translate "required" %}</span> {{ row.field }}</td>
+        </tr>
+        {% for item in row.installed %}
+        <tr class="stock-row">
+          <td><span class="split-kind">{% translate "installed" %}</span> {{ item }}</td>
+          <td></td><td></td>
+          <td class="num">{{ item.quantity|floatformat:"-5" }}</td>
+          <td class="num muted">{% translate "moves with output" %}</td>
+        </tr>
+        {% endfor %}
+        {% for c in row.consumed %}
+        <tr class="stock-row">
+          <td><span class="split-kind">{% translate "consumed" %}</span> {{ c.item }}{% if c.item.batch %} <span class="muted">· {{ c.item.batch }}</span>{% endif %}</td>
+          <td></td><td></td>
+          <td class="num">{{ c.item.quantity|floatformat:"-5" }}</td>
+          <td class="num">{{ c.field.errors }}{{ c.field }}</td>
+        </tr>
+        {% endfor %}
+        {% for a in row.allocations %}
+        <tr class="stock-row">
+          <td><span class="split-kind">{% translate "allocated" %}</span> {{ a.item.stock_item }}</td>
+          <td></td><td></td>
+          <td class="num">{{ a.item.quantity|floatformat:"-5" }}</td>
+          <td class="num">{{ a.field.errors }}{{ a.field }}</td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+
+      {% with unmatched=form.unmatched_rows %}
+      {% if unmatched %}
+        <tr class="line-row">
+          <td colspan="5">{% translate "Consumed stock not matching any required item" %}</td>
+        </tr>
+        {% for c in unmatched %}
+        <tr class="stock-row">
+          <td><span class="split-kind">{% translate "consumed" %}</span> {{ c.item }}</td>
+          <td></td><td></td>
+          <td class="num">{{ c.item.quantity|floatformat:"-5" }}</td>
+          <td class="num">{{ c.field.errors }}{{ c.field }}</td>
+        </tr>
+        {% endfor %}
+      {% endif %}
+      {% endwith %}
+
+      {% if form.automatic_allocations %}
+        <tr class="line-row">
+          <td colspan="5">{% translate "Stock allocated to this output (moves with it)" %}</td>
+        </tr>
+        {% for alloc in form.automatic_allocations %}
+        <tr class="stock-row">
+          <td><span class="split-kind">{% translate "allocated" %}</span> {{ alloc.stock_item }}</td>
+          <td></td><td></td>
+          <td class="num">{{ alloc.quantity|floatformat:"-5" }}</td>
+          <td class="num muted">{% translate "moves with output" %}</td>
+        </tr>
+        {% endfor %}
+      {% endif %}
+      </tbody>
+    </table>
+
+    <div class="submit-row">
+      <input type="submit" class="default" value="{% translate 'Split build order' %}">
+      <a href="{{ change_url }}" class="closelink">{% translate "Cancel" %}</a>
+    </div>
+  </form>
+
+{% endif %}
+</div>
+{% endblock %}

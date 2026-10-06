@@ -85,6 +85,7 @@ class StockHistoryCode(StatusCode):
 
     # Build order codes
     BUILD_OUTPUT_CREATED = 50, _('Build order output created')
+    BUILD_ORDER_SPLIT = 52, _('Moved to split build order')
     BUILD_OUTPUT_COMPLETED = 55, _('Build order output completed')
     BUILD_OUTPUT_REJECTED = 56, _('Build order output rejected')
     BUILD_CONSUMED = 57, _('Consumed by build order')

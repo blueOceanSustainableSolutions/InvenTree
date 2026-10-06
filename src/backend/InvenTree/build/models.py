@@ -177,23 +177,31 @@ class Build(
             if get_global_setting('BUILDORDER_REQUIRE_VALID_BOM'):
                 # Check that the BOM is valid
                 if not self.part.is_bom_valid():
-                    raise ValidationError({
-                        'part': _('Assembly BOM has not been validated')
-                    })
+                    raise ValidationError(
+                        {'part': _('Assembly BOM has not been validated')}
+                    )
 
             if get_global_setting('BUILDORDER_REQUIRE_ACTIVE_PART'):
                 # Check that the part is active
                 if not self.part.active:
-                    raise ValidationError({
-                        'part': _('Build order cannot be created for an inactive part')
-                    })
+                    raise ValidationError(
+                        {
+                            'part': _(
+                                'Build order cannot be created for an inactive part'
+                            )
+                        }
+                    )
 
             if get_global_setting('BUILDORDER_REQUIRE_LOCKED_PART'):
                 # Check that the part is locked
                 if not self.part.locked:
-                    raise ValidationError({
-                        'part': _('Build order cannot be created for an unlocked part')
-                    })
+                    raise ValidationError(
+                        {
+                            'part': _(
+                                'Build order cannot be created for an unlocked part'
+                            )
+                        }
+                    )
 
         # On first save (i.e. creation), run some extra checks
         if self.pk is None:
@@ -208,17 +216,19 @@ class Build(
         super().clean()
 
         if self.external and not self.part.purchaseable:
-            raise ValidationError({
-                'external': _(
-                    'Build orders can only be externally fulfilled for purchaseable parts'
-                )
-            })
+            raise ValidationError(
+                {
+                    'external': _(
+                        'Build orders can only be externally fulfilled for purchaseable parts'
+                    )
+                }
+            )
 
         if get_global_setting('BUILDORDER_REQUIRE_RESPONSIBLE'):
             if not self.responsible:
-                raise ValidationError({
-                    'responsible': _('Responsible user or group must be specified')
-                })
+                raise ValidationError(
+                    {'responsible': _('Responsible user or group must be specified')}
+                )
 
         # Prevent changing target part after creation
         if self.has_field_changed('part'):
@@ -226,9 +236,9 @@ class Build(
 
         # Target date should be *after* the start date
         if self.start_date and self.target_date and self.start_date > self.target_date:
-            raise ValidationError({
-                'target_date': _('Target date must be after start date')
-            })
+            raise ValidationError(
+                {'target_date': _('Target date must be after start date')}
+            )
 
     def report_context(self) -> BuildReportContext:
         """Generate custom report context data."""
@@ -863,9 +873,9 @@ class Build(
             location = self.destination or self.part.get_default_location()
 
         if self.part.has_trackable_parts and not serials:
-            raise ValidationError({
-                'serials': _('Serial numbers must be provided for trackable parts')
-            })
+            raise ValidationError(
+                {'serials': _('Serial numbers must be provided for trackable parts')}
+            )
 
         outputs = []
 
@@ -1055,9 +1065,9 @@ class Build(
             raise ValidationError({'quantity': _('Quantity must be greater than zero')})
 
         if quantity > output.quantity:
-            raise ValidationError({
-                'quantity': _('Quantity cannot be greater than the output quantity')
-            })
+            raise ValidationError(
+                {'quantity': _('Quantity cannot be greater than the output quantity')}
+            )
 
         user = kwargs.get('user')
         notes = kwargs.get('notes', '')
@@ -1116,10 +1126,7 @@ class Build(
             raise ValidationError(_('Build output cannot be disassembled'))
 
         completed_outputs = self.build_outputs.filter(is_building=False).exclude(
-            status__in=[
-                StockStatus.REJECTED.value,
-                StockStatus.DISASSEMBLED.value,
-            ]
+            status__in=[StockStatus.REJECTED.value, StockStatus.DISASSEMBLED.value]
         )
 
         if completed_outputs.count() != 1 or completed_outputs.first().pk != output.pk:
@@ -1177,6 +1184,283 @@ class Build(
             notes=notes,
             deltas={'buildorder': self.pk},
         )
+
+    def match_build_line(self, sub_part, lines=None):
+        """Return the BuildLine against which stock of the given part was issued.
+
+        Consumed stock records only link to the Build Order, so the line is
+        recovered from the part: an exact match first, then variants and substitutes.
+        """
+        if lines is None:
+            lines = list(self.build_lines.select_related('bom_item', 'custom_part'))
+
+        for line in lines:
+            if line.part_id == sub_part.pk:
+                return line
+
+        for line in lines:
+            if line.bom_item_id:
+                if sub_part in line.bom_item.get_valid_parts_for_allocation():
+                    return line
+            elif (
+                line.allow_variants
+                and line.custom_part.get_descendants(include_self=False)
+                .filter(pk=sub_part.pk)
+                .exists()
+            ):
+                return line
+
+        return None
+
+    def validate_split_build_output(self, output):
+        """Validate that a completed output can be moved into a new build order."""
+        if self.status != BuildStatus.COMPLETE.value:
+            raise ValidationError(_('Only completed build orders can be split'))
+
+        if output.build_id != self.pk or output.is_building:
+            raise ValidationError(
+                _('Selected stock item is not a completed output of this build order')
+            )
+
+        if output.quantity < 1 or output.quantity != int(output.quantity):
+            raise ValidationError(_('Build output quantity must be a whole number'))
+
+        if self.quantity <= output.quantity:
+            raise ValidationError(
+                _('The build order must keep at least one unit after the split')
+            )
+
+    @transaction.atomic
+    def split_build_output(
+        self,
+        output,
+        reference,
+        lines,
+        consumed=None,
+        allocations=None,
+        user=None,
+        notes='',
+    ):
+        """Move one completed output, and the stock used to make it, into a new build order.
+
+        Arguments:
+            output: The completed build output to move
+            reference: Reference for the new build order
+            lines: {BuildLine pk: required quantity moved to the new build order}
+            consumed: {StockItem pk: quantity of consumed stock moved to the new build order}
+            allocations: {BuildItem pk: allocated quantity moved to the new build order}
+            user: The user performing the split
+            notes: Notes recorded against the moved stock items
+
+        Components installed in the output (and consumed by this build) move with it.
+        Returns the new build order.
+        """
+        consumed = dict(consumed or {})
+        allocations = dict(allocations or {})
+
+        self.validate_split_build_output(output)
+        validate_build_order_reference(reference)
+
+        if Build.objects.filter(reference=reference).exists():
+            raise ValidationError({'reference': _('Reference must be unique')})
+
+        source_lines = list(self.build_lines.select_related('bom_item', 'custom_part'))
+
+        for line in source_lines:
+            if not 0 <= lines.get(line.pk, 0) <= line.quantity:
+                raise ValidationError(
+                    _(
+                        'Required quantity for {part} must be between 0 and {qty}'
+                    ).format(
+                        part=line.part.full_name,
+                        qty=InvenTree.helpers.normalize(line.quantity),
+                    )
+                )
+
+        consumed_items = list(
+            stock.models.StockItem.objects.select_for_update()
+            .filter(consumed_by=self, belongs_to__isnull=True, pk__in=consumed.keys())
+            .select_related('part')
+        )
+
+        for item in consumed_items:
+            q = consumed[item.pk]
+            if not 0 <= q <= item.quantity or (item.serialized and q not in (0, 1)):
+                raise ValidationError(
+                    _('Invalid consumed quantity for stock item {item}').format(
+                        item=item
+                    )
+                )
+
+        movable_allocations = list(
+            BuildItem.objects.filter(build_line__build=self)
+            .filter(Q(install_into__isnull=True) | Q(install_into=output))
+            .select_related('stock_item')
+        )
+
+        for alloc in movable_allocations:
+            # Stock allocated to the moved output always follows it
+            if alloc.install_into_id == output.pk:
+                allocations[alloc.pk] = alloc.quantity
+
+            if not 0 <= allocations.get(alloc.pk, 0) <= alloc.quantity:
+                raise ValidationError(
+                    _('Invalid allocated quantity for stock item {item}').format(
+                        item=alloc.stock_item
+                    )
+                )
+
+        quantity = int(output.quantity)
+        split_note = _('Output {output} split from {reference}').format(
+            output=output, reference=self.reference
+        )
+
+        new_build = Build.objects.create(
+            part=self.part,
+            reference=reference,
+            title=self.title,
+            parent=self.parent,
+            sales_order=self.sales_order,
+            take_from=self.take_from,
+            external=self.external,
+            destination=self.destination,
+            quantity=quantity,
+            completed=quantity,
+            status=BuildStatus.COMPLETE.value,
+            batch=self.batch,
+            start_date=self.start_date,
+            target_date=self.target_date,
+            completion_date=self.completion_date,
+            completed_by=self.completed_by,
+            issued_by=self.issued_by,
+            responsible=self.responsible,
+            link=self.link,
+            priority=self.priority,
+            project_code=self.project_code,
+            notes='\n\n'.join(filter(None, [split_note, notes])),
+        )
+
+        # Mirror the requirements of this build order. BOM lines were created
+        # automatically; those which this build order had removed are dropped.
+        auto_lines = {line.bom_item_id: line for line in new_build.build_lines.all()}
+        new_lines = {}
+
+        for line in source_lines:
+            new_line = auto_lines.pop(line.bom_item_id, None) or BuildLine(
+                build=new_build,
+                bom_item=line.bom_item,
+                custom_part=line.custom_part,
+                custom_allow_variants=line.custom_allow_variants,
+                custom_optional=line.custom_optional,
+                custom_consumable=line.custom_consumable,
+            )
+            new_line.quantity = lines.get(line.pk, 0)
+            new_line.consumed = 0
+            new_lines[line.pk] = new_line
+
+        BuildLine.objects.filter(
+            pk__in=[line.pk for line in auto_lines.values()]
+        ).delete()
+
+        for new_line in new_lines.values():
+            new_line.save()
+
+        # Saving the quantity rebuilds BOM line quantities from the BOM;
+        # the line quantities are restored from source_lines below.
+        self.quantity -= quantity
+        self.completed = max(0, self.completed - quantity)
+        self.notes = '\n\n'.join(
+            filter(
+                None,
+                [
+                    self.notes,
+                    _('Output {output} moved to {reference}').format(
+                        output=output, reference=reference
+                    ),
+                ],
+            )
+        )
+        self.save()
+
+        moved_consumed = {line.pk: decimal.Decimal(0) for line in source_lines}
+        deltas = {'buildorder': new_build.pk}
+
+        def record_consumed(item, q):
+            if line := self.match_build_line(item.part, source_lines):
+                moved_consumed[line.pk] += q
+
+        output.build = new_build
+        output.save(add_note=False)
+        output.add_tracking_entry(
+            StockHistoryCode.BUILD_ORDER_SPLIT, user, notes=notes, deltas=deltas
+        )
+
+        for item in output.installed_parts.filter(consumed_by=self).select_related(
+            'part'
+        ):
+            item.consumed_by = new_build
+            item.save(add_note=False)
+            item.add_tracking_entry(
+                StockHistoryCode.BUILD_ORDER_SPLIT, user, notes=notes, deltas=deltas
+            )
+            record_consumed(item, item.quantity)
+
+        for item in consumed_items:
+            q = consumed[item.pk]
+
+            if q <= 0:
+                continue
+
+            if q < item.quantity:
+                item = item.splitStock(q, None, user, notes=notes)
+
+            item.consumed_by = new_build
+            item.save(add_note=False)
+            item.add_tracking_entry(
+                StockHistoryCode.BUILD_ORDER_SPLIT,
+                user,
+                notes=notes,
+                deltas={**deltas, 'quantity': float(q)},
+            )
+            record_consumed(item, q)
+
+        for alloc in movable_allocations:
+            q = allocations.get(alloc.pk, 0)
+            new_line = new_lines[alloc.build_line_id]
+
+            if q <= 0:
+                continue
+
+            # Use queryset updates: BuildItem.save() re-validates against live stock
+            if q >= alloc.quantity:
+                BuildItem.objects.filter(pk=alloc.pk).update(build_line=new_line)
+            else:
+                BuildItem.objects.filter(pk=alloc.pk).update(
+                    quantity=alloc.quantity - q
+                )
+                BuildItem.objects.bulk_create(
+                    [
+                        BuildItem(
+                            build_line=new_line,
+                            stock_item=alloc.stock_item,
+                            quantity=q,
+                            install_into=alloc.install_into,
+                        )
+                    ]
+                )
+
+        for line in source_lines:
+            moved = moved_consumed[line.pk]
+            new_line = new_lines[line.pk]
+
+            new_line.consumed = moved
+            new_line.save()
+
+            line.quantity -= new_line.quantity
+            line.consumed = max(0, line.consumed - moved)
+            line.save()
+
+        return new_build
 
     @transaction.atomic
     def complete_build_output(
@@ -1237,14 +1521,18 @@ class Build(
                 )
 
             if quantity <= 0:
-                raise ValidationError({
-                    'quantity': _('Quantity must be greater than zero')
-                })
+                raise ValidationError(
+                    {'quantity': _('Quantity must be greater than zero')}
+                )
 
             if quantity > output.quantity:
-                raise ValidationError({
-                    'quantity': _('Quantity cannot be greater than the output quantity')
-                })
+                raise ValidationError(
+                    {
+                        'quantity': _(
+                            'Quantity cannot be greater than the output quantity'
+                        )
+                    }
+                )
 
             # Split the stock item
             output = output.splitStock(quantity, user=user, allow_production=True)
@@ -1347,9 +1635,7 @@ class Build(
                     allow_variants=True, allow_substitutes=substitutes
                 )
                 if bom_item
-                else line_item.part.get_descendants(
-                    include_self=True
-                )
+                else line_item.part.get_descendants(include_self=True)
                 if line_item.allow_variants
                 else [line_item.part]
             )
@@ -1487,9 +1773,7 @@ class Build(
                     allow_substitutes=substitutes,
                 )
                 if bom_item
-                else line_item.part.get_descendants(
-                    include_self=True
-                )
+                else line_item.part.get_descendants(include_self=True)
                 if line_item.allow_variants
                 else [line_item.part]
             )
@@ -1882,18 +2166,15 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
     )
 
     custom_allow_variants = models.BooleanField(
-        default=False,
-        help_text=_('Allow stock from part variants to be allocated'),
+        default=False, help_text=_('Allow stock from part variants to be allocated')
     )
 
     custom_optional = models.BooleanField(
-        default=False,
-        help_text=_('This build-specific requirement is optional'),
+        default=False, help_text=_('This build-specific requirement is optional')
     )
 
     custom_consumable = models.BooleanField(
-        default=False,
-        help_text=_('This build-specific requirement is consumable'),
+        default=False, help_text=_('This build-specific requirement is consumable')
     )
 
     consumed = models.DecimalField(
@@ -2111,9 +2392,9 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
         # BomItem did not exist or could not be validated.
         # Search for a new one
         if not valid:
-            raise ValidationError({
-                'stock_item': _('Selected stock item does not match BOM line')
-            })
+            raise ValidationError(
+                {'stock_item': _('Selected stock item does not match BOM line')}
+            )
 
     def check_allocated_quantity(self, raise_error: bool = False):
         """Ensure that the allocated quantity is valid.
@@ -2136,9 +2417,9 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
         # Quantity must be 1 for serialized stock
         if self.stock_item.serialized and self.quantity != 1:
             self.quantity = 1
-            raise ValidationError({
-                'quantity': _('Quantity must be 1 for serialized stock')
-            })
+            raise ValidationError(
+                {'quantity': _('Quantity must be 1 for serialized stock')}
+            )
 
         # Allocated quantity cannot exceed available stock quantity
         if self.quantity > self.stock_item.quantity:
