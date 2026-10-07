@@ -34,7 +34,9 @@ from build.filters import annotate_allocated_quantity, annotate_required_quantit
 from build.status_codes import BuildStatus, BuildStatusGroups
 from build.validators import (
     generate_next_build_reference,
+    generate_next_quick_build_reference,
     validate_build_order_reference,
+    validate_quick_build_reference,
 )
 from common.models import ProjectCode
 from common.settings import (
@@ -2557,4 +2559,449 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
         verbose_name=_('Install into'),
         help_text=_('Destination stock item'),
         limit_choices_to={'is_building': True},
+    )
+
+
+class QuickBuild(
+    InvenTree.models.ReferenceIndexingMixin,
+    InvenTree.models.MetadataMixin,
+    InvenTree.models.InvenTreeModel,
+):
+    """A QuickBuild produces one stock item of an assembly in a single step.
+
+    Unlike a Build Order there is no allocation or output lifecycle, and the
+    quantity may be fractional (e.g. 1.8 m of spliced rope). Component stock is
+    split off and linked via StockItem.consumed_by_quick_build, so that the
+    output can later be disassembled and the exact stock records recovered.
+
+    Attributes:
+        reference: Unique reference (e.g. QB-0001)
+        part: The assembly which was produced
+        quantity: Quantity produced (may be fractional)
+        location: Location where the output was placed
+        creation_date: Date and time of the quick build
+        created_by: User who performed the quick build
+        notes: Optional notes
+        disassembled: Set when the output has been disassembled
+        disassembled_date: Date and time of the disassembly
+    """
+
+    REFERENCE_PATTERN_SETTING = 'QUICKBUILD_REFERENCE_PATTERN'
+
+    class Meta:
+        """Metaclass options for the QuickBuild model."""
+
+        verbose_name = _('Quick Build')
+        verbose_name_plural = _('Quick Builds')
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with the QuickBuild model."""
+        return reverse('api-quick-build-list')
+
+    @classmethod
+    def api_defaults(cls, request=None):
+        """Return default values for this model when issuing an API OPTIONS request."""
+        return {'reference': generate_next_quick_build_reference()}
+
+    def save(self, *args, **kwargs):
+        """Custom save method for the QuickBuild model."""
+        self.reference_int = self.validate_reference_field(self.reference)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        """String representation of a QuickBuild."""
+        return self.reference
+
+    def get_absolute_url(self):
+        """Return the web URL associated with this QuickBuild."""
+        return InvenTree.helpers.pui_url('/manufacturing/index/quick-builds')
+
+    reference = models.CharField(
+        unique=True,
+        max_length=64,
+        blank=False,
+        help_text=_('Quick Build Reference'),
+        verbose_name=_('Reference'),
+        default=generate_next_quick_build_reference,
+        validators=[validate_quick_build_reference],
+    )
+
+    part = models.ForeignKey(
+        'part.Part',
+        verbose_name=_('Part'),
+        on_delete=models.CASCADE,
+        related_name='quick_builds',
+        help_text=_('Assembly which was produced'),
+    )
+
+    quantity = models.DecimalField(
+        verbose_name=_('Quantity'),
+        max_digits=15,
+        decimal_places=5,
+        validators=[MinValueValidator(0)],
+        help_text=_('Quantity produced'),
+    )
+
+    location = models.ForeignKey(
+        'stock.StockLocation',
+        verbose_name=_('Location'),
+        on_delete=models.SET_NULL,
+        related_name='quick_builds',
+        blank=True,
+        null=True,
+        help_text=_('Location where the output was placed'),
+    )
+
+    creation_date = models.DateTimeField(
+        auto_now_add=True, verbose_name=_('Creation Date')
+    )
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        verbose_name=_('Created By'),
+        related_name='quick_builds',
+    )
+
+    notes = models.CharField(max_length=250, blank=True, verbose_name=_('Notes'))
+
+    disassembled = models.BooleanField(default=False, verbose_name=_('Disassembled'))
+
+    disassembled_date = models.DateTimeField(
+        blank=True, null=True, verbose_name=_('Disassembled Date')
+    )
+
+    @property
+    def output(self):
+        """Return the stock item produced by this quick build."""
+        return self.outputs.first()
+
+    @staticmethod
+    def get_bom_lines(assembly):
+        """Return the BOM items which are consumed by a quick build of the assembly.
+
+        Consumable and virtual lines are not tracked against stock.
+        """
+        return [
+            bom_item
+            for bom_item in assembly.get_bom_items(include_virtual=False)
+            if not bom_item.consumable
+        ]
+
+    @staticmethod
+    def get_required_quantity(bom_item, quantity) -> decimal.Decimal:
+        """Return the component quantity required to quick build the given quantity.
+
+        This includes the BOM setup quantity (e.g. rope lost in the splices).
+        """
+        required = bom_item.get_required_quantity(decimal.Decimal(quantity))
+        return decimal.Decimal(str(required)).quantize(decimal.Decimal('0.00001'))
+
+    @classmethod
+    def check_quick_build(cls, assembly, quantity, items: dict):
+        """Check a quick build, and return the consumption plan and any line errors.
+
+        Arguments:
+            assembly: The assembly part to produce
+            quantity: The quantity to produce
+            items: Mapping of BomItem pk to the source StockItem (or None)
+
+        Returns:
+            Tuple of (plan, errors), where plan is a list of
+            (bom_item, stock_item, required_quantity) tuples and errors
+            maps each invalid BomItem to an error message
+
+        Raises:
+            ValidationError: If the part or quantity is invalid
+        """
+        if not assembly.quick_build or not assembly.assembly:
+            raise ValidationError({'part': _('Part is not enabled for quick builds')})
+
+        if not assembly.active:
+            raise ValidationError({'part': _('Part is not active')})
+
+        if quantity is None or quantity <= 0:
+            raise ValidationError({'quantity': _('Quantity must be greater than zero')})
+
+        plan = []
+        errors = {}
+
+        for bom_item in cls.get_bom_lines(assembly):
+            stock_item = items.get(bom_item.pk)
+
+            if stock_item is None:
+                if not bom_item.optional:
+                    errors[bom_item] = _('Source stock is required')
+                continue
+
+            required = cls.get_required_quantity(bom_item, quantity)
+
+            if required <= 0:
+                continue
+
+            if stock_item.part not in bom_item.get_valid_parts_for_allocation():
+                errors[bom_item] = _('Stock item does not match BOM part')
+            elif stock_item.part.trackable or stock_item.serialized:
+                errors[bom_item] = _(
+                    'Trackable components are not supported by quick builds'
+                )
+            elif not stock_item.in_stock:
+                errors[bom_item] = _('Stock item is not available')
+            elif stock_item.unallocated_quantity() < required:
+                errors[bom_item] = _(
+                    'Insufficient stock: {required} required, {available} available'
+                ).format(
+                    required=InvenTree.helpers.normalize(required),
+                    available=InvenTree.helpers.normalize(
+                        stock_item.unallocated_quantity()
+                    ),
+                )
+            else:
+                plan.append((bom_item, stock_item, required))
+
+        return plan, errors
+
+    @classmethod
+    def validate_quick_build(cls, assembly, quantity, items: dict):
+        """Validate a quick build, and return the component consumption plan.
+
+        Raises:
+            ValidationError: If the quick build cannot be performed
+        """
+        plan, errors = cls.check_quick_build(assembly, quantity, items)
+
+        if errors:
+            raise ValidationError({
+                'items': [
+                    f'{bom_item.sub_part.full_name}: {message}'
+                    for bom_item, message in errors.items()
+                ]
+            })
+
+        return plan
+
+    @classmethod
+    @transaction.atomic
+    def create_quick_build(
+        cls,
+        assembly,
+        quantity,
+        items: dict,
+        location=None,
+        user=None,
+        notes: str = '',
+        batch: str = '',
+    ) -> 'QuickBuild':
+        """Consume component stock and create the output stock item in one step.
+
+        Arguments:
+            assembly: The assembly part to produce
+            quantity: The quantity to produce (may be fractional)
+            items: Mapping of BomItem pk to the source StockItem
+            location: Destination location for the output
+            user: The user performing the quick build
+            notes: Optional notes
+            batch: Optional batch code for the output
+        """
+        # Lock the source stock items so concurrent operations cannot consume them
+        source_ids = [item.pk for item in items.values() if item is not None]
+        locked = {
+            item.pk: item
+            for item in stock.models.StockItem.objects.select_for_update().filter(
+                pk__in=source_ids
+            )
+        }
+        items = {
+            bom_pk: locked.get(item.pk) if item is not None else None
+            for bom_pk, item in items.items()
+        }
+
+        plan = cls.validate_quick_build(assembly, quantity, items)
+
+        if location is None:
+            location = assembly.get_default_location()
+
+        quick_build = cls.objects.create(
+            part=assembly,
+            quantity=quantity,
+            location=location,
+            created_by=user,
+            notes=notes,
+        )
+
+        for bom_item, source, required in plan:
+            # Re-read the source, as an earlier line may have drawn from it already
+            source.refresh_from_db()
+
+            if source.unallocated_quantity() < required:
+                raise ValidationError({
+                    'items': [
+                        f'{bom_item.sub_part.full_name}: ' + _('Insufficient stock')
+                    ]
+                })
+
+            consumed = source.splitStock(required, None, user, notes=notes)
+
+            consumed.consumed_by_quick_build = quick_build
+            consumed.location = None
+            consumed.save(add_note=False)
+
+            consumed.add_tracking_entry(
+                StockHistoryCode.QUICK_BUILD_CONSUMED,
+                user,
+                notes=notes,
+                deltas={'quickbuild': quick_build.pk, 'quantity': float(required)},
+            )
+
+            QuickBuildLine.objects.create(
+                quick_build=quick_build,
+                bom_item=bom_item,
+                part=consumed.part,
+                quantity=required,
+                loss=min(decimal.Decimal(bom_item.setup_quantity), required),
+            )
+
+        output = stock.models.StockItem(
+            part=assembly,
+            quantity=quantity,
+            location=location,
+            quick_build=quick_build,
+            batch=batch,
+        )
+        output.save(add_note=False)
+
+        output.add_tracking_entry(
+            StockHistoryCode.QUICK_BUILD_OUTPUT_CREATED,
+            user,
+            notes=notes,
+            deltas={
+                'quickbuild': quick_build.pk,
+                'quantity': float(quantity),
+                'location': location.pk if location else None,
+            },
+            location=location,
+        )
+
+        return quick_build
+
+    def validate_disassemble(self):
+        """Validate that the output of this quick build can be disassembled."""
+        if self.disassembled:
+            raise ValidationError(_('Quick build has already been disassembled'))
+
+        output = self.output
+
+        if output is None:
+            raise ValidationError(_('Quick build output no longer exists'))
+
+        if not output.in_stock:
+            raise ValidationError(_('Quick build output is not in stock'))
+
+        if output.quantity != self.quantity:
+            raise ValidationError(
+                _('Quick build output quantity has changed since it was built')
+            )
+
+        if output.is_allocated():
+            raise ValidationError(_('Quick build output is allocated to an order'))
+
+    @transaction.atomic
+    def disassemble(self, items, user=None, notes: str = ''):
+        """Disassemble the output, returning all consumed stock in full.
+
+        Arguments:
+            items: List of dicts with 'stock_item', 'location' and 'status' for each consumed record
+            user: The user performing the disassembly
+            notes: Optional notes
+        """
+        self.validate_disassemble()
+
+        dispositions = {item['stock_item'].pk: item for item in items}
+
+        consumed_items = stock.models.StockItem.objects.select_for_update().filter(
+            consumed_by_quick_build=self
+        )
+
+        for item in consumed_items:
+            disposition = dispositions[item.pk]
+            item.return_to_stock(
+                disposition['location'],
+                user,
+                merge=False,
+                notes=notes,
+                status=disposition['status'],
+                tracking_code=StockHistoryCode.DISASSEMBLY_RECOVERED,
+            )
+
+        output = self.output
+        output.status = StockStatus.DISASSEMBLED.value
+        output.save(add_note=False)
+        output.add_tracking_entry(
+            StockHistoryCode.QUICK_BUILD_DISASSEMBLED,
+            user,
+            notes=notes,
+            deltas={'quickbuild': self.pk},
+        )
+
+        self.disassembled = True
+        self.disassembled_date = InvenTree.helpers.current_time()
+        self.save()
+
+
+class QuickBuildLine(InvenTree.models.InvenTreeModel):
+    """Record of a component consumed by a QuickBuild.
+
+    Attributes:
+        quick_build: The QuickBuild which consumed the component
+        bom_item: The BOM line which defined the requirement
+        part: The part which was actually consumed (may be a variant or substitute)
+        quantity: Total quantity consumed, including the loss
+        loss: Portion of the quantity which was the BOM setup quantity (e.g. splices)
+    """
+
+    class Meta:
+        """Metaclass options for the QuickBuildLine model."""
+
+        verbose_name = _('Quick Build Line')
+
+    quick_build = models.ForeignKey(
+        QuickBuild,
+        on_delete=models.CASCADE,
+        related_name='lines',
+        verbose_name=_('Quick Build'),
+    )
+
+    bom_item = models.ForeignKey(
+        'part.BomItem',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='quick_build_lines',
+        verbose_name=_('BOM Item'),
+    )
+
+    part = models.ForeignKey(
+        'part.Part',
+        on_delete=models.CASCADE,
+        related_name='quick_build_lines',
+        verbose_name=_('Part'),
+    )
+
+    quantity = models.DecimalField(
+        verbose_name=_('Quantity'),
+        max_digits=15,
+        decimal_places=5,
+        validators=[MinValueValidator(0)],
+    )
+
+    loss = models.DecimalField(
+        verbose_name=_('Loss'),
+        max_digits=15,
+        decimal_places=5,
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text=_('Setup quantity lost in production (e.g. splices)'),
     )

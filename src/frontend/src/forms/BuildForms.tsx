@@ -876,6 +876,13 @@ function DisassemblyOutputOption({
           </Text>
         </Paper>
       )}
+      {instance.quick_build_reference && (
+        <Paper withBorder radius='sm' px='xs' py={4}>
+          <Text size='xs'>
+            {t`Quick Build`}: {instance.quick_build_reference}
+          </Text>
+        </Paper>
+      )}
     </Stack>
   );
 }

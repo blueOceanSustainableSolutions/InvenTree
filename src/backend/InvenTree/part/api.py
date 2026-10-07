@@ -909,6 +909,8 @@ class PartFilter(FilterSet):
 
     assembly = rest_filters.BooleanFilter()
 
+    quick_build = rest_filters.BooleanFilter()
+
     component = rest_filters.BooleanFilter()
 
     trackable = rest_filters.BooleanFilter()

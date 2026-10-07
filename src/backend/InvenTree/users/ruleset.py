@@ -107,6 +107,8 @@ def get_ruleset_models() -> dict:
             'build_build',
             'build_builditem',
             'build_buildline',
+            'build_quickbuild',
+            'build_quickbuildline',
             'stock_stockitem',
             'stock_stocklocation',
         ],

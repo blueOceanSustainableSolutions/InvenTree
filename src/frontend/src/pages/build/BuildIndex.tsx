@@ -3,6 +3,7 @@ import { Stack } from '@mantine/core';
 import {
   IconBoxPadding,
   IconCalendar,
+  IconBolt,
   IconListDetails,
   IconTable,
   IconTools
@@ -26,6 +27,7 @@ import { useUserState } from '../../states/UserState';
 import BuildOrderFilters from '../../tables/build/BuildOrderFilters';
 import BuildOrderParametricTable from '../../tables/build/BuildOrderParametricTable';
 import { BuildOrderTable } from '../../tables/build/BuildOrderTable';
+import { QuickBuildTable } from '../../tables/build/QuickBuildTable';
 import { StockItemTable } from '../../tables/stock/StockItemTable';
 
 function BuildOrderCalendar() {
@@ -111,6 +113,12 @@ export default function BuildIndex() {
           }
         ]
       }),
+      {
+        name: 'quick-builds',
+        label: t`Quick Builds`,
+        icon: <IconBolt />,
+        content: <QuickBuildTable />
+      },
       {
         name: 'disassembly',
         label: t`Disassembly`,

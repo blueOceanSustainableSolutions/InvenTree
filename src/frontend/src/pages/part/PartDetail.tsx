@@ -13,6 +13,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
+  IconBolt,
   IconBookmarks,
   IconBuilding,
   IconChecklist,
@@ -95,6 +96,7 @@ import { useUserState } from '../../states/UserState';
 import { BomTable } from '../../tables/bom/BomTable';
 import { UsedInTable } from '../../tables/bom/UsedInTable';
 import { BuildOrderTable } from '../../tables/build/BuildOrderTable';
+import { QuickBuildTable } from '../../tables/build/QuickBuildTable';
 import { ParameterTable } from '../../tables/general/ParameterTable';
 import PartPurchaseOrdersTable from '../../tables/part/PartPurchaseOrdersTable';
 import PartTestResultTable from '../../tables/part/PartTestResultTable';
@@ -500,6 +502,12 @@ export default function PartDetail() {
       },
       {
         type: 'boolean',
+        name: 'quick_build',
+        label: t`Quick Build`,
+        hidden: !part.quick_build
+      },
+      {
+        type: 'boolean',
         name: 'component',
         label: t`Component Part`
       },
@@ -781,6 +789,13 @@ export default function PartDetail() {
         icon: <IconTools />,
         hidden: !part.assembly || !user.hasViewRole(UserRoles.build),
         content: part.pk ? <BuildOrderTable partId={part.pk} /> : <Skeleton />
+      },
+      {
+        name: 'quick_builds',
+        label: t`Quick Builds`,
+        icon: <IconBolt />,
+        hidden: !part.quick_build || !user.hasViewRole(UserRoles.build),
+        content: part.pk ? <QuickBuildTable part={part} /> : <Skeleton />
       },
       {
         name: 'transfer_orders',

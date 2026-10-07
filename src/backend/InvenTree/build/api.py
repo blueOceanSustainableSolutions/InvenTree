@@ -23,7 +23,7 @@ import common.serializers
 import part.models as part_models
 import stock.models as stock_models
 import stock.serializers
-from build.models import Build, BuildItem, BuildLine
+from build.models import Build, BuildItem, BuildLine, QuickBuild
 from build.status_codes import BuildStatus, BuildStatusGroups
 from data_exporter.mixins import DataExportViewMixin
 from generic.states.api import StatusView
@@ -37,8 +37,10 @@ from InvenTree.filters import (
 from InvenTree.helpers import str2bool
 from InvenTree.mixins import (
     CreateAPI,
+    ListAPI,
     ListCreateAPI,
     OutputOptionsMixin,
+    RetrieveAPI,
     RetrieveUpdateDestroyAPI,
     SerializerContextMixin,
 )
@@ -843,8 +845,38 @@ class BuildOutputScrap(BuildOrderContextMixin, CreateAPI):
         return Response(response, status=response['http_status'])
 
 
+def quick_build_disassembly_preview(output):
+    """Return the component disposition rows for a quick build output.
+
+    Every consumed stock record is recovered in full, including the loss
+    (e.g. the rope in the splices is recovered when the splices are undone).
+    """
+    quick_build = output.quick_build
+    quick_build.validate_disassemble()
+    items = []
+
+    for item in stock.models.StockItem.objects.filter(
+        consumed_by_quick_build=quick_build
+    ).select_related('part'):
+        location = output.location or item.part.get_default_location()
+        items.append({
+            'stock_item': item.pk,
+            'part': item.part_id,
+            'part_name': item.part.name,
+            'part_ipn': item.part.IPN,
+            'quantity': float(item.quantity),
+            'location': location.pk if location else None,
+            'status': StockStatus.QUARANTINED.value,
+        })
+
+    return {'output': output.pk, 'items': items}
+
+
 def disassembly_preview(output):
     """Return the component disposition rows for a build output."""
+    if output.build is None and output.quick_build is not None:
+        return quick_build_disassembly_preview(output)
+
     build = output.build
     build.validate_disassemble_build_output(output)
     items = []
@@ -939,13 +971,20 @@ class BuildOutputDisassembleFromStock(CreateAPI):
         output = data['output']
 
         if preview:
-            if output.build is None:
+            if output.build is None and output.quick_build is None:
                 raise ValidationError({'output': _('Stock item is not a build output')})
             return Response(disassembly_preview(output))
 
-        output.build.disassemble_build_output(
-            output, data['items'], self.request.user, data.get('notes', '')
-        )
+        if output.build is None:
+            output.quick_build.disassemble(
+                data['items'], self.request.user, data.get('notes', '')
+            )
+        else:
+            output.build.disassemble_build_output(
+                output, data['items'], self.request.user, data.get('notes', '')
+            )
+
+        output.refresh_from_db()
 
         return Response(
             stock.serializers.StockItemSerializer(
@@ -1341,7 +1380,137 @@ class BuildItemList(
     ]
 
 
+class QuickBuildFilter(FilterSet):
+    """Custom filterset for the QuickBuildList API endpoint."""
+
+    class Meta:
+        """Metaclass options."""
+
+        model = QuickBuild
+        fields = ['part', 'location', 'created_by', 'disassembled']
+
+
+class QuickBuildMixin:
+    """Mixin class for QuickBuild API endpoints."""
+
+    queryset = QuickBuild.objects.all().prefetch_related('outputs')
+    serializer_class = build.serializers.QuickBuildSerializer
+
+
+class QuickBuildList(DataExportViewMixin, QuickBuildMixin, OutputOptionsMixin, ListAPI):
+    """API endpoint for the list of QuickBuild records."""
+
+    filterset_class = QuickBuildFilter
+    filter_backends = SEARCH_ORDER_FILTER
+    ordering_fields = ['reference', 'part', 'quantity', 'creation_date', 'disassembled']
+    ordering_field_aliases = {
+        'reference': ['reference_int', 'reference'],
+        'part': ['part__name'],
+    }
+    ordering = '-reference'
+    search_fields = ['reference', 'part__name', 'part__IPN', 'notes']
+
+
+class QuickBuildDetail(QuickBuildMixin, RetrieveAPI):
+    """API endpoint for the detail view of a QuickBuild record."""
+
+
+def quick_build_requirements(assembly, quantity):
+    """Return the component requirements for a quick build, with suggested source stock."""
+    items = []
+
+    for bom_item in QuickBuild.get_bom_lines(assembly):
+        required = QuickBuild.get_required_quantity(bom_item, quantity)
+        suggestion = None
+
+        # Suggest the smallest stock item which covers the requirement, so that
+        # remnants (e.g. the end of a rope reel) are used up first
+        candidates = (
+            stock_models.StockItem.objects
+            .filter(stock_models.StockItem.IN_STOCK_FILTER)
+            .filter(bom_item.get_stock_filter())
+            .filter(quantity__gte=required)
+            .order_by('quantity', 'pk')
+        )
+
+        for candidate in candidates[:25]:
+            if candidate.unallocated_quantity() >= required:
+                suggestion = candidate
+                break
+
+        items.append({
+            'bom_item': bom_item.pk,
+            'part': bom_item.sub_part_id,
+            'part_name': bom_item.sub_part.full_name,
+            'part_ipn': bom_item.sub_part.IPN,
+            'units': bom_item.sub_part.units,
+            'quantity_per': float(bom_item.quantity),
+            'setup_quantity': float(bom_item.setup_quantity),
+            'required': float(required),
+            'optional': bom_item.optional,
+            'stock_item': suggestion.pk if suggestion else None,
+        })
+
+    return {'part': assembly.pk, 'quantity': float(quantity), 'items': items}
+
+
+class QuickBuildRequirements(CreateAPI):
+    """Return the component requirements for a quick build, without changing anything."""
+
+    queryset = QuickBuild.objects.none()
+    serializer_class = build.serializers.QuickBuildRequirementsSerializer
+
+    def post(self, *args, **kwargs):
+        """Calculate the requirements for the requested part and quantity."""
+        serializer = self.get_serializer(data=self.request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        return Response(quick_build_requirements(data['part'], data['quantity']))
+
+
+class QuickBuildCreate(CreateAPI):
+    """Perform a quick build in a single step."""
+
+    queryset = QuickBuild.objects.none()
+    serializer_class = build.serializers.QuickBuildCreateSerializer
+
+    @extend_schema(responses={201: build.serializers.QuickBuildSerializer})
+    def post(self, *args, **kwargs):
+        """Consume the component stock and create the output stock item."""
+        serializer = self.get_serializer(data=self.request.data)
+        serializer.is_valid(raise_exception=True)
+        quick_build = serializer.save()
+
+        return Response(
+            build.serializers.QuickBuildSerializer(
+                quick_build, context=self.get_serializer_context()
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
 build_api_urls = [
+    # Quick builds
+    path(
+        'quick/',
+        include([
+            path(
+                'requirements/',
+                QuickBuildRequirements.as_view(),
+                name='api-quick-build-requirements',
+            ),
+            path('create/', QuickBuildCreate.as_view(), name='api-quick-build-create'),
+            path(
+                '<int:pk>/',
+                include([
+                    meta_path(QuickBuild),
+                    path('', QuickBuildDetail.as_view(), name='api-quick-build-detail'),
+                ]),
+            ),
+            path('', QuickBuildList.as_view(), name='api-quick-build-list'),
+        ]),
+    ),
     path(
         'disassemble/',
         BuildOutputDisassembleFromStock.as_view(),

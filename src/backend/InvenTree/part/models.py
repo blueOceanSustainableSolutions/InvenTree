@@ -1077,6 +1077,17 @@ class Part(
         # Check the 'revision' and 'revision_of' fields
         self.validate_revision()
 
+        if self.quick_build:
+            if not self.assembly:
+                raise ValidationError({
+                    'quick_build': _('Only assembly parts can be quick built')
+                })
+
+            if self.trackable:
+                raise ValidationError({
+                    'quick_build': _('Trackable parts cannot be quick built')
+                })
+
         super().clean()
 
         # Strip IPN field
@@ -1260,6 +1271,14 @@ class Part(
         default=part_settings.part_assembly_default,
         verbose_name=_('Assembly'),
         help_text=_('Can this part be built from other parts?'),
+    )
+
+    quick_build = models.BooleanField(
+        default=False,
+        verbose_name=_('Quick Build'),
+        help_text=_(
+            'Can this assembly be produced by a quick build, without a build order?'
+        ),
     )
 
     component = models.BooleanField(

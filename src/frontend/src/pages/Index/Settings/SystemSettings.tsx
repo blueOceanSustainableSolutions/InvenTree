@@ -315,6 +315,7 @@ export default function SystemSettings() {
               heading={t`Build Orders`}
               keys={[
                 'BUILDORDER_REFERENCE_PATTERN',
+                'QUICKBUILD_REFERENCE_PATTERN',
                 'BUILDORDER_REQUIRE_RESPONSIBLE',
                 'BUILDORDER_REQUIRE_ACTIVE_PART',
                 'BUILDORDER_REQUIRE_LOCKED_PART',

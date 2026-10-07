@@ -77,6 +77,9 @@ export function usePartFields({
       assembly: {
         default: globalSettings.isSet('PART_ASSEMBLY')
       },
+      quick_build: {
+        default: false
+      },
       is_template: {
         default: globalSettings.isSet('PART_TEMPLATE')
       },

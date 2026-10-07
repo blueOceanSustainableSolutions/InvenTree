@@ -351,12 +351,26 @@ export default function StockDetail() {
         model_field: 'reference'
       },
       {
+        type: 'text',
+        name: 'consumed_by_quick_build_reference',
+        label: t`Consumed By Quick Build`,
+        hidden: !stockitem.consumed_by_quick_build,
+        icon: 'build'
+      },
+      {
         type: 'link',
         name: 'build',
         label: t`Build Order`,
         model: ModelType.build,
         hidden: !stockitem.build,
         model_field: 'reference'
+      },
+      {
+        type: 'text',
+        name: 'quick_build_reference',
+        label: t`Quick Build`,
+        hidden: !stockitem.quick_build,
+        icon: 'build'
       },
       {
         type: 'link',
@@ -984,9 +998,11 @@ export default function StockDetail() {
             tooltip: t`Recover components from this build output`,
             hidden:
               !user.hasChangeRole(UserRoles.stock) ||
-              !stockitem.build ||
-              stockitem.is_building ||
-              stockitem.quantity != 1,
+              (stockitem.quick_build
+                ? !stockitem.in_stock
+                : !stockitem.build ||
+                  stockitem.is_building ||
+                  stockitem.quantity != 1),
             icon: <IconBoxPadding color='blue' />,
             onClick: () => disassembleBuildOutput.open()
           },
