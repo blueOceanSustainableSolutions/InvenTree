@@ -104,3 +104,8 @@ class StockHistoryCode(StatusCode):
     # Customer actions
     SENT_TO_CUSTOMER = 100, _('Sent to customer')
     RETURNED_FROM_CUSTOMER = 105, _('Returned from customer')
+
+    # Quick build codes
+    QUICK_BUILD_OUTPUT_CREATED = 120, _('Quick build output created')
+    QUICK_BUILD_CONSUMED = 121, _('Consumed by quick build')
+    QUICK_BUILD_DISASSEMBLED = 122, _('Quick build output disassembled')

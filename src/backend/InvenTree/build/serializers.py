@@ -1,6 +1,7 @@
 """JSON serializers for Build API."""
 
 from decimal import Decimal
+from typing import Optional
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import models, transaction
@@ -51,7 +52,7 @@ from stock.serializers import (
 from stock.status_codes import StockStatus
 from users.serializers import OwnerSerializer, UserSerializer
 
-from .models import Build, BuildItem, BuildLine
+from .models import Build, BuildItem, BuildLine, QuickBuild, QuickBuildLine
 from .status_codes import BuildStatus
 
 
@@ -526,6 +527,10 @@ class BuildOutputDisassemblePreviewSerializer(serializers.Serializer):
         output = data['output']
         build = self.context.get('build') or output.build
 
+        # Quick build outputs are only selectable from the Manufacturing page
+        if build is None and output.quick_build_id:
+            return data
+
         if build is None:
             raise ValidationError({'output': _('Stock item is not a build output')})
 
@@ -560,12 +565,21 @@ class BuildOutputDisassembleSerializer(BuildOutputDisassemblePreviewSerializer):
         output = data['output']
         build = self.context.get('build') or output.build
 
-        expected_stock_items = set(output.installed_parts.values_list('pk', flat=True))
-        expected_stock_items.update(
-            StockItem.objects.filter(
-                consumed_by=build, belongs_to__isnull=True
-            ).values_list('pk', flat=True)
-        )
+        if build is None:
+            expected_stock_items = set(
+                StockItem.objects.filter(
+                    consumed_by_quick_build=output.quick_build_id
+                ).values_list('pk', flat=True)
+            )
+        else:
+            expected_stock_items = set(
+                output.installed_parts.values_list('pk', flat=True)
+            )
+            expected_stock_items.update(
+                StockItem.objects.filter(
+                    consumed_by=build, belongs_to__isnull=True
+                ).values_list('pk', flat=True)
+            )
         supplied_stock_items = [item['stock_item'].pk for item in data['items']]
 
         if (
@@ -1997,3 +2011,214 @@ class BuildConsumeSerializer(serializers.Serializer):
             raise ValidationError(_('At least one item or line must be provided'))
 
         return data
+
+
+class QuickBuildLineSerializer(InvenTreeModelSerializer):
+    """Serializer for a component consumed by a QuickBuild."""
+
+    class Meta:
+        """Serializer metaclass."""
+
+        model = QuickBuildLine
+        fields = [
+            'pk',
+            'quick_build',
+            'bom_item',
+            'part',
+            'part_detail',
+            'quantity',
+            'loss',
+        ]
+        read_only_fields = fields
+
+    part_detail = part_serializers.PartBriefSerializer(
+        source='part', many=False, read_only=True, pricing=False
+    )
+
+    quantity = InvenTreeDecimalField(read_only=True)
+
+    loss = InvenTreeDecimalField(read_only=True)
+
+
+class QuickBuildSerializer(FilterableSerializerMixin, InvenTreeModelSerializer):
+    """Serializer for a QuickBuild record (read only, see QuickBuildCreateSerializer)."""
+
+    class Meta:
+        """Serializer metaclass."""
+
+        model = QuickBuild
+        fields = [
+            'pk',
+            'reference',
+            'part',
+            'part_detail',
+            'quantity',
+            'location',
+            'location_detail',
+            'creation_date',
+            'created_by',
+            'created_by_detail',
+            'notes',
+            'disassembled',
+            'disassembled_date',
+            'output',
+            'lines',
+        ]
+        read_only_fields = fields
+
+    quantity = InvenTreeDecimalField(read_only=True)
+
+    output = serializers.SerializerMethodField(label=_('Output'))
+
+    def get_output(self, instance) -> Optional[int]:
+        """Return the pk of the stock item produced by this quick build."""
+        outputs = list(instance.outputs.all())
+        return outputs[0].pk if outputs else None
+
+    part_detail = OptionalField(
+        serializer_class=part_serializers.PartBriefSerializer,
+        serializer_kwargs={'source': 'part', 'many': False, 'read_only': True},
+        default_include=True,
+        prefetch_fields=['part'],
+    )
+
+    location_detail = OptionalField(
+        serializer_class=LocationBriefSerializer,
+        serializer_kwargs={'source': 'location', 'read_only': True, 'allow_null': True},
+        default_include=True,
+        prefetch_fields=['location'],
+    )
+
+    created_by_detail = OptionalField(
+        serializer_class=UserSerializer,
+        serializer_kwargs={'source': 'created_by', 'read_only': True},
+        default_include=True,
+        filter_name='user_detail',
+        prefetch_fields=['created_by'],
+    )
+
+    lines = OptionalField(
+        serializer_class=QuickBuildLineSerializer,
+        serializer_kwargs={'many': True, 'read_only': True},
+        default_include=True,
+        prefetch_fields=['lines', 'lines__part'],
+    )
+
+
+class QuickBuildRequirementsSerializer(serializers.Serializer):
+    """Select the assembly and quantity for a quick build."""
+
+    part = serializers.PrimaryKeyRelatedField(
+        queryset=part_models.Part.objects.filter(quick_build=True, assembly=True),
+        required=True,
+        label=_('Part'),
+    )
+
+    quantity = InvenTreeDecimalField(
+        required=True, label=_('Quantity'), help_text=_('Quantity to produce')
+    )
+
+    def validate_quantity(self, quantity):
+        """The quick build quantity must be positive."""
+        if quantity <= 0:
+            raise ValidationError(_('Quantity must be greater than zero'))
+        return quantity
+
+
+class QuickBuildItemSerializer(serializers.Serializer):
+    """Select the source stock for one BOM line of a quick build."""
+
+    bom_item = serializers.PrimaryKeyRelatedField(
+        queryset=part_models.BomItem.objects.all(), required=True, label=_('BOM Item')
+    )
+
+    stock_item = serializers.PrimaryKeyRelatedField(
+        queryset=StockItem.objects.all(),
+        required=False,
+        allow_null=True,
+        label=_('Stock Item'),
+    )
+
+
+class QuickBuildCreateSerializer(QuickBuildRequirementsSerializer):
+    """Perform a quick build: consume component stock and create the output."""
+
+    location = serializers.PrimaryKeyRelatedField(
+        queryset=StockLocation.objects.filter(structural=False),
+        required=False,
+        allow_null=True,
+        label=_('Location'),
+        help_text=_('Destination location for the output'),
+    )
+
+    batch = serializers.CharField(
+        required=False, allow_blank=True, default='', label=_('Batch Code')
+    )
+
+    notes = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=250, label=_('Notes')
+    )
+
+    items = QuickBuildItemSerializer(many=True, required=True)
+
+    def validate(self, data):
+        """Check the consumption plan before anything is written."""
+        data = super().validate(data)
+
+        items = {}
+
+        for item in data['items']:
+            bom_item = item['bom_item']
+
+            if bom_item.pk in items:
+                raise ValidationError({'items': _('Duplicate BOM line')})
+
+            items[bom_item.pk] = item.get('stock_item')
+
+        try:
+            _plan, errors = QuickBuild.check_quick_build(
+                data['part'], data['quantity'], items
+            )
+        except DjangoValidationError as exc:
+            raise ValidationError(serializers.as_serializer_error(exc))
+
+        if errors:
+            # Report errors against the matching row of the submitted items
+            row_errors = [
+                {'stock_item': [errors.pop(item['bom_item'])]}
+                if item['bom_item'] in errors
+                else {}
+                for item in data['items']
+            ]
+
+            response = {'items': row_errors}
+
+            # Required lines which were not submitted at all
+            if errors:
+                response['non_field_errors'] = [
+                    f'{bom_item.sub_part.full_name}: {message}'
+                    for bom_item, message in errors.items()
+                ]
+
+            raise ValidationError(response)
+
+        data['item_map'] = items
+        return data
+
+    def save(self):
+        """Create the quick build."""
+        data = self.validated_data
+        request = self.context.get('request')
+
+        try:
+            return QuickBuild.create_quick_build(
+                data['part'],
+                data['quantity'],
+                data['item_map'],
+                location=data.get('location'),
+                user=request.user if request else None,
+                notes=data.get('notes', ''),
+                batch=data.get('batch', ''),
+            )
+        except DjangoValidationError as exc:
+            raise ValidationError(serializers.as_serializer_error(exc))

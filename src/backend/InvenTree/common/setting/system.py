@@ -799,6 +799,12 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': 'BO-{ref:04d}',
         'validator': build.validators.validate_build_order_reference_pattern,
     },
+    'QUICKBUILD_REFERENCE_PATTERN': {
+        'name': _('Quick Build Reference Pattern'),
+        'description': _('Required pattern for generating Quick Build reference field'),
+        'default': 'QB-{ref:04d}',
+        'validator': build.validators.validate_quick_build_reference_pattern,
+    },
     'BUILDORDER_REQUIRE_RESPONSIBLE': {
         'name': _('Require Responsible Owner'),
         'description': _('A responsible owner must be assigned to each order'),

@@ -24,8 +24,8 @@ import common.settings
 import InvenTree.helpers
 import InvenTree.permissions
 import stock.serializers as StockSerializers
-from build.models import Build
-from build.serializers import BuildSerializer
+from build.models import Build, QuickBuild
+from build.serializers import BuildSerializer, QuickBuildSerializer
 from company.models import Company, ManufacturerPart, SupplierPart
 from company.serializers import CompanySerializer
 from data_exporter.mixins import DataExportViewMixin
@@ -557,6 +557,8 @@ class StockFilter(FilterSet):
             'build',
             'customer',
             'consumed_by',
+            'quick_build',
+            'consumed_by_quick_build',
             'sales_order',
             'purchase_order',
             'tags__name',
@@ -570,12 +572,22 @@ class StockFilter(FilterSet):
     has_build = rest_filters.BooleanFilter(label=_('Has Build Order'), method='filter_has_build')
 
     def filter_has_build(self, queryset, name, value):
-        """Filter stock items by whether they were created by a build order."""
-        return queryset.filter(build__isnull=not str2bool(value))
+        """Filter stock items by whether they were created by a build order or quick build."""
+        query = Q(build__isnull=False) | Q(quick_build__isnull=False)
+
+        if str2bool(value):
+            return queryset.filter(query)
+
+        return queryset.exclude(query)
 
     def filter_disassembled(self, queryset, name, value):
         """Filter outputs which have been processed by a disassembly operation."""
-        query = Q(tracking_info__tracking_type=StockHistoryCode.BUILD_DISASSEMBLED)
+        query = Q(
+            tracking_info__tracking_type__in=[
+                StockHistoryCode.BUILD_DISASSEMBLED,
+                StockHistoryCode.QUICK_BUILD_DISASSEMBLED,
+            ]
+        )
 
         if str2bool(value):
             return queryset.filter(query).distinct()
@@ -837,10 +849,12 @@ class StockFilter(FilterSet):
     )
 
     def filter_consumed(self, queryset, name, value):
-        """Filter by whether the stock item has been consumed by a build order."""
+        """Filter by whether the stock item has been consumed by a build order or quick build."""
+        query = Q(consumed_by__isnull=False) | Q(consumed_by_quick_build__isnull=False)
+
         if str2bool(value):
-            return queryset.filter(consumed_by__isnull=False)
-        return queryset.filter(consumed_by__isnull=True)
+            return queryset.filter(query)
+        return queryset.exclude(query)
 
     installed = rest_filters.BooleanFilter(
         label=_('Installed in other stock item'), method='filter_installed'
@@ -1644,6 +1658,7 @@ class StockTrackingList(
             'returnorder': (ReturnOrder, ReturnOrderSerializer),
             'transferorder': (TransferOrder, TransferOrderSerializer),
             'buildorder': (Build, BuildSerializer),
+            'quickbuild': (QuickBuild, QuickBuildSerializer),
             'item': (StockItem, StockSerializers.StockItemSerializer),
             'stockitem': (StockItem, StockSerializers.StockItemSerializer),
         }

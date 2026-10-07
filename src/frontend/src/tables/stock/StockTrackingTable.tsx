@@ -150,6 +150,11 @@ export function StockTrackingTable({
             })
         },
         {
+          label: t`Quick Build`,
+          key: 'quickbuild',
+          details: deltas.quickbuild_detail?.reference
+        },
+        {
           label: t`Purchase Order`,
           key: 'purchaseorder',
           details:

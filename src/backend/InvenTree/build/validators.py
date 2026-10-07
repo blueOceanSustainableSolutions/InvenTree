@@ -21,3 +21,24 @@ def validate_build_order_reference(value):
 
     # If we get to here, run the "default" validation routine
     Build.validate_reference_field(value)
+
+
+def generate_next_quick_build_reference():
+    """Generate the next available QuickBuild reference."""
+    from build.models import QuickBuild
+
+    return QuickBuild.generate_reference()
+
+
+def validate_quick_build_reference_pattern(pattern):
+    """Validate the QuickBuild reference 'pattern' setting."""
+    from build.models import QuickBuild
+
+    QuickBuild.validate_reference_pattern(pattern)
+
+
+def validate_quick_build_reference(value):
+    """Validate that the QuickBuild reference field matches the required pattern."""
+    from build.models import QuickBuild
+
+    QuickBuild.validate_reference_field(value)

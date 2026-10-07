@@ -354,6 +354,10 @@ class StockItemSerializer(
             'build',
             'build_reference',
             'consumed_by',
+            'quick_build',
+            'quick_build_reference',
+            'consumed_by_quick_build',
+            'consumed_by_quick_build_reference',
             'customer',
             'delete_on_deplete',
             'expiry_date',
@@ -400,7 +404,9 @@ class StockItemSerializer(
         read_only_fields = [
             'allocated',
             'barcode_hash',
+            'consumed_by_quick_build',
             'creation_date',
+            'quick_build',
             'stocktake_date',
             'stocktake_user',
             'updated',
@@ -427,6 +433,14 @@ class StockItemSerializer(
 
     build_reference = serializers.CharField(
         source='build.reference', read_only=True, allow_null=True
+    )
+
+    quick_build_reference = serializers.CharField(
+        source='quick_build.reference', read_only=True, allow_null=True
+    )
+
+    consumed_by_quick_build_reference = serializers.CharField(
+        source='consumed_by_quick_build.reference', read_only=True, allow_null=True
     )
 
     parent = serializers.PrimaryKeyRelatedField(
@@ -523,6 +537,8 @@ class StockItemSerializer(
             'belongs_to',
             'sales_order',
             'consumed_by',
+            'quick_build',
+            'consumed_by_quick_build',
         ).select_related('part', 'part__pricing_data')
 
         # Annotate the queryset with the total allocated to sales orders

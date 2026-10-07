@@ -626,6 +626,7 @@ class StockItem(
         belongs_to=None,
         customer=None,
         consumed_by=None,
+        consumed_by_quick_build=None,
         is_building=False,
         status__in=StockStatusGroups.AVAILABLE_CODES,
     )
@@ -1185,6 +1186,26 @@ class StockItem(
         related_name='consumed_stock',
     )
 
+    quick_build = models.ForeignKey(
+        'build.QuickBuild',
+        on_delete=models.SET_NULL,
+        verbose_name=_('Source Quick Build'),
+        blank=True,
+        null=True,
+        help_text=_('Quick build which produced this stock item'),
+        related_name='outputs',
+    )
+
+    consumed_by_quick_build = models.ForeignKey(
+        'build.QuickBuild',
+        on_delete=models.CASCADE,
+        verbose_name=_('Consumed By Quick Build'),
+        blank=True,
+        null=True,
+        help_text=_('Quick build which consumed this stock item'),
+        related_name='consumed_stock',
+    )
+
     is_building = models.BooleanField(default=False)
 
     purchase_order = models.ForeignKey(
@@ -1514,8 +1535,12 @@ class StockItem(
         if item.consumed_by:
             tracking_info['build_order'] = item.consumed_by.id
 
+        if item.consumed_by_quick_build:
+            tracking_info['quickbuild'] = item.consumed_by_quick_build.id
+
         # Clear out allocation information for the stock item
         item.consumed_by = None
+        item.consumed_by_quick_build = None
         item.customer = None
         item.belongs_to = None
         item.sales_order = None
@@ -1853,6 +1878,7 @@ class StockItem(
             self.belongs_to is None,  # Not installed inside another StockItem
             self.customer is None,  # Not assigned to a customer
             self.consumed_by is None,  # Not consumed by a build
+            self.consumed_by_quick_build is None,  # Not consumed by a quick build
         ])
 
     @property
@@ -2174,6 +2200,10 @@ class StockItem(
             if self.serialized:
                 raise ValidationError(_('Serialized stock cannot be merged'))
 
+            # Each quick build output is a discrete physical item (e.g. one rope)
+            if self.quick_build_id or (other and other.quick_build_id):
+                raise ValidationError(_('Quick build outputs cannot be merged'))
+
             if other:
                 # Specific checks (rely on the 'other' part)
 
@@ -2375,6 +2405,10 @@ class StockItem(
         # Also doesn't make sense to split the full amount
         if quantity >= self.quantity:
             return self
+
+        # Each quick build output is a discrete physical item (e.g. one rope)
+        if self.quick_build_id:
+            raise ValidationError(_('Quick build outputs cannot be split'))
 
         # Create a new StockItem object, duplicating relevant fields
         # Nullify the PK so a new record is created
