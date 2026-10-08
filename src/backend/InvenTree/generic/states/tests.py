@@ -232,8 +232,8 @@ class ApiTests(InvenTreeAPITestCase):
         """Test the API endpoint for listing all status models."""
         response = self.get(reverse('api-status-all'))
 
-        # 11 built-in state classes, plus the added GeneralState class
-        self.assertEqual(len(response.data), 12)
+        # 11 built-in state classes, 4 fleet state classes, plus the added GeneralState class
+        self.assertEqual(len(response.data), 16)
 
         # Test the BuildStatus model
         build_status = response.data['BuildStatus']
@@ -247,7 +247,8 @@ class ApiTests(InvenTreeAPITestCase):
         # Test the StockStatus model (static)
         stock_status = response.data['StockStatus']
         self.assertEqual(stock_status['status_class'], 'StockStatus')
-        self.assertEqual(len(stock_status['values']), 8)
+        # 8 built-in values, plus the BlueOasis DISASSEMBLED status
+        self.assertEqual(len(stock_status['values']), 9)
         in_stock = stock_status['values']['OK']
         self.assertEqual(in_stock['key'], 10)
         self.assertEqual(in_stock['name'], 'OK')
@@ -273,11 +274,12 @@ class ApiTests(InvenTreeAPITestCase):
         )
         response = self.get(reverse('api-status-all'))
 
-        self.assertEqual(len(response.data), 12)
+        self.assertEqual(len(response.data), 16)
 
         stock_status_cstm = response.data['StockStatus']
         self.assertEqual(stock_status_cstm['status_class'], 'StockStatus')
-        self.assertEqual(len(stock_status_cstm['values']), 9)
+        # 9 values (including DISASSEMBLED), plus the custom status
+        self.assertEqual(len(stock_status_cstm['values']), 10)
         ok_advanced = stock_status_cstm['values']['OK']
         self.assertEqual(ok_advanced['key'], 10)
         self.assertEqual(ok_advanced['name'], 'OK')

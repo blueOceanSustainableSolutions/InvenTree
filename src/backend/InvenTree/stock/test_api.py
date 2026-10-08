@@ -1406,7 +1406,8 @@ class CustomStockItemStatusTest(StockAPITestCase):
         actions = response.data['actions']['POST']
         self.assertIn('status_custom_key', actions)
         status_custom_key = actions['status_custom_key']
-        self.assertEqual(len(status_custom_key['choices']), 10)
+        # Includes the BlueOasis DISASSEMBLED status
+        self.assertEqual(len(status_custom_key['choices']), 11)
         status = status_custom_key['choices'][1]
         self.assertEqual(status['value'], self.status.key)
         self.assertEqual(status['display_name'], self.status.label)

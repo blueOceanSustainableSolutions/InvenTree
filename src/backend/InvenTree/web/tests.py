@@ -37,19 +37,22 @@ class TemplateTagTest(InvenTreeTestCase):
         new_name = manifest_file.rename(
             manifest_file.with_suffix('.json.bak')
         )  # Rename
-        resp = spa_helper.spa_bundle()
-        self.assertEqual(resp, 'NOT_FOUND')
 
-        # Try with differing name
-        resp = spa_helper.spa_bundle(new_name)
-        self.assertIsNotNone(resp)
+        try:
+            resp = spa_helper.spa_bundle()
+            self.assertEqual(resp, 'NOT_FOUND')
 
-        # Broken manifest file
-        manifest_file.write_text('broken')
-        resp = spa_helper.spa_bundle(manifest_file)
-        self.assertEqual(resp, '')
+            # Try with differing name
+            resp = spa_helper.spa_bundle(new_name)
+            self.assertIsNotNone(resp)
 
-        new_name.rename(manifest_file.with_suffix('.json'))  # Name back
+            # Broken manifest file
+            manifest_file.write_text('broken')
+            resp = spa_helper.spa_bundle(manifest_file)
+            self.assertEqual(resp, '')
+        finally:
+            # Name back - replace() also overwrites the broken file on Windows
+            new_name.replace(manifest_file)
 
     def test_spa_settings(self):
         """Test the 'spa_settings' template tag."""

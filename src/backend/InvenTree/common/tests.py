@@ -414,6 +414,9 @@ class SettingsTest(InvenTreeTestCase):
             'before_save',
             'confirm',
             'confirm_text',
+            'model',
+            'model_filters',
+            'protected',
         ]
 
         for k in setting:

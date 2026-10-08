@@ -322,6 +322,7 @@ def builtin_apps():
         'build',
         'common',
         'company',
+        'fleet',
         'importer',
         'machine',
         'order',

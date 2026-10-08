@@ -20,6 +20,7 @@ class RuleSetEnum(StringEnum):
     SALES_ORDER = 'sales_order'
     RETURN_ORDER = 'return_order'
     TRANSFER_ORDER = 'transfer_order'
+    FLEET = 'fleet'
 
 
 # This is a list of all the ruleset choices available in the system.
@@ -36,6 +37,7 @@ RULESET_CHOICES = [
     (RuleSetEnum.SALES_ORDER, _('Sales Orders')),
     (RuleSetEnum.RETURN_ORDER, _('Return Orders')),
     (RuleSetEnum.TRANSFER_ORDER, _('Transfer Orders')),
+    (RuleSetEnum.FLEET, _('Fleet')),
 ]
 
 # Ruleset names available in the system.
@@ -169,6 +171,24 @@ def get_ruleset_models() -> dict:
             'order_transferorder',
             'order_transferorderallocation',
             'order_transferorderlineitem',
+        ],
+        RuleSetEnum.FLEET: [
+            'fleet_alert',
+            'fleet_checklistresult',
+            'fleet_checklisttemplateitem',
+            'fleet_datastream',
+            'fleet_deployment',
+            'fleet_devicelink',
+            'fleet_faultcode',
+            'fleet_fieldtrip',
+            'fleet_fleetdevicetype',
+            'fleet_kittemplateline',
+            'fleet_maintenanceaction',
+            'fleet_maintenancetask',
+            'fleet_positionfix',
+            'fleet_site',
+            'fleet_streamtemplate',
+            'fleet_tripkitline',
         ],
     }
 

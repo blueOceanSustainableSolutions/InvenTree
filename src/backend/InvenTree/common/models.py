@@ -2081,6 +2081,9 @@ class Attachment(
         # Create a new file with the new name, and delete the old file
         new_path = default_storage.save(new_path, self.attachment.file)
 
+        # Release the handle on the old file, otherwise it cannot be deleted on Windows
+        self.attachment.close()
+
         # Ensure that the new file exists
         if not default_storage.exists(new_path):  # pragma: no cover
             raise ValidationError(_('Failed to save renamed file'))

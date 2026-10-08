@@ -106,6 +106,10 @@ class CustomBuildRequirementTests(InvenTreeAPITestCase):
 
     def test_custom_requirement_can_allow_variants(self):
         """A custom requirement can be configured to accept its variants."""
+        # Variants can only be created for template parts
+        self.component.is_template = True
+        self.component.save()
+
         variant = Part.objects.create(
             name='Order-specific component variant', variant_of=self.component
         )

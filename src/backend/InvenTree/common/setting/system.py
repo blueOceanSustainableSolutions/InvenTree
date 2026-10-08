@@ -16,6 +16,7 @@ from jinja2.sandbox import SandboxedEnvironment
 import build.validators
 import common.currency
 import common.validators
+import fleet.validators
 import order.validators
 import report.helpers
 from common.setting.type import InvenTreeSettingsKeyType
@@ -1277,5 +1278,176 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         ),
         'default': True,
         'validator': bool,
+    },
+    'FLEET_SITE_REFERENCE_PATTERN': {
+        'name': _('Fleet Site Reference Pattern'),
+        'description': _('Required pattern for generating Fleet Site reference field'),
+        'default': 'ST-{ref:03d}',
+        'validator': fleet.validators.validate_site_reference_pattern,
+    },
+    'FLEET_DEPLOYMENT_REFERENCE_PATTERN': {
+        'name': _('Deployment Reference Pattern'),
+        'description': _('Required pattern for generating Deployment reference field'),
+        'default': 'DP-{ref:04d}',
+        'validator': fleet.validators.validate_deployment_reference_pattern,
+    },
+    'FLEET_TASK_REFERENCE_PATTERN': {
+        'name': _('Maintenance Task Reference Pattern'),
+        'description': _(
+            'Required pattern for generating Maintenance Task reference field'
+        ),
+        'default': 'MT-{ref:04d}',
+        'validator': fleet.validators.validate_task_reference_pattern,
+    },
+    'FLEET_TRIP_REFERENCE_PATTERN': {
+        'name': _('Field Trip Reference Pattern'),
+        'description': _('Required pattern for generating Field Trip reference field'),
+        'default': 'TRIP-{ref:04d}',
+        'validator': fleet.validators.validate_trip_reference_pattern,
+    },
+    'FLEET_ALERT_REFERENCE_PATTERN': {
+        'name': _('Fleet Alert Reference Pattern'),
+        'description': _('Required pattern for generating Fleet Alert reference field'),
+        'default': 'AL-{ref:05d}',
+        'validator': fleet.validators.validate_alert_reference_pattern,
+    },
+    'FLEET_DATA_PROVIDER': {
+        'name': _('Fleet Data Provider'),
+        'description': _('Source of live device data'),
+        'default': 'mock',
+        'choices': [('mock', _('Mock (testing)')), ('http', _('Data dashboard API'))],
+    },
+    'FLEET_DATA_API_URL': {
+        'name': _('Fleet Data API URL'),
+        'description': _('Base URL of the data dashboard API'),
+        'default': '',
+        'validator': BaseURLValidator(),
+    },
+    'FLEET_DATA_API_TOKEN': {
+        'name': _('Fleet Data API Token'),
+        'description': _('Access token for the data dashboard API'),
+        'default': '',
+        'protected': True,
+    },
+    'FLEET_POLL_INTERVAL_MINUTES': {
+        'name': _('Fleet Poll Interval'),
+        'description': _('How often to poll the data platform for device status'),
+        'default': 5,
+        'validator': [int, MinValueValidator(1)],
+        'units': _('minutes'),
+    },
+    'FLEET_NO_CONTACT_HOURS': {
+        'name': _('No Contact Threshold'),
+        'description': _(
+            'A device which has not reported any stream for this long is critical'
+        ),
+        'default': 6,
+        'validator': [int, MinValueValidator(1)],
+        'units': _('hours'),
+    },
+    'FLEET_STREAM_MISSING_FACTOR': {
+        'name': _('Stream Missing Factor'),
+        'description': _(
+            'A stream is missing after its expected interval multiplied by this factor'
+        ),
+        'default': 6,
+        'validator': [int, MinValueValidator(1)],
+    },
+    'FLEET_GEOFENCE_DEFAULT_RADIUS_M': {
+        'name': _('Default Geofence Radius'),
+        'description': _('Geofence radius used when a site does not define one'),
+        'default': 200,
+        'validator': [int, MinValueValidator(1)],
+        'units': 'm',
+    },
+    'FLEET_GEOFENCE_WARN_PERCENT': {
+        'name': _('Geofence Warning Threshold'),
+        'description': _(
+            'A device beyond this percentage of the geofence radius is degraded'
+        ),
+        'default': 80,
+        'validator': [int, MinValueValidator(0), MaxValueValidator(100)],
+        'units': '%',
+    },
+    'FLEET_PLAN_HORIZON_DAYS': {
+        'name': _('Maintenance Planning Horizon'),
+        'description': _(
+            'Preventive maintenance tasks are proposed when due within this period'
+        ),
+        'default': 45,
+        'validator': [int, MinValueValidator(1)],
+        'units': _('days'),
+    },
+    'FLEET_PM_DUE_WARNING_DAYS': {
+        'name': _('Maintenance Due Warning'),
+        'description': _(
+            'Raise a warning when preventive maintenance is due within this period'
+        ),
+        'default': 14,
+        'validator': [int, MinValueValidator(0)],
+        'units': _('days'),
+    },
+    'FLEET_READY_LEAD_DAYS': {
+        'name': _('Ready Lead Time'),
+        'description': _(
+            'A device must be ready this many days before its target deployment date'
+        ),
+        'default': 7,
+        'validator': [int, MinValueValidator(0)],
+        'units': _('days'),
+    },
+    'FLEET_UNSCHEDULED_REMINDER_DAYS': {
+        'name': _('Unscheduled Deployment Reminder'),
+        'description': _(
+            'Raise a reminder when a deployment has no target date for this long'
+        ),
+        'default': 7,
+        'validator': [int, MinValueValidator(1)],
+        'units': _('days'),
+    },
+    'FLEET_KIT_PARENT_LOCATION': {
+        'name': _('Field Kit Parent Location'),
+        'description': _(
+            'Structural stock location under which trip kit locations are created'
+        ),
+        'model': 'stock.stocklocation',
+        'model_filters': {'structural': True},
+    },
+    'FLEET_WORKSHOP_LOCATION': {
+        'name': _('Fleet Workshop Location'),
+        'description': _('Stock location for recovered devices and removed components'),
+        'model': 'stock.stocklocation',
+        'model_filters': {'structural': False},
+    },
+    'FLEET_DEFAULT_CUSTOMER': {
+        'name': _('Default Fleet Customer'),
+        'description': _(
+            'Customer assigned to devices deployed at a site without a client'
+        ),
+        'model': 'company.company',
+        'model_filters': {'is_customer': True},
+    },
+    'FLEET_TEAMS_WEBHOOK_URL': {
+        'name': _('Teams Webhook URL'),
+        'description': _(
+            'Microsoft Teams Workflows webhook URL for fleet notifications'
+        ),
+        'default': '',
+        'validator': BaseURLValidator(),
+        'protected': True,
+    },
+    'FLEET_ALERT_EMAILS': {
+        'name': _('Fleet Alert Emails'),
+        'description': _('Comma-separated email addresses for fleet notifications'),
+        'default': '',
+        'validator': fleet.validators.validate_email_list,
+    },
+    'FLEET_PORTAL_URL': {
+        'name': _('Fleet Portal URL'),
+        'description': _(
+            'Base URL of the Fleet Portal, used for links in notifications'
+        ),
+        'default': '',
+        'validator': BaseURLValidator(),
     },
 }

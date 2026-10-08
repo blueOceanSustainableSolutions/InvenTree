@@ -109,3 +109,8 @@ class StockHistoryCode(StatusCode):
     QUICK_BUILD_OUTPUT_CREATED = 120, _('Quick build output created')
     QUICK_BUILD_CONSUMED = 121, _('Consumed by quick build')
     QUICK_BUILD_DISASSEMBLED = 122, _('Quick build output disassembled')
+
+    # Fleet codes
+    FLEET_DEPLOYED = 130, _('Deployed at fleet site')
+    FLEET_RECOVERED = 131, _('Recovered from fleet site')
+    FLEET_MAINTENANCE = 132, _('Fleet maintenance performed')
