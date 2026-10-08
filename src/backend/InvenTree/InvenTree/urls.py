@@ -19,6 +19,7 @@ from sesame.views import LoginView
 import build.api
 import common.api
 import company.api
+import fleet.api
 import importer.api
 import InvenTree.logging  # noqa: F401 - ensure logging handlers are registered
 import machine.api
@@ -56,6 +57,7 @@ apipatterns = [
     path('bom/', include(part.api.bom_api_urls)),
     path('build/', include(build.api.build_api_urls)),
     path('company/', include(company.api.company_api_urls)),
+    path('fleet/', include(fleet.api.fleet_api_urls)),
     path('importer/', include(importer.api.importer_api_urls)),
     path('label/', include(report.api.label_api_urls)),
     path('machine/', include(machine.api.machine_api_urls)),

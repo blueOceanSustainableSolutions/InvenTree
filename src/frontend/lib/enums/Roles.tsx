@@ -7,6 +7,7 @@ export enum UserRoles {
   admin = 'admin',
   bom = 'bom',
   build = 'build',
+  fleet = 'fleet',
   part = 'part',
   part_category = 'part_category',
   purchase_order = 'purchase_order',
@@ -33,6 +34,8 @@ export function userRoleLabel(role: UserRoles): string {
       return t`Admin`;
     case UserRoles.build:
       return t`Build Orders`;
+    case UserRoles.fleet:
+      return t`Fleet`;
     case UserRoles.part:
       return t`Parts`;
     case UserRoles.part_category:
