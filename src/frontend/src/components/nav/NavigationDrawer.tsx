@@ -87,6 +87,13 @@ function DrawerContent({ closeFunc }: Readonly<{ closeFunc?: () => void }>) {
         icon: 'build'
       },
       {
+        id: 'fleet',
+        title: t`Fleet`,
+        link: '/fleet/',
+        hidden: !user.hasViewRole(UserRoles.fleet),
+        icon: 'fleet'
+      },
+      {
         id: 'purchasing',
         title: t`Purchasing`,
         link: '/purchasing/',

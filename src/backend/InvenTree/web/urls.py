@@ -5,7 +5,12 @@ from django.urls import include, path, re_path
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.generic import RedirectView, TemplateView
 
+from InvenTree.permissions import auth_exempt
+
 spa_view = ensure_csrf_cookie(TemplateView.as_view(template_name='web/index.html'))
+
+# Fleet Portal: the second frontend entry (fleet.html), served by the proxy on its own port
+fleet_view = ensure_csrf_cookie(TemplateView.as_view(template_name='web/fleet.html'))
 
 
 def cui_compatibility_urls(base: str) -> list:
@@ -141,4 +146,11 @@ urlpatterns = [
         ]),
     ),
     path(settings.FRONTEND_URL_BASE, spa_view, name='web'),
+    # Fleet Portal (handles its own login, like the main frontend)
+    path('fleet/', include([re_path('.*', fleet_view, name='fleet-portal')])),
+    path(
+        'fleet',
+        auth_exempt(RedirectView.as_view(url='/fleet/')),
+        name='fleet-portal-root',
+    ),
 ]

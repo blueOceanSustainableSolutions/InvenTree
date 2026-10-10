@@ -1,9 +1,10 @@
 import { platform, release } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { codecovVitePlugin } from '@codecov/vite-plugin';
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin';
 import react from '@vitejs/plugin-react';
 import license from 'rollup-plugin-license';
-import { defineConfig } from 'vite';
+import { type Plugin, defineConfig } from 'vite';
 import istanbul from 'vite-plugin-istanbul';
 
 import { __INVENTREE_VERSION_INFO__ } from './version-info';
@@ -19,6 +20,43 @@ if (IS_IN_WSL) {
 // Output directory for the built files
 const OUTPUT_DIR = '../../src/backend/InvenTree/web/static/web';
 
+/**
+ * Fleet Portal: the second entry (fleet.html -> src/portal/main.tsx).
+ *
+ * - "vite dev": serve fleet.html for /fleet/ paths (in production Django
+ *   serves it, see web/templates/web/fleet.html).
+ * - "vite build": fail if an entry is missing from the bundle. Django renders
+ *   each entry from the manifest; when one entry imports a module of the
+ *   other (e.g. src/main.tsx), Rollup merges it away and the page breaks.
+ */
+function fleetPortal(): Plugin {
+  return {
+    name: 'fleet-portal',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url && /^\/fleet(\/|\?|$)/.test(req.url)) {
+          req.url = '/fleet.html';
+        }
+        next();
+      });
+    },
+    generateBundle(_options, bundle) {
+      for (const name of ['index', 'fleet']) {
+        const found = Object.values(bundle).some(
+          (chunk) =>
+            chunk.type === 'chunk' && chunk.isEntry && chunk.name === name
+        );
+
+        if (!found) {
+          this.error(
+            `Entry "${name}" is missing from the bundle: a module of one entry is imported by the other entry (e.g. src/main.tsx)`
+          );
+        }
+      }
+    }
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig(({ command, mode }) => {
   // In 'build' mode, we want to use an empty base URL (for static file generation)
@@ -32,6 +70,7 @@ export default defineConfig(({ command, mode }) => {
         }
       }),
       vanillaExtractPlugin(),
+      fleetPortal(),
       license({
         sourcemap: true,
         thirdParty: {
@@ -63,7 +102,14 @@ export default defineConfig(({ command, mode }) => {
     build: {
       manifest: true,
       outDir: OUTPUT_DIR,
-      sourcemap: true
+      sourcemap: true,
+      rollupOptions: {
+        // Two entries: the main UI and the Fleet Portal (served at /fleet/)
+        input: {
+          index: fileURLToPath(new URL('./index.html', import.meta.url)),
+          fleet: fileURLToPath(new URL('./fleet.html', import.meta.url))
+        }
+      }
     },
     resolve: {
       alias: {

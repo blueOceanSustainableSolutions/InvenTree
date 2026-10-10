@@ -17,8 +17,16 @@ FRONTEND_SETTINGS = json.dumps(settings.FRONTEND_SETTINGS)
 
 
 @register.simple_tag
-def spa_bundle(manifest_path: str | Path = '', app: str = 'web'):
-    """Render SPA bundle."""
+def spa_bundle(
+    manifest_path: str | Path = '', app: str = 'web', entry: str = 'index.html'
+):
+    """Render SPA bundle.
+
+    Args:
+        manifest_path: Path to the Vite manifest file (default: the bundled one)
+        app: Static app folder the bundle is served from
+        entry: Vite entry point to render, e.g. 'fleet.html' for the Fleet Portal
+    """
 
     def get_url(file: str) -> str:
         """Get static url for file."""
@@ -47,8 +55,13 @@ def spa_bundle(manifest_path: str | Path = '', app: str = 'web'):
         return ''
 
     return_string = ''
-    # JS (based on index.html file as entrypoint)
-    index = manifest_data.get('index.html')
+    # JS (based on the entry html file, index.html by default)
+    index = manifest_data.get(entry)
+
+    if not index:
+        logger.error('Entry %s not found in the manifest file', entry)
+        return 'NOT_FOUND'
+
     dynamic_files = index.get('dynamicImports', [])
     imports_files = ''.join([
         f'<script type="module" src="{get_url(manifest_data[file]["file"])}"></script>'
@@ -62,8 +75,23 @@ def spa_bundle(manifest_path: str | Path = '', app: str = 'web'):
 
 
 @register.simple_tag
-def spa_settings():
-    """Render settings for spa."""
+def spa_settings(base_url: str = ''):
+    """Render settings for spa.
+
+    Args:
+        base_url: Override the UI base path, e.g. 'fleet' for the Fleet Portal.
+            The main UI base path is then passed as 'main_base_url', so the
+            portal can link to pages of the main UI.
+    """
+    frontend_settings = FRONTEND_SETTINGS
+
+    if base_url:
+        frontend_settings = json.dumps({
+            **settings.FRONTEND_SETTINGS,
+            'base_url': base_url,
+            'main_base_url': settings.FRONTEND_SETTINGS.get('base_url'),
+        })
+
     return mark_safe(
-        f"""<script>window.INVENTREE_SETTINGS={FRONTEND_SETTINGS}</script>"""
+        f"""<script>window.INVENTREE_SETTINGS={frontend_settings}</script>"""
     )

@@ -8,6 +8,7 @@ Physical items remain in the stock app: fleet models only reference them.
 """
 
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -20,7 +21,20 @@ import InvenTree.helpers
 import InvenTree.models
 import report.mixins
 import stock.models
-from fleet.status_codes import AlertStatus, DeploymentStatus, TaskStatus, TripStatus
+import users.models
+from fleet.status_codes import (
+    AlertSeverity,
+    AlertStatus,
+    AlertStatusGroups,
+    DataStreamStatus,
+    DeploymentStatus,
+    DeploymentStatusGroups,
+    HealthStatus,
+    TaskStatus,
+    TaskStatusGroups,
+    TripStatus,
+    TripStatusGroups,
+)
 from fleet.validators import (
     generate_next_alert_reference,
     generate_next_deployment_reference,
@@ -34,7 +48,7 @@ from fleet.validators import (
     validate_task_reference,
     validate_trip_reference,
 )
-from generic.states import StatusCodeMixin
+from generic.states import StateTransitionMixin, StatusCodeMixin
 
 
 class Coverage(models.TextChoices):
@@ -45,13 +59,40 @@ class Coverage(models.TextChoices):
     THIRD_PARTY = 'THIRD_PARTY', _('Serviced by a third party')
 
 
-class Health(models.TextChoices):
-    """Overall health of a deployed device."""
+class InternalState(models.TextChoices):
+    """Internal state of a physical device, set by a person (see DeviceState)."""
 
-    UNKNOWN = 'UNKNOWN', _('Unknown')
-    OK = 'OK', _('OK')
-    DEGRADED = 'DEGRADED', _('Degraded')
-    CRITICAL = 'CRITICAL', _('Critical')
+    NONE = '', _('None')
+    PROBLEM_ACKNOWLEDGED = 'PROBLEM_ACKNOWLEDGED', _('Problem Acknowledged')
+    DOCKED = 'DOCKED', _('Docked')
+    DECOMMISSIONED = 'DECOMMISSIONED', _('Decommissioned')
+
+
+class DeviceState(models.TextChoices):
+    """Effective state of a device, in priority order (the first match wins).
+
+    DECOMMISSIONED, DOCKED and PROBLEM_ACKNOWLEDGED are set by a person
+    (DeviceLink.state); the others are worked out from the deployment.
+    """
+
+    DECOMMISSIONED = 'DECOMMISSIONED', _('Decommissioned')
+    DOCKED = 'DOCKED', _('Docked')
+    MAINTENANCE_SCHEDULED = 'MAINTENANCE_SCHEDULED', _('Maintenance Scheduled')
+    MAINTENANCE_OVERDUE = 'MAINTENANCE_OVERDUE', _('Maintenance Overdue')
+    PROBLEM_ACKNOWLEDGED = 'PROBLEM_ACKNOWLEDGED', _('Problem Acknowledged')
+    UNRESPONSIVE = 'UNRESPONSIVE', _('Unresponsive')
+    ACTIVE = 'ACTIVE', _('Active')
+
+
+class TaskType(models.TextChoices):
+    """Type of maintenance task."""
+
+    PREVENTIVE = 'PREVENTIVE', _('Preventive')
+    CORRECTIVE = 'CORRECTIVE', _('Corrective')
+    DEPLOYMENT = 'DEPLOYMENT', _('Deployment')
+    RECOVERY = 'RECOVERY', _('Recovery')
+    SWAP = 'SWAP', _('Swap')
+    INSPECTION = 'INSPECTION', _('Inspection')
 
 
 class KitMode(models.TextChoices):
@@ -202,6 +243,11 @@ class StreamTemplate(InvenTree.models.InvenTreeModel):
         verbose_name_plural = _('Stream Templates')
         unique_together = [('device_type', 'key')]
 
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with this model."""
+        return reverse('api-fleet-stream-template-list')
+
     def __str__(self):
         """String representation of a StreamTemplate."""
         return f'{self.device_type} - {self.key}'
@@ -251,6 +297,7 @@ class ChecklistTemplateItem(InvenTree.models.InvenTreeModel):
         kind: Type of result (check, measurement or photo)
         unit: Unit for a measurement
         required: Whether the item must be answered before a task can be closed
+        task_type: Type of task which uses this item (blank: every task type)
     """
 
     class Kind(models.TextChoices):
@@ -266,6 +313,11 @@ class ChecklistTemplateItem(InvenTree.models.InvenTreeModel):
         verbose_name = _('Checklist Template Item')
         verbose_name_plural = _('Checklist Template Items')
         ordering = ['device_type', 'sequence', 'pk']
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with this model."""
+        return reverse('api-fleet-checklist-item-list')
 
     def __str__(self):
         """String representation of a ChecklistTemplateItem."""
@@ -295,6 +347,15 @@ class ChecklistTemplateItem(InvenTree.models.InvenTreeModel):
 
     required = models.BooleanField(default=True, verbose_name=_('Required'))
 
+    task_type = models.CharField(
+        max_length=20,
+        choices=TaskType.choices,
+        blank=True,
+        default=TaskType.PREVENTIVE,
+        verbose_name=_('Task Type'),
+        help_text=_('Type of task which uses this item (blank: every task type)'),
+    )
+
 
 class KitTemplateLine(InvenTree.models.InvenTreeModel):
     """A part typically taken on a preventive maintenance visit for a device type.
@@ -311,6 +372,11 @@ class KitTemplateLine(InvenTree.models.InvenTreeModel):
 
         verbose_name = _('Kit Template Line')
         verbose_name_plural = _('Kit Template Lines')
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with this model."""
+        return reverse('api-fleet-kit-line-list')
 
     def __str__(self):
         """String representation of a KitTemplateLine."""
@@ -522,7 +588,12 @@ class DeviceLink(InvenTree.models.MetadataMixin, InvenTree.models.InvenTreeModel
         stock_item: The serialized device
         platform_id: Device identifier used by the data platform API
         firmware_version: Last known firmware version
-        notes: Free text notes
+        comment: Free text comment
+        state: Internal state set by a person (problem acknowledged, docked,
+            decommissioned); it belongs to the device, not to one deployment
+        state_note: Why the state was set
+        state_changed_at: When the state was last changed
+        state_changed_by: Who last changed the state
     """
 
     class Meta:
@@ -566,7 +637,33 @@ class DeviceLink(InvenTree.models.MetadataMixin, InvenTree.models.InvenTreeModel
         max_length=50, blank=True, verbose_name=_('Firmware Version')
     )
 
-    notes = models.CharField(max_length=250, blank=True, verbose_name=_('Notes'))
+    comment = models.CharField(max_length=250, blank=True, verbose_name=_('Comment'))
+
+    state = models.CharField(
+        max_length=30,
+        choices=InternalState.choices,
+        blank=True,
+        default=InternalState.NONE,
+        verbose_name=_('State'),
+        help_text=_('Internal state of the device'),
+    )
+
+    state_note = models.CharField(
+        max_length=250, blank=True, verbose_name=_('State Note')
+    )
+
+    state_changed_at = models.DateTimeField(
+        null=True, blank=True, verbose_name=_('State Changed')
+    )
+
+    state_changed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+        verbose_name=_('State Changed By'),
+    )
 
 
 class DeploymentReportContext(report.mixins.BaseReportContext):
@@ -596,8 +693,10 @@ class DeploymentReportContext(report.mixins.BaseReportContext):
 class Deployment(
     report.mixins.InvenTreeReportMixin,
     InvenTree.models.InvenTreeAttachmentMixin,
+    InvenTree.models.InvenTreeBarcodeMixin,
     InvenTree.models.InvenTreeNotesMixin,
     InvenTree.models.ReferenceIndexingMixin,
+    StateTransitionMixin,
     StatusCodeMixin,
     InvenTree.models.MetadataMixin,
     InvenTree.models.InvenTreeModel,
@@ -610,6 +709,7 @@ class Deployment(
 
     Attributes:
         reference: Unique reference (e.g. DP-0001)
+        creation_date: When the deployment entered the pipeline
         status: Deployment status
         device_type: Type of device to deploy
         build: The build order which produces the device
@@ -676,10 +776,107 @@ class Deployment(
         """Return default values for this model when issuing an API OPTIONS request."""
         return {'reference': generate_next_deployment_reference()}
 
+    @classmethod
+    def barcode_model_type_code(cls):
+        """Return the associated barcode model type code for this model."""
+        return 'DP'
+
     def save(self, *args, **kwargs):
         """Custom save method for the Deployment model."""
         self.reference_int = self.validate_reference_field(self.reference)
         super().save(*args, **kwargs)
+
+    def clean(self):
+        """Validate the deployment.
+
+        - A deployment cannot replace itself
+        - Only a replacement deployment can replace another one
+        """
+        super().clean()
+
+        if self.replaces_id is not None:
+            if self.pk is not None and self.replaces_id == self.pk:
+                raise ValidationError({
+                    'replaces': _('A deployment cannot replace itself')
+                })
+
+            if self.deployment_type != self.DeploymentType.REPLACEMENT:
+                raise ValidationError({
+                    'replaces': _(
+                        'Only a replacement deployment can replace another one'
+                    )
+                })
+
+    # State transitions (the work is done in fleet.services)
+
+    @property
+    def can_deploy(self) -> bool:
+        """Return True if the device of this deployment can be deployed."""
+        return self.status in DeploymentStatusGroups.DEPLOYABLE
+
+    @property
+    def can_schedule(self) -> bool:
+        """Return True if this deployment can be scheduled on a field trip."""
+        return self.status in DeploymentStatusGroups.DEPLOYABLE
+
+    @property
+    def can_recover(self) -> bool:
+        """Return True if the device of this deployment can be recovered."""
+        return self.status == DeploymentStatus.DEPLOYED.value
+
+    def deploy(self, user=None, **kwargs):
+        """Deploy the device (see fleet.services.deployment.deploy)."""
+        return self.handle_transition(
+            self.status,
+            DeploymentStatus.DEPLOYED.value,
+            self,
+            self._action_deploy,
+            user=user,
+            **kwargs,
+        )
+
+    def _action_deploy(self, *args, **kwargs):
+        """Action to be taken when the device is deployed."""
+        from fleet.services import deployment
+
+        return deployment.deploy(self, **kwargs)
+
+    def recover(self, user=None, **kwargs):
+        """Recover the device into stock (see fleet.services.deployment.recover)."""
+        return self.handle_transition(
+            self.status,
+            DeploymentStatus.RECOVERED.value,
+            self,
+            self._action_recover,
+            user=user,
+            **kwargs,
+        )
+
+    def _action_recover(self, *args, **kwargs):
+        """Action to be taken when the device is recovered."""
+        from fleet.services import deployment
+
+        return deployment.recover(self, **kwargs)
+
+    def schedule(self, trip):
+        """Schedule the deployment on a field trip (see fleet.services.deployment.schedule).
+
+        Returns:
+            The deployment (or swap) task
+        """
+        return self.handle_transition(
+            self.status,
+            DeploymentStatus.SCHEDULED.value,
+            self,
+            self._action_schedule,
+            trip=trip,
+        )
+
+    def _action_schedule(self, *args, **kwargs):
+        """Action to be taken when the deployment is scheduled on a trip."""
+        from fleet.services import deployment
+
+        return deployment.schedule(self, kwargs['trip'])
 
     def __str__(self):
         """String representation of a Deployment."""
@@ -710,6 +907,10 @@ class Deployment(
         help_text=_('Deployment Reference'),
         default=generate_next_deployment_reference,
         validators=[validate_deployment_reference],
+    )
+
+    creation_date = models.DateField(
+        auto_now_add=True, editable=False, verbose_name=_('Creation Date')
     )
 
     status = generic.states.fields.InvenTreeCustomStatusModelField(
@@ -828,10 +1029,9 @@ class Deployment(
 
     # Live state cache (written by the monitoring service only)
 
-    health = models.CharField(
-        max_length=20,
-        choices=Health.choices,
-        default=Health.UNKNOWN,
+    health = models.PositiveIntegerField(
+        choices=HealthStatus.items(),
+        default=HealthStatus.UNKNOWN.value,
         verbose_name=_('Health'),
     )
 
@@ -876,20 +1076,17 @@ class DataStream(InvenTree.models.InvenTreeModel):
         enabled: Disabled streams are not monitored
     """
 
-    class State(models.TextChoices):
-        """State of a data stream."""
-
-        UNKNOWN = 'UNKNOWN', _('Unknown')
-        OK = 'OK', _('OK')
-        LATE = 'LATE', _('Late')
-        MISSING = 'MISSING', _('Missing')
-
     class Meta:
         """Metaclass options for the DataStream model."""
 
         verbose_name = _('Data Stream')
         verbose_name_plural = _('Data Streams')
         unique_together = [('deployment', 'key')]
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with this model."""
+        return reverse('api-fleet-stream-list')
 
     def __str__(self):
         """String representation of a DataStream."""
@@ -920,10 +1117,9 @@ class DataStream(InvenTree.models.InvenTreeModel):
 
     last_seen = models.DateTimeField(blank=True, null=True, verbose_name=_('Last Seen'))
 
-    state = models.CharField(
-        max_length=20,
-        choices=State.choices,
-        default=State.UNKNOWN,
+    state = models.PositiveIntegerField(
+        choices=DataStreamStatus.items(),
+        default=DataStreamStatus.UNKNOWN.value,
         verbose_name=_('State'),
     )
 
@@ -973,6 +1169,7 @@ class PositionFix(InvenTree.models.InvenTreeModel):
 
 class Alert(
     InvenTree.models.ReferenceIndexingMixin,
+    StateTransitionMixin,
     StatusCodeMixin,
     InvenTree.models.MetadataMixin,
     InvenTree.models.InvenTreeModel,
@@ -1019,13 +1216,6 @@ class Alert(
         NO_DEPLOY_DATE = 'NO_DEPLOY_DATE', _('No deployment date')
         PARTS_SHORT = 'PARTS_SHORT', _('Parts short')
 
-    class Severity(models.TextChoices):
-        """Alert severity."""
-
-        INFO = 'INFO', _('Info')
-        WARNING = 'WARNING', _('Warning')
-        CRITICAL = 'CRITICAL', _('Critical')
-
     class Resolution(models.TextChoices):
         """How an alert was resolved."""
 
@@ -1064,6 +1254,52 @@ class Alert(
     def __str__(self):
         """String representation of an Alert."""
         return f'{self.reference} - {self.get_alert_type_display()}'
+
+    # State transitions (the work is done in fleet.services.monitoring)
+
+    @property
+    def can_acknowledge(self) -> bool:
+        """Return True if this alert can be acknowledged."""
+        return self.status == AlertStatus.OPEN.value
+
+    @property
+    def can_resolve(self) -> bool:
+        """Return True if this alert can be resolved."""
+        return self.status in AlertStatusGroups.OPEN
+
+    def acknowledge(self, user=None):
+        """Acknowledge the alert (see fleet.services.monitoring.acknowledge_alert)."""
+        return self.handle_transition(
+            self.status,
+            AlertStatus.ACKNOWLEDGED.value,
+            self,
+            self._action_acknowledge,
+            user=user,
+        )
+
+    def _action_acknowledge(self, *args, **kwargs):
+        """Action to be taken when the alert is acknowledged."""
+        from fleet.services import monitoring
+
+        return monitoring.acknowledge_alert(self, user=kwargs.get('user'))
+
+    def resolve(self, user=None, note: str = '', resolution=None):
+        """Resolve the alert (by hand, unless another resolution is given)."""
+        return self.handle_transition(
+            self.status,
+            AlertStatus.RESOLVED.value,
+            self,
+            self._action_resolve,
+            user=user,
+            note=note,
+            resolution=resolution or self.Resolution.MANUAL,
+        )
+
+    def _action_resolve(self, *args, **kwargs):
+        """Action to be taken when the alert is resolved."""
+        from fleet.services import monitoring
+
+        return monitoring.resolve_alert(self, **kwargs)
 
     reference = models.CharField(
         unique=True,
@@ -1115,10 +1351,9 @@ class Alert(
         max_length=20, choices=AlertType.choices, verbose_name=_('Alert Type')
     )
 
-    severity = models.CharField(
-        max_length=20,
-        choices=Severity.choices,
-        default=Severity.WARNING,
+    severity = models.PositiveIntegerField(
+        choices=AlertSeverity.items(),
+        default=AlertSeverity.WARNING.value,
         verbose_name=_('Severity'),
     )
 
@@ -1190,6 +1425,10 @@ class FieldTripReportContext(report.mixins.BaseReportContext):
         title: The title of the report
         tasks: Query set of MaintenanceTask objects
         kit_lines: Query set of TripKitLine objects
+        actions: Query set of the MaintenanceAction objects of the trip tasks
+        parts_used: Parts installed or consumed (part, name, quantity, serials)
+        alerts_resolved: Query set of the Alert objects resolved by the trip tasks
+        team: Query set of the User objects on the trip team
     """
 
     trip: 'FieldTrip'
@@ -1197,13 +1436,19 @@ class FieldTripReportContext(report.mixins.BaseReportContext):
     title: str
     tasks: report.mixins.QuerySet['MaintenanceTask']
     kit_lines: report.mixins.QuerySet['TripKitLine']
+    actions: report.mixins.QuerySet['MaintenanceAction']
+    parts_used: list[dict]
+    alerts_resolved: report.mixins.QuerySet['Alert']
+    team: report.mixins.QuerySet[User]
 
 
 class FieldTrip(
     report.mixins.InvenTreeReportMixin,
     InvenTree.models.InvenTreeAttachmentMixin,
+    InvenTree.models.InvenTreeBarcodeMixin,
     InvenTree.models.InvenTreeNotesMixin,
     InvenTree.models.ReferenceIndexingMixin,
+    StateTransitionMixin,
     StatusCodeMixin,
     InvenTree.models.MetadataMixin,
     InvenTree.models.InvenTreeModel,
@@ -1218,7 +1463,7 @@ class FieldTrip(
         end_date: End date
         vessel: Vessel used for the trip
         team: Users on the trip
-        responsible: User responsible for the trip
+        responsible: User or group responsible for the trip
         kit_location: Stock location which holds the trip parts kit
     """
 
@@ -1241,10 +1486,121 @@ class FieldTrip(
         """Return default values for this model when issuing an API OPTIONS request."""
         return {'reference': generate_next_trip_reference()}
 
+    @classmethod
+    def barcode_model_type_code(cls):
+        """Return the associated barcode model type code for this model."""
+        return 'FT'
+
     def save(self, *args, **kwargs):
         """Custom save method for the FieldTrip model."""
         self.reference_int = self.validate_reference_field(self.reference)
         super().save(*args, **kwargs)
+
+    def clean(self):
+        """Validate the trip: it cannot end before it starts."""
+        super().clean()
+
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError({
+                'end_date': _('The end date cannot be before the start date')
+            })
+
+    # State transitions (the work is done in fleet.services.trips)
+
+    @property
+    def can_prepare_kit(self) -> bool:
+        """Return True if stock can be moved into the kit of this trip."""
+        return self.status in TripStatusGroups.KIT
+
+    @property
+    def can_start(self) -> bool:
+        """Return True if this trip can be started."""
+        return self.status in TripStatusGroups.STARTABLE
+
+    @property
+    def can_reconcile(self) -> bool:
+        """Return True if this trip can be reconciled."""
+        return self.status in TripStatusGroups.RECONCILABLE
+
+    @property
+    def can_cancel(self) -> bool:
+        """Return True if this trip can be cancelled."""
+        return self.status in TripStatusGroups.CANCELLABLE
+
+    def prepare_kit(self, items, user=None):
+        """Move stock into the trip kit (see fleet.services.trips.prepare_kit)."""
+        return self.handle_transition(
+            self.status,
+            TripStatus.KIT_READY.value,
+            self,
+            self._action_prepare_kit,
+            items=items,
+            user=user,
+        )
+
+    def _action_prepare_kit(self, *args, **kwargs):
+        """Action to be taken when the kit is prepared."""
+        from fleet.services import trips
+
+        return trips.prepare_kit(self, kwargs['items'], user=kwargs.get('user'))
+
+    def start_trip(self, user=None):
+        """Start the trip (see fleet.services.trips.start_trip)."""
+        return self.handle_transition(
+            self.status,
+            TripStatus.IN_PROGRESS.value,
+            self,
+            self._action_start,
+            user=user,
+        )
+
+    def _action_start(self, *args, **kwargs):
+        """Action to be taken when the trip is started."""
+        from fleet.services import trips
+
+        return trips.start_trip(self, user=kwargs.get('user'))
+
+    def reconcile_trip(self, user=None, returns=None):
+        """Return the kit and close the trip (see fleet.services.trips.reconcile).
+
+        Returns:
+            The reconcile result
+        """
+        return self.handle_transition(
+            self.status,
+            TripStatus.CLOSED.value,
+            self,
+            self._action_reconcile,
+            user=user,
+            returns=returns,
+        )
+
+    def _action_reconcile(self, *args, **kwargs):
+        """Action to be taken when the trip is reconciled."""
+        from fleet.services import trips
+
+        return trips.reconcile(
+            self, user=kwargs.get('user'), returns=kwargs.get('returns')
+        )
+
+    def cancel_trip(self, user=None, reason: str = ''):
+        """Cancel the trip (see fleet.services.trips.cancel_trip)."""
+        return self.handle_transition(
+            self.status,
+            TripStatus.CANCELLED.value,
+            self,
+            self._action_cancel,
+            user=user,
+            reason=reason,
+        )
+
+    def _action_cancel(self, *args, **kwargs):
+        """Action to be taken when the trip is cancelled."""
+        from fleet.services import trips
+
+        return trips.cancel_trip(
+            self, user=kwargs.get('user'), reason=kwargs.get('reason', '')
+        )
 
     def __str__(self):
         """String representation of a FieldTrip."""
@@ -1256,13 +1612,59 @@ class FieldTrip(
 
     def report_context(self) -> FieldTripReportContext:
         """Generate custom report context data."""
+        actions = MaintenanceAction.objects.filter(task__trip=self).select_related(
+            'task', 'part', 'component_in', 'component_out', 'fault_code'
+        )
+
         return {
             'trip': self,
             'reference': self.reference,
             'title': str(self),
-            'tasks': self.tasks.all(),
-            'kit_lines': self.kit_lines.all(),
+            'tasks': self.tasks.select_related('device', 'site', 'deployment').order_by(
+                'reference_int'
+            ),
+            'kit_lines': self.kit_lines.select_related('part', 'stock_item'),
+            'actions': actions.order_by('task__reference_int', 'created_at', 'pk'),
+            'parts_used': self.parts_used(),
+            'alerts_resolved': Alert.objects.filter(
+                task__trip=self, status=AlertStatus.RESOLVED.value
+            ).order_by('reference_int'),
+            'team': self.team.all(),
         }
+
+    def parts_used(self) -> list[dict]:
+        """Parts installed or consumed by the tasks of this trip.
+
+        Returns:
+            One dict per part: pk, name, quantity and the installed serials
+        """
+        used = {}
+
+        for action in MaintenanceAction.objects.filter(
+            task__trip=self,
+            action__in=[
+                MaintenanceAction.Action.REPLACE,
+                MaintenanceAction.Action.ADD,
+                MaintenanceAction.Action.CONSUME,
+            ],
+            part__isnull=False,
+        ).select_related('part', 'component_in'):
+            row = used.setdefault(
+                action.part.pk,
+                {
+                    'part': action.part.pk,
+                    'name': action.part.full_name,
+                    'quantity': 0,
+                    'serials': [],
+                },
+            )
+
+            row['quantity'] += float(action.quantity or 0)
+
+            if action.component_in is not None and action.component_in.serial:
+                row['serials'].append(action.component_in.serial)
+
+        return sorted(used.values(), key=lambda row: row['name'])
 
     reference = models.CharField(
         unique=True,
@@ -1296,12 +1698,13 @@ class FieldTrip(
     )
 
     responsible = models.ForeignKey(
-        User,
+        users.models.Owner,
         on_delete=models.SET_NULL,
         blank=True,
         null=True,
         related_name='fleet_trips_responsible',
         verbose_name=_('Responsible'),
+        help_text=_('User or group responsible for this trip'),
     )
 
     kit_location = models.ForeignKey(
@@ -1324,6 +1727,8 @@ class TripKitLine(InvenTree.models.InvenTreeModel):
         quantity_planned: Quantity to take
         source: Why the part is in the kit
         note: Free text note
+        stock_item: The device to take (a device to deploy)
+        task: The task which needs the line (a device to deploy)
     """
 
     class Source(models.TextChoices):
@@ -1333,12 +1738,18 @@ class TripKitLine(InvenTree.models.InvenTreeModel):
         LIKELY = 'LIKELY', _('Likely')
         ALERT = 'ALERT', _('Alert')
         MANUAL = 'MANUAL', _('Manual')
+        DEVICE = 'DEVICE', _('Device to deploy')
 
     class Meta:
         """Metaclass options for the TripKitLine model."""
 
         verbose_name = _('Trip Kit Line')
         verbose_name_plural = _('Trip Kit Lines')
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with the TripKitLine model."""
+        return reverse('api-fleet-trip-kit-line-list')
 
     def __str__(self):
         """String representation of a TripKitLine."""
@@ -1375,6 +1786,26 @@ class TripKitLine(InvenTree.models.InvenTreeModel):
 
     note = models.CharField(max_length=250, blank=True, verbose_name=_('Note'))
 
+    stock_item = models.ForeignKey(
+        'stock.StockItem',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='fleet_trip_kit_lines',
+        verbose_name=_('Stock Item'),
+        help_text=_('The device to take (a device to deploy)'),
+    )
+
+    task = models.ForeignKey(
+        'fleet.MaintenanceTask',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='kit_lines',
+        verbose_name=_('Task'),
+        help_text=_('The task which needs this line'),
+    )
+
 
 class MaintenanceTaskReportContext(report.mixins.BaseReportContext):
     """Context for the MaintenanceTask model.
@@ -1385,9 +1816,12 @@ class MaintenanceTaskReportContext(report.mixins.BaseReportContext):
         title: The title of the report
         device: The serialized device which was worked on
         deployment: The deployment context of the task
-        site: The site of the task
+        site: The site of the task (or of its deployment)
+        display_name: The site nickname, else the device serial
         checklist: Query set of ChecklistResult objects
         actions: Query set of MaintenanceAction objects
+        alerts: Query set of Alert objects addressed by the task
+        technicians: Query set of the User objects who worked on the task
     """
 
     task: 'MaintenanceTask'
@@ -1396,15 +1830,20 @@ class MaintenanceTaskReportContext(report.mixins.BaseReportContext):
     device: 'stock.models.StockItem'
     deployment: 'Deployment | None'
     site: 'Site | None'
+    display_name: str
     checklist: report.mixins.QuerySet['ChecklistResult']
     actions: report.mixins.QuerySet['MaintenanceAction']
+    alerts: report.mixins.QuerySet['Alert']
+    technicians: report.mixins.QuerySet[User]
 
 
 class MaintenanceTask(
     report.mixins.InvenTreeReportMixin,
     InvenTree.models.InvenTreeAttachmentMixin,
+    InvenTree.models.InvenTreeBarcodeMixin,
     InvenTree.models.InvenTreeNotesMixin,
     InvenTree.models.ReferenceIndexingMixin,
+    StateTransitionMixin,
     StatusCodeMixin,
     InvenTree.models.MetadataMixin,
     InvenTree.models.InvenTreeModel,
@@ -1415,6 +1854,7 @@ class MaintenanceTask(
         reference: Unique reference (e.g. MT-0001)
         status: Task status
         task_type: Type of task
+        description: What needs to be done
         device: The serialized device worked on
         deployment: Deployment context (null for a workshop task)
         site: Site of the task
@@ -1438,15 +1878,7 @@ class MaintenanceTask(
     REFERENCE_PATTERN_SETTING = 'FLEET_TASK_REFERENCE_PATTERN'
     STATUS_CLASS = TaskStatus
 
-    class TaskType(models.TextChoices):
-        """Type of maintenance task."""
-
-        PREVENTIVE = 'PREVENTIVE', _('Preventive')
-        CORRECTIVE = 'CORRECTIVE', _('Corrective')
-        DEPLOYMENT = 'DEPLOYMENT', _('Deployment')
-        RECOVERY = 'RECOVERY', _('Recovery')
-        SWAP = 'SWAP', _('Swap')
-        INSPECTION = 'INSPECTION', _('Inspection')
+    TaskType = TaskType
 
     class Meta:
         """Metaclass options for the MaintenanceTask model."""
@@ -1464,10 +1896,104 @@ class MaintenanceTask(
         """Return default values for this model when issuing an API OPTIONS request."""
         return {'reference': generate_next_task_reference()}
 
+    @classmethod
+    def barcode_model_type_code(cls):
+        """Return the associated barcode model type code for this model."""
+        return 'MT'
+
     def save(self, *args, **kwargs):
         """Custom save method for the MaintenanceTask model."""
         self.reference_int = self.validate_reference_field(self.reference)
         super().save(*args, **kwargs)
+
+    @staticmethod
+    def validate_device(device, deployment) -> None:
+        """A task needs a single serialized unit, matching its deployment."""
+        if not device.serialized or device.quantity != 1:
+            raise ValidationError({'device': _('Select a single serialized unit')})
+
+        if deployment is not None and deployment.device_id != device.pk:
+            raise ValidationError({
+                'deployment': _('The deployment is for a different device')
+            })
+
+    def clean(self):
+        """Validate the task (see validate_device)."""
+        super().clean()
+
+        if self.device_id is not None:
+            self.validate_device(
+                self.device, self.deployment if self.deployment_id else None
+            )
+
+    # State transitions (the work is done in fleet.services.maintenance)
+
+    @property
+    def can_start(self) -> bool:
+        """Return True if this task can be started."""
+        return self.status in TaskStatusGroups.STARTABLE
+
+    @property
+    def can_complete(self) -> bool:
+        """Return True if this task can be completed."""
+        return self.status == TaskStatus.IN_PROGRESS.value
+
+    @property
+    def can_cancel(self) -> bool:
+        """Return True if this task can be cancelled."""
+        return self.status in TaskStatusGroups.OPEN
+
+    def start_task(self, user=None):
+        """Start the task (see fleet.services.maintenance.start)."""
+        return self.handle_transition(
+            self.status,
+            TaskStatus.IN_PROGRESS.value,
+            self,
+            self._action_start,
+            user=user,
+        )
+
+    def _action_start(self, *args, **kwargs):
+        """Action to be taken when the task is started."""
+        from fleet.services import maintenance
+
+        return maintenance.start(self, user=kwargs.get('user'))
+
+    def complete_task(self, user=None, **kwargs):
+        """Close the task (see fleet.services.maintenance.complete)."""
+        return self.handle_transition(
+            self.status,
+            TaskStatus.COMPLETED.value,
+            self,
+            self._action_complete,
+            user=user,
+            **kwargs,
+        )
+
+    def _action_complete(self, *args, **kwargs):
+        """Action to be taken when the task is completed."""
+        from fleet.services import maintenance
+
+        return maintenance.complete(self, **kwargs)
+
+    def cancel_task(self, user=None, reason: str = ''):
+        """Cancel the task (see fleet.services.maintenance.cancel)."""
+        return self.handle_transition(
+            self.status,
+            TaskStatus.CANCELLED.value,
+            self,
+            self._action_cancel,
+            user=user,
+            reason=reason,
+        )
+
+    def _action_cancel(self, *args, **kwargs):
+        """Action to be taken when the task is cancelled."""
+        from fleet.services import maintenance
+
+        return maintenance.cancel(
+            self, user=kwargs.get('user'), reason=kwargs.get('reason', '')
+        )
 
     def __str__(self):
         """String representation of a MaintenanceTask."""
@@ -1479,15 +2005,20 @@ class MaintenanceTask(
 
     def report_context(self) -> MaintenanceTaskReportContext:
         """Generate custom report context data."""
+        site = self.site or (self.deployment.site if self.deployment else None)
+
         return {
             'task': self,
             'reference': self.reference,
             'title': str(self),
             'device': self.device,
             'deployment': self.deployment,
-            'site': self.site,
+            'site': site,
+            'display_name': site.name if site else (self.device.serial or ''),
             'checklist': self.checklist.all(),
             'actions': self.actions.all(),
+            'alerts': self.alerts.all(),
+            'technicians': self.technicians.all(),
         }
 
     reference = models.CharField(
@@ -1514,6 +2045,13 @@ class MaintenanceTask(
         choices=TaskType.choices,
         default=TaskType.PREVENTIVE,
         verbose_name=_('Task Type'),
+    )
+
+    description = models.CharField(
+        max_length=250,
+        blank=True,
+        verbose_name=_('Description'),
+        help_text=_('What needs to be done'),
     )
 
     device = models.ForeignKey(
@@ -1649,6 +2187,11 @@ class ChecklistResult(InvenTree.models.InvenTreeModel):
         verbose_name_plural = _('Checklist Results')
         ordering = ['task', 'sequence', 'pk']
 
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with this model."""
+        return reverse('api-fleet-checklist-result-list')
+
     def __str__(self):
         """String representation of a ChecklistResult."""
         return f'{self.task} - {self.text}'
@@ -1737,6 +2280,11 @@ class MaintenanceAction(
         verbose_name = _('Maintenance Action')
         verbose_name_plural = _('Maintenance Actions')
         ordering = ['task', 'created_at', 'pk']
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with this model."""
+        return reverse('api-fleet-task-action-list')
 
     def __str__(self):
         """String representation of a MaintenanceAction."""

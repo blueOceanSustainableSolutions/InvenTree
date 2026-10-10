@@ -375,6 +375,26 @@ export function SearchDrawer({
         enabled:
           user.hasViewRole(UserRoles.return_order) &&
           userSettings.isSet('SEARCH_PREVIEW_SHOW_RETURN_ORDERS')
+      },
+      {
+        model: ModelType.deployment,
+        parameters: {},
+        enabled: user.hasViewRole(UserRoles.fleet)
+      },
+      {
+        model: ModelType.maintenancetask,
+        parameters: {},
+        enabled: user.hasViewRole(UserRoles.fleet)
+      },
+      {
+        model: ModelType.fieldtrip,
+        parameters: {},
+        enabled: user.hasViewRole(UserRoles.fleet)
+      },
+      {
+        model: ModelType.site,
+        parameters: {},
+        enabled: user.hasViewRole(UserRoles.fleet)
       }
     ];
   }, [user, userSettings]);

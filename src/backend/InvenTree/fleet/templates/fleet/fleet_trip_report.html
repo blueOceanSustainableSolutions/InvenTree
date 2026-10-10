@@ -1,0 +1,237 @@
+{% extends "report/inventree_report_base.html" %}
+
+{% load i18n %}
+{% load report %}
+{% load inventree_extras %}
+{% load markdownify %}
+
+{% comment %}
+Fleet trip report: one field trip (model type "fieldtrip").
+Installed with: python manage.py fleet_install_reports
+{% endcomment %}
+
+{% block page_margin %}
+margin: 2cm;
+margin-top: 4cm;
+{% endblock page_margin %}
+
+{% block style %}
+
+.header-right {
+    text-align: right;
+    float: right;
+}
+
+.logo {
+    height: 20mm;
+    vertical-align: middle;
+}
+
+.details-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.details-table th {
+    text-align: left;
+    width: 30%;
+}
+
+.details-table td, .details-table th {
+    padding: 4px;
+    border-bottom: 1px solid #999;
+}
+
+.list-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 2mm;
+}
+
+.list-table th {
+    text-align: left;
+    border-bottom: 1px solid #333;
+    padding: 3px;
+}
+
+.list-table td {
+    border-bottom: 1px solid #ccc;
+    padding: 3px;
+    vertical-align: top;
+}
+
+.passed { color: #2b8a3e; font-weight: bold; }
+.failed { color: #c92a2a; font-weight: bold; }
+
+{% endblock style %}
+
+{% block bottom_left %}
+content: "v{{ report_revision }} - {% format_date date %}";
+{% endblock bottom_left %}
+
+{% block header_content %}
+    <img class='logo' src="{% logo_image %}" alt="logo" width="150">
+
+    <div class='header-right'>
+        <h3>{% trans "Field Trip Report" %} {{ reference }}</h3>
+        <small>{{ trip.title }}</small>
+    </div>
+
+    <hr>
+{% endblock header_content %}
+
+{% block page_content %}
+
+<table class='details-table'>
+    <tr>
+        <th>{% trans "Trip" %}</th>
+        <td>{{ reference }} - {{ trip.title }}</td>
+    </tr>
+    <tr>
+        <th>{% trans "Status" %}</th>
+        <td>{{ trip.get_status_display }}</td>
+    </tr>
+    <tr>
+        <th>{% trans "Dates" %}</th>
+        <td>{% format_date trip.start_date %}{% if trip.end_date %} - {% format_date trip.end_date %}{% endif %}</td>
+    </tr>
+    {% if trip.vessel %}
+    <tr>
+        <th>{% trans "Vessel" %}</th>
+        <td>{{ trip.vessel }}</td>
+    </tr>
+    {% endif %}
+    <tr>
+        <th>{% trans "Responsible" %}</th>
+        <td>{% if trip.responsible %}{{ trip.responsible.name }}{% endif %}</td>
+    </tr>
+    <tr>
+        <th>{% trans "Team" %}</th>
+        <td>{% for user in team %}{{ user.get_full_name|default:user.username }}{% if not forloop.last %}, {% endif %}{% endfor %}</td>
+    </tr>
+</table>
+
+<h4>{% trans "Tasks" %}</h4>
+{% if tasks %}
+<table class='list-table'>
+    <tr>
+        <th>{% trans "Task" %}</th>
+        <th>{% trans "Type" %}</th>
+        <th>{% trans "Site / Device" %}</th>
+        <th>{% trans "Status" %}</th>
+        <th>{% trans "Data Check" %}</th>
+        <th>{% trans "Summary" %}</th>
+    </tr>
+    {% for task in tasks %}
+    <tr>
+        <td>{{ task.reference }}</td>
+        <td>{{ task.get_task_type_display }}</td>
+        <td>{% if task.site %}{{ task.site.name }} - {% endif %}#{{ task.device.serial }}</td>
+        <td>{{ task.get_status_display }}</td>
+        <td>
+            {% if task.verification.passed %}
+            <span class='passed'>{% trans "Passed" %}</span>
+            {% elif task.verification_override_reason %}
+            <span class='failed'>{% trans "Override" %}</span>: {{ task.verification_override_reason }}
+            {% endif %}
+        </td>
+        <td>{{ task.summary|linebreaksbr }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p><em>{% trans "No tasks" %}</em></p>
+{% endif %}
+
+<h4>{% trans "Actions" %}</h4>
+{% if actions %}
+<table class='list-table'>
+    <tr>
+        <th>{% trans "Task" %}</th>
+        <th>{% trans "Action" %}</th>
+        <th>{% trans "Removed" %}</th>
+        <th>{% trans "Installed / Used" %}</th>
+        <th>{% trans "Note" %}</th>
+    </tr>
+    {% for action in actions %}
+    <tr>
+        <td>{{ action.task.reference }}</td>
+        <td>{{ action.get_action_display }}</td>
+        <td>
+            {% if action.component_out and action.action != 'CONSUME' %}
+            {{ action.component_out.part.full_name }}{% if action.component_out.serial %} #{{ action.component_out.serial }}{% endif %}
+            {% if action.disposition and action.disposition != 'keep' %}({{ action.disposition }}){% endif %}
+            {% endif %}
+        </td>
+        <td>
+            {% if action.component_in %}
+            {{ action.component_in.part.full_name }}{% if action.component_in.serial %} #{{ action.component_in.serial }}{% endif %}
+            {% elif action.action == 'CONSUME' and action.part %}
+            {{ action.quantity|floatformat:"-3" }} x {{ action.part.full_name }}
+            {% endif %}
+        </td>
+        <td>{{ action.note }}{% if action.fault_code %} [{{ action.fault_code.name }}]{% endif %}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p><em>{% trans "No actions" %}</em></p>
+{% endif %}
+
+<h4>{% trans "Parts Used" %}</h4>
+{% if parts_used %}
+<table class='list-table'>
+    <tr>
+        <th>{% trans "Part" %}</th>
+        <th>{% trans "Quantity" %}</th>
+        <th>{% trans "Serials" %}</th>
+    </tr>
+    {% for row in parts_used %}
+    <tr>
+        <td>{{ row.name }}</td>
+        <td>{{ row.quantity|floatformat:"-3" }}</td>
+        <td>{{ row.serials|join:", " }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p><em>{% trans "No parts used" %}</em></p>
+{% endif %}
+
+<h4>{% trans "Planned Kit" %}</h4>
+{% if kit_lines %}
+<table class='list-table'>
+    <tr>
+        <th>{% trans "Part" %}</th>
+        <th>{% trans "Quantity" %}</th>
+        <th>{% trans "Source" %}</th>
+        <th>{% trans "Note" %}</th>
+    </tr>
+    {% for line in kit_lines %}
+    <tr>
+        <td>{{ line.part.full_name }}{% if line.stock_item %} #{{ line.stock_item.serial }}{% endif %}</td>
+        <td>{{ line.quantity_planned|floatformat:"-3" }}</td>
+        <td>{{ line.get_source_display }}</td>
+        <td>{{ line.note }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p><em>{% trans "No kit lines" %}</em></p>
+{% endif %}
+
+{% if alerts_resolved %}
+<h4>{% trans "Alerts Resolved" %}</h4>
+<ul>
+    {% for alert in alerts_resolved %}
+    <li>{{ alert.reference }} - {{ alert.get_alert_type_display }}: {{ alert.message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+{% if trip.notes %}
+<h4>{% trans "Notes" %}</h4>
+{{ trip.notes|markdownify }}
+{% endif %}
+
+{% endblock page_content %}

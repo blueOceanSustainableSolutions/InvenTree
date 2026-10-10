@@ -15,6 +15,7 @@ import {
   IconArrowRight,
   IconBookmark,
   IconBoxPadding,
+  IconBuildingLighthouse,
   IconChecklist,
   IconHistory,
   IconInfoCircle,
@@ -68,6 +69,10 @@ import { StatusRenderer } from '../../components/render/StatusRenderer';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
 import { useApi } from '../../contexts/ApiContext';
 import { formatCurrency, formatDecimal } from '../../defaults/formatters';
+import {
+  StockFleetPanel,
+  useStockFleetInfo
+} from '../../fleet/panels/StockFleetPanel';
 import { useDisassembleBuildOutputForm } from '../../forms/BuildForms';
 import {
   useFindSerialNumberForm,
@@ -556,6 +561,8 @@ export default function StockDetail() {
     return stockitem?.part_detail?.assembly;
   }, [trackedBomItemQuery, stockitem]);
 
+  const fleetInfo = useStockFleetInfo(stockitem);
+
   const stockPanels: PanelType[] = useMemo(() => {
     return [
       {
@@ -665,6 +672,17 @@ export default function StockDetail() {
         content: <InstalledItemsTable stockItem={stockitem} />
       },
       {
+        name: 'fleet',
+        label: t`Fleet`,
+        icon: <IconBuildingLighthouse />,
+        hidden: !fleetInfo.visible,
+        content: stockitem?.pk ? (
+          <StockFleetPanel stockitem={stockitem} info={fleetInfo} />
+        ) : (
+          <Skeleton />
+        )
+      },
+      {
         name: 'child_items',
         label: t`Child Items`,
         icon: <IconSitemap />,
@@ -696,7 +714,8 @@ export default function StockDetail() {
     serialNumbers,
     serialNumbersQuery,
     id,
-    user
+    user,
+    fleetInfo
   ]);
 
   const breadcrumbs = useMemo(

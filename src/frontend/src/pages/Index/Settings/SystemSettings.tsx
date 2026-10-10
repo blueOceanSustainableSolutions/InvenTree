@@ -4,6 +4,7 @@ import {
   IconBellCog,
   IconBox,
   IconBuildingFactory2,
+  IconBuildingLighthouse,
   IconCurrencyDollar,
   IconDeviceDesktop,
   IconFileAnalytics,
@@ -332,6 +333,60 @@ export default function SystemSettings() {
               ]}
             />
           </>
+        )
+      },
+      {
+        name: 'fleet',
+        label: t`Fleet`,
+        icon: <IconBuildingLighthouse />,
+        content: (
+          <Stack>
+            <GlobalSettingList
+              heading={t`Deployment Pipeline`}
+              keys={[
+                'FLEET_DEFAULT_CUSTOMER',
+                'FLEET_WORKSHOP_LOCATION',
+                'FLEET_KIT_PARENT_LOCATION',
+                'FLEET_READY_LEAD_DAYS',
+                'FLEET_UNSCHEDULED_REMINDER_DAYS'
+              ]}
+            />
+            <GlobalSettingList
+              heading={t`Monitoring`}
+              keys={[
+                'FLEET_DATA_PROVIDER',
+                'FLEET_DATA_API_URL',
+                'FLEET_DATA_API_TOKEN',
+                'FLEET_POLL_INTERVAL_MINUTES',
+                'FLEET_NO_CONTACT_HOURS',
+                'FLEET_STREAM_MISSING_FACTOR',
+                'FLEET_GEOFENCE_DEFAULT_RADIUS_M',
+                'FLEET_GEOFENCE_WARN_PERCENT'
+              ]}
+            />
+            <GlobalSettingList
+              heading={t`Maintenance Planning`}
+              keys={['FLEET_PLAN_HORIZON_DAYS', 'FLEET_PM_DUE_WARNING_DAYS']}
+            />
+            <GlobalSettingList
+              heading={t`Notifications`}
+              keys={[
+                'FLEET_TEAMS_WEBHOOK_URL',
+                'FLEET_ALERT_EMAILS',
+                'FLEET_PORTAL_URL'
+              ]}
+            />
+            <GlobalSettingList
+              heading={t`References`}
+              keys={[
+                'FLEET_SITE_REFERENCE_PATTERN',
+                'FLEET_DEPLOYMENT_REFERENCE_PATTERN',
+                'FLEET_TASK_REFERENCE_PATTERN',
+                'FLEET_TRIP_REFERENCE_PATTERN',
+                'FLEET_ALERT_REFERENCE_PATTERN'
+              ]}
+            />
+          </Stack>
         )
       },
       {

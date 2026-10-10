@@ -1321,7 +1321,7 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'name': _('Fleet Data API URL'),
         'description': _('Base URL of the data dashboard API'),
         'default': '',
-        'validator': BaseURLValidator(),
+        'validator': fleet.validators.validate_optional_url,
     },
     'FLEET_DATA_API_TOKEN': {
         'name': _('Fleet Data API Token'),
@@ -1433,7 +1433,7 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
             'Microsoft Teams Workflows webhook URL for fleet notifications'
         ),
         'default': '',
-        'validator': BaseURLValidator(),
+        'validator': fleet.validators.validate_optional_url,
         'protected': True,
     },
     'FLEET_ALERT_EMAILS': {
@@ -1448,6 +1448,15 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
             'Base URL of the Fleet Portal, used for links in notifications'
         ),
         'default': '',
-        'validator': BaseURLValidator(),
+        'validator': fleet.validators.validate_optional_url,
+    },
+    '_FLEET_POLL_STATE': {
+        'name': _('Fleet poll state'),
+        'description': _(
+            'Last data platform poll and consecutive failures (managed by the fleet monitor)'
+        ),
+        'validator': json.loads,
+        'default': '{}',
+        'hidden': True,
     },
 }

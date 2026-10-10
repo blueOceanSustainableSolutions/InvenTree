@@ -1,0 +1,236 @@
+{% extends "report/inventree_report_base.html" %}
+
+{% load i18n %}
+{% load report %}
+{% load inventree_extras %}
+{% load markdownify %}
+
+{% comment %}
+Fleet service report: one maintenance task (model type "maintenancetask").
+Installed with: python manage.py fleet_install_reports
+{% endcomment %}
+
+{% block page_margin %}
+margin: 2cm;
+margin-top: 4cm;
+{% endblock page_margin %}
+
+{% block style %}
+
+.header-right {
+    text-align: right;
+    float: right;
+}
+
+.logo {
+    height: 20mm;
+    vertical-align: middle;
+}
+
+.details-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.details-table th {
+    text-align: left;
+    width: 30%;
+}
+
+.details-table td, .details-table th {
+    padding: 4px;
+    border-bottom: 1px solid #999;
+}
+
+.list-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 2mm;
+}
+
+.list-table th {
+    text-align: left;
+    border-bottom: 1px solid #333;
+    padding: 3px;
+}
+
+.list-table td {
+    border-bottom: 1px solid #ccc;
+    padding: 3px;
+    vertical-align: top;
+}
+
+.result-OK { color: #2b8a3e; }
+.result-ISSUE { color: #c92a2a; font-weight: bold; }
+.result-PENDING { color: #868e96; }
+
+.passed { color: #2b8a3e; font-weight: bold; }
+.failed { color: #c92a2a; font-weight: bold; }
+
+{% endblock style %}
+
+{% block bottom_left %}
+content: "v{{ report_revision }} - {% format_date date %}";
+{% endblock bottom_left %}
+
+{% block header_content %}
+    <img class='logo' src="{% logo_image %}" alt="logo" width="150">
+
+    <div class='header-right'>
+        <h3>{% trans "Service Report" %} {{ reference }}</h3>
+        <small>{{ display_name }} - {{ task.get_task_type_display }}</small>
+    </div>
+
+    <hr>
+{% endblock header_content %}
+
+{% block page_content %}
+
+<table class='details-table'>
+    <tr>
+        <th>{% trans "Task" %}</th>
+        <td>{{ reference }}{% if task.description %} - {{ task.description }}{% endif %}</td>
+    </tr>
+    <tr>
+        <th>{% trans "Status" %}</th>
+        <td>{{ task.get_status_display }}</td>
+    </tr>
+    <tr>
+        <th>{% trans "Device" %}</th>
+        <td>{{ device.part.full_name }} #{{ device.serial }}</td>
+    </tr>
+    {% if site %}
+    <tr>
+        <th>{% trans "Site" %}</th>
+        <td>{{ site.reference }} - {{ site.name }}</td>
+    </tr>
+    {% endif %}
+    {% if deployment %}
+    <tr>
+        <th>{% trans "Deployment" %}</th>
+        <td>{{ deployment.reference }}</td>
+    </tr>
+    {% endif %}
+    {% if task.trip %}
+    <tr>
+        <th>{% trans "Field Trip" %}</th>
+        <td>{{ task.trip }}</td>
+    </tr>
+    {% endif %}
+    <tr>
+        <th>{% trans "Started" %}</th>
+        <td>{% if task.started_at %}{% format_datetime task.started_at %}{% endif %}</td>
+    </tr>
+    <tr>
+        <th>{% trans "Completed" %}</th>
+        <td>{% if task.completed_at %}{% format_datetime task.completed_at %}{% endif %}</td>
+    </tr>
+    <tr>
+        <th>{% trans "Technicians" %}</th>
+        <td>{% for user in technicians %}{{ user.get_full_name|default:user.username }}{% if not forloop.last %}, {% endif %}{% endfor %}</td>
+    </tr>
+    {% if task.labour_minutes is not None %}
+    <tr>
+        <th>{% trans "Labour (minutes)" %}</th>
+        <td>{{ task.labour_minutes }}</td>
+    </tr>
+    {% endif %}
+</table>
+
+{% if task.as_found %}
+<h4>{% trans "As Found" %}</h4>
+<p>{{ task.as_found|linebreaksbr }}</p>
+{% endif %}
+
+<h4>{% trans "Checklist" %}</h4>
+{% if checklist %}
+<table class='list-table'>
+    <tr>
+        <th>{% trans "Check" %}</th>
+        <th>{% trans "Result" %}</th>
+        <th>{% trans "Value" %}</th>
+        <th>{% trans "Note" %}</th>
+    </tr>
+    {% for item in checklist %}
+    <tr>
+        <td>{{ item.text }}</td>
+        <td class='result-{{ item.result }}'>{{ item.get_result_display }}</td>
+        <td>{{ item.value }}{% if item.template_item.unit %} {{ item.template_item.unit }}{% endif %}</td>
+        <td>{{ item.note }}{% if item.fault_code %} [{{ item.fault_code.name }}]{% endif %}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p><em>{% trans "No checklist" %}</em></p>
+{% endif %}
+
+<h4>{% trans "Actions and Parts" %}</h4>
+{% if actions %}
+<table class='list-table'>
+    <tr>
+        <th>{% trans "Action" %}</th>
+        <th>{% trans "Removed" %}</th>
+        <th>{% trans "Installed / Used" %}</th>
+        <th>{% trans "Note" %}</th>
+    </tr>
+    {% for action in actions %}
+    <tr>
+        <td>{{ action.get_action_display }}</td>
+        <td>
+            {% if action.component_out and action.action != 'CONSUME' %}
+            {{ action.component_out.part.full_name }}{% if action.component_out.serial %} #{{ action.component_out.serial }}{% endif %}
+            {% if action.disposition and action.disposition != 'keep' %}({{ action.disposition }}){% endif %}
+            {% endif %}
+        </td>
+        <td>
+            {% if action.component_in %}
+            {{ action.component_in.part.full_name }}{% if action.component_in.serial %} #{{ action.component_in.serial }}{% endif %}
+            {% elif action.action == 'CONSUME' and action.part %}
+            {{ action.quantity|floatformat:"-3" }} x {{ action.part.full_name }}
+            {% endif %}
+        </td>
+        <td>{{ action.note }}{% if action.fault_code %} [{{ action.fault_code.name }}]{% endif %}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p><em>{% trans "No actions" %}</em></p>
+{% endif %}
+
+<h4>{% trans "Data Check" %}</h4>
+{% if task.verification %}
+<p>
+    {% if task.verification.passed %}
+    <span class='passed'>{% trans "Passed" %}</span>
+    {% else %}
+    <span class='failed'>{% trans "Not passed" %}</span>
+    {% endif %}
+    ({% trans "checked" %} {{ task.verification.checked_at }})
+</p>
+{% else %}
+<p><em>{% trans "Not checked" %}</em></p>
+{% endif %}
+{% if task.verification_override_reason %}
+<p>{% trans "Closed without a passed data check" %}: {{ task.verification_override_reason }}</p>
+{% endif %}
+
+{% if alerts %}
+<h4>{% trans "Alerts Addressed" %}</h4>
+<ul>
+    {% for alert in alerts %}
+    <li>{{ alert.reference }} - {{ alert.get_alert_type_display }}: {{ alert.message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+<h4>{% trans "Summary" %}</h4>
+{% if task.summary %}
+<p>{{ task.summary|linebreaksbr }}</p>
+{% endif %}
+
+{% if task.notes %}
+<h4>{% trans "Notes" %}</h4>
+{{ task.notes|markdownify }}
+{% endif %}
+
+{% endblock page_content %}

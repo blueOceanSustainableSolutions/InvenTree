@@ -16,7 +16,11 @@ export const statusCodeList: Record<string, ModelType> = {
   SalesOrderStatus: ModelType.salesorder,
   StockHistoryCode: ModelType.stockhistory,
   StockStatus: ModelType.stockitem,
-  DataImportStatusCode: ModelType.importsession
+  DataImportStatusCode: ModelType.importsession,
+  DeploymentStatus: ModelType.deployment,
+  AlertStatus: ModelType.alert,
+  TaskStatus: ModelType.maintenancetask,
+  TripStatus: ModelType.fieldtrip
 };
 
 /*

@@ -34,6 +34,9 @@ class DeploymentStatusGroups:
     # Deployments which are finished
     CLOSED = [DeploymentStatus.RECOVERED.value, DeploymentStatus.CANCELLED.value]
 
+    # Deployments whose device can be deployed (or scheduled on a trip)
+    DEPLOYABLE = [DeploymentStatus.READY.value, DeploymentStatus.SCHEDULED.value]
+
 
 class TaskStatus(StatusCode):
     """Defines a set of status codes for a MaintenanceTask."""
@@ -53,6 +56,9 @@ class TaskStatusGroups:
         TaskStatus.SCHEDULED.value,
         TaskStatus.IN_PROGRESS.value,
     ]
+
+    # Tasks which can be started
+    STARTABLE = [TaskStatus.PROPOSED.value, TaskStatus.SCHEDULED.value]
 
 
 class TripStatus(StatusCode):
@@ -76,6 +82,26 @@ class TripStatusGroups:
         TripStatus.RECONCILING.value,
     ]
 
+    # Trips whose kit can be prepared (stock moved into the kit)
+    KIT = [
+        TripStatus.PLANNING.value,
+        TripStatus.KIT_READY.value,
+        TripStatus.IN_PROGRESS.value,
+    ]
+
+    # Trips which can be started
+    STARTABLE = [TripStatus.PLANNING.value, TripStatus.KIT_READY.value]
+
+    # Trips which can be reconciled
+    RECONCILABLE = [
+        TripStatus.KIT_READY.value,
+        TripStatus.IN_PROGRESS.value,
+        TripStatus.RECONCILING.value,
+    ]
+
+    # Trips which can be cancelled (not started yet)
+    CANCELLABLE = [TripStatus.PLANNING.value, TripStatus.KIT_READY.value]
+
 
 class AlertStatus(StatusCode):
     """Defines a set of status codes for an Alert."""
@@ -89,3 +115,32 @@ class AlertStatusGroups:
     """Groups for AlertStatus codes."""
 
     OPEN = [AlertStatus.OPEN.value, AlertStatus.ACKNOWLEDGED.value]
+
+
+class AlertSeverity(StatusCode):
+    """Defines the severity of an Alert (higher is more severe)."""
+
+    INFO = 10, _('Info'), ColorEnum.info
+    WARNING = 20, _('Warning'), ColorEnum.warning
+    CRITICAL = 30, _('Critical'), ColorEnum.danger
+
+
+class HealthStatus(StatusCode):
+    """Defines the overall health of a deployed device (cached by monitoring).
+
+    Higher is worse, so ordering by health puts the worst devices last.
+    """
+
+    UNKNOWN = 10, _('Unknown'), ColorEnum.secondary  # No data yet
+    OK = 20, _('OK'), ColorEnum.success  # All streams report on time
+    DEGRADED = 30, _('Degraded'), ColorEnum.warning  # Something is late
+    CRITICAL = 40, _('Critical'), ColorEnum.danger  # Essential data is missing
+
+
+class DataStreamStatus(StatusCode):
+    """Defines the state of a data stream (cached by monitoring)."""
+
+    UNKNOWN = 10, _('Unknown'), ColorEnum.secondary  # No data yet
+    OK = 20, _('OK'), ColorEnum.success  # Data arrives on time
+    LATE = 30, _('Late'), ColorEnum.warning  # Data is late
+    MISSING = 40, _('Missing'), ColorEnum.danger  # Data has stopped

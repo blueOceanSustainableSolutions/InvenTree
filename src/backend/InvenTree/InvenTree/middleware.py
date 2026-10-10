@@ -84,6 +84,7 @@ paths_own_security = [
     ensure_slashes(
         settings.FRONTEND_URL_BASE
     ),  # Frontend files - frontend paths have their own security model
+    '/fleet/',  # Fleet Portal (second frontend entry) - same model as the frontend
 ]
 """Paths that handle their own security model."""
 pages_mfa_bypass = [
@@ -98,6 +99,8 @@ pages_mfa_bypass = [
     'web',
     'web-wildcard',
     'web-assets',
+    'fleet-portal',  # Fleet Portal (second frontend entry)
+    'fleet-portal-root',
 ]
 """Exact page names that bypass MFA enforcement - normal security model is still enforced."""
 apps_mfa_bypass = [

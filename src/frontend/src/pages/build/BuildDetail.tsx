@@ -1,6 +1,7 @@
 import { t } from '@lingui/core/macro';
 import { Alert, Grid, Skeleton, Stack, Text } from '@mantine/core';
 import {
+  IconBuildingLighthouse,
   IconChecklist,
   IconCircleCheck,
   IconClipboardCheck,
@@ -50,6 +51,10 @@ import { PanelGroup } from '../../components/panels/PanelGroup';
 import ParametersPanel from '../../components/panels/ParametersPanel';
 import { StatusRenderer } from '../../components/render/StatusRenderer';
 import { RenderStockLocation } from '../../components/render/Stock';
+import {
+  BuildDeploymentPanel,
+  useBuildDeployment
+} from '../../fleet/panels/BuildDeploymentPanel';
 import { useBuildOrderFields } from '../../forms/BuildForms';
 import {
   useCreateApiFormModal,
@@ -461,6 +466,11 @@ export default function BuildDetail() {
     );
   }, [build, instanceQuery, partRequirements, partRequirementsQuery]);
 
+  const fleetDeployment = useBuildDeployment(
+    build.pk,
+    user.hasViewRole(UserRoles.fleet)
+  );
+
   const buildPanels: PanelType[] = useMemo(() => {
     return [
       {
@@ -579,6 +589,13 @@ export default function BuildDetail() {
           <Skeleton />
         )
       },
+      {
+        name: 'fleet-deployment',
+        label: t`Deployment Plan`,
+        icon: <IconBuildingLighthouse />,
+        hidden: !fleetDeployment,
+        content: <BuildDeploymentPanel deployment={fleetDeployment} />
+      },
       ParametersPanel({
         model_type: ModelType.build,
         model_id: build.pk
@@ -597,6 +614,7 @@ export default function BuildDetail() {
     build,
     id,
     user,
+    fleetDeployment,
     partRequirements,
     buildStatus,
     globalSettings,
