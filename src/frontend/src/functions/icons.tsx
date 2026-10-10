@@ -1,5 +1,7 @@
 import type { InvenTreeIconType, TablerIconType } from '@lib/types/Icons';
 import {
+  IconAlertTriangle,
+  IconAnchor,
   IconArrowBack,
   IconArrowBigDownLineFilled,
   IconArrowMerge,
@@ -10,6 +12,7 @@ import {
   IconBrandTelegram,
   IconBuilding,
   IconBuildingFactory2,
+  IconBuildingLighthouse,
   IconBuildingStore,
   IconBusinessplan,
   IconCalendar,
@@ -83,8 +86,10 @@ import {
   type IconProps,
   IconQrcode,
   IconQuestionMark,
+  IconRadar,
   IconRefresh,
   IconRulerMeasure,
+  IconSailboat,
   IconSearch,
   IconSettings,
   IconShoppingCart,
@@ -276,7 +281,15 @@ const icons: InvenTreeIconType = {
 
   chart_bar: IconChartBar,
   chart_line: IconChartLine,
-  news: IconNews
+  news: IconNews,
+
+  fleet: IconBuildingLighthouse,
+  fleet_site: IconMapPin,
+  fleet_deployment: IconAnchor,
+  fleet_device_type: IconRadar,
+  fleet_alert: IconAlertTriangle,
+  fleet_task: IconTool,
+  fleet_trip: IconSailboat
 };
 
 /**

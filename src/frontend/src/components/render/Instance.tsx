@@ -48,6 +48,14 @@ import {
   RenderSupplierPart
 } from './Company';
 import {
+  RenderDeployment,
+  RenderFleetAlert,
+  RenderFleetDeviceType,
+  RenderFleetSite,
+  RenderFleetTask,
+  RenderFleetTrip
+} from './Fleet';
+import {
   RenderContentType,
   RenderError,
   RenderImportSession,
@@ -118,7 +126,13 @@ export const RendererLookup: ModelRendererDict = {
   [ModelType.selectionlist]: RenderSelectionList,
   [ModelType.selectionentry]: RenderSelectionEntry,
   [ModelType.error]: RenderError,
-  [ModelType.tag]: RenderTag
+  [ModelType.tag]: RenderTag,
+  [ModelType.site]: RenderFleetSite,
+  [ModelType.deployment]: RenderDeployment,
+  [ModelType.fleetdevicetype]: RenderFleetDeviceType,
+  [ModelType.alert]: RenderFleetAlert,
+  [ModelType.maintenancetask]: RenderFleetTask,
+  [ModelType.fieldtrip]: RenderFleetTrip
 };
 
 /**

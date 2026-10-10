@@ -1,7 +1,10 @@
 """Validation methods for the fleet app."""
 
+import re
+
 from django.core.exceptions import ValidationError
-from django.core.validators import validate_email
+from django.core.validators import URLValidator, validate_email
+from django.utils.regex_helper import _lazy_re_compile
 from django.utils.translation import gettext_lazy as _
 
 
@@ -115,6 +118,42 @@ def validate_email_list(value):
     for address in str(value or '').split(','):
         if address := address.strip():
             validate_email(address)
+
+
+class OptionalURLValidator(URLValidator):
+    """http(s) URL validator which also accepts host names without a TLD.
+
+    e.g. https://bo-server:8444/fleet/ on a LAN.
+    """
+
+    host_re = (
+        '('
+        + URLValidator.hostname_re
+        + URLValidator.domain_re
+        + '('
+        + URLValidator.tld_re
+        + ')?'
+        + '|localhost)'
+    )
+
+    regex = _lazy_re_compile(
+        r'^(?:[a-z0-9.+-]*)://'
+        r'(?:[^\s:@/]+(?::[^\s:@/]*)?@)?'
+        r'(?:' + URLValidator.ipv4_re + '|' + URLValidator.ipv6_re + '|' + host_re + ')'
+        r'(?::[0-9]{1,5})?'
+        r'(?:[/?#][^\s]*)?'
+        r'\Z',
+        re.IGNORECASE,
+    )
+
+
+def validate_optional_url(value):
+    """Validate an http(s) URL setting (may be empty).
+
+    The core BaseURLValidator is not used: it is locked to the site URL.
+    """
+    if value := str(value or '').strip():
+        OptionalURLValidator(schemes=['http', 'https'])(value)
 
 
 def validate_geofence_polygon(value):

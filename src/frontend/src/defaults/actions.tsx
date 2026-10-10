@@ -187,6 +187,15 @@ export function getActions(navigate: NavigateFunction) {
         leftSection: <IconLink size='1.2rem' />
       });
 
+    user?.hasViewRole(UserRoles.fleet) &&
+      _actions.push({
+        id: 'fleet',
+        label: t`Fleet`,
+        description: t`Go to the fleet overview`,
+        onClick: () => navigate('/fleet/index/overview'),
+        leftSection: <IconLink size='1.2rem' />
+      });
+
     staff &&
       _actions.push({
         id: 'system-settings',

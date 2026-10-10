@@ -39,7 +39,14 @@ export enum ModelType {
   selectionlist = 'selectionlist',
   selectionentry = 'selectionentry',
   error = 'error',
-  tag = 'tag'
+  tag = 'tag',
+  // Fleet module (values are the backend model names, used for attachments and notes)
+  site = 'site',
+  deployment = 'deployment',
+  fleetdevicetype = 'fleetdevicetype',
+  alert = 'alert',
+  maintenancetask = 'maintenancetask',
+  fieldtrip = 'fieldtrip'
 }
 
 export enum PluginPanelKey {
@@ -52,5 +59,6 @@ export enum PluginPanelKey {
   // landing pages
   purchasing = 'purchasing',
   sales = 'sales',
-  manufacturing = 'manufacturing'
+  manufacturing = 'manufacturing',
+  fleet = 'fleet'
 }

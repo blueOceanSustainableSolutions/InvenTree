@@ -325,5 +325,58 @@ export const ModelInformationDict: ModelDict = {
     label_multiple: () => t`Tags`,
     api_endpoint: ApiEndpoints.tag_list,
     icon: 'tag'
+  },
+  site: {
+    label: () => t`Site`,
+    label_multiple: () => t`Sites`,
+    url_overview: '/fleet/index/sites',
+    url_detail: '/fleet/site/:pk/',
+    api_endpoint: ApiEndpoints.fleet_site_list,
+    admin_url: '/fleet/site/',
+    icon: 'fleet_site'
+  },
+  deployment: {
+    label: () => t`Deployment`,
+    label_multiple: () => t`Deployments`,
+    url_overview: '/fleet/index/deployments',
+    url_detail: '/fleet/deployment/:pk/',
+    api_endpoint: ApiEndpoints.fleet_deployment_list,
+    admin_url: '/fleet/deployment/',
+    icon: 'fleet_deployment'
+  },
+  fleetdevicetype: {
+    label: () => t`Fleet Device Type`,
+    label_multiple: () => t`Fleet Device Types`,
+    url_overview: '/fleet/index/device-types',
+    url_detail: '/fleet/device-type/:pk/',
+    api_endpoint: ApiEndpoints.fleet_device_type_list,
+    admin_url: '/fleet/fleetdevicetype/',
+    icon: 'fleet_device_type'
+  },
+  alert: {
+    label: () => t`Fleet Alert`,
+    label_multiple: () => t`Fleet Alerts`,
+    url_overview: '/fleet/index/alerts',
+    api_endpoint: ApiEndpoints.fleet_alert_list,
+    admin_url: '/fleet/alert/',
+    icon: 'fleet_alert'
+  },
+  maintenancetask: {
+    label: () => t`Maintenance Task`,
+    label_multiple: () => t`Maintenance Tasks`,
+    url_overview: '/fleet/index/maintenance',
+    url_detail: '/fleet/task/:pk/',
+    api_endpoint: ApiEndpoints.fleet_task_list,
+    admin_url: '/fleet/maintenancetask/',
+    icon: 'fleet_task'
+  },
+  fieldtrip: {
+    label: () => t`Field Trip`,
+    label_multiple: () => t`Field Trips`,
+    url_overview: '/fleet/index/trips',
+    url_detail: '/fleet/trip/:pk/',
+    api_endpoint: ApiEndpoints.fleet_trip_list,
+    admin_url: '/fleet/fieldtrip/',
+    icon: 'fleet_trip'
   }
 };

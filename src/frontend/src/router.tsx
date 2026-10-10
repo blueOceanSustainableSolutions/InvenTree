@@ -56,6 +56,30 @@ export const StockDetail = Loadable(
   lazy(() => import('./pages/stock/StockDetail'))
 );
 
+export const FleetIndex = Loadable(
+  lazy(() => import('./pages/fleet/FleetIndex'))
+);
+
+export const FleetSiteDetail = Loadable(
+  lazy(() => import('./pages/fleet/SiteDetail'))
+);
+
+export const FleetDeploymentDetail = Loadable(
+  lazy(() => import('./pages/fleet/DeploymentDetail'))
+);
+
+export const FleetDeviceTypeDetail = Loadable(
+  lazy(() => import('./pages/fleet/DeviceTypeDetail'))
+);
+
+export const FleetTaskDetail = Loadable(
+  lazy(() => import('./pages/fleet/TaskDetail'))
+);
+
+export const FleetTripDetail = Loadable(
+  lazy(() => import('./pages/fleet/TripDetail'))
+);
+
 export const BuildIndex = Loadable(
   lazy(() => import('./pages/build/BuildIndex'))
 );
@@ -179,6 +203,15 @@ export const routes = (
         <Route index element={<Navigate to='index/' />} />
         <Route path='index/*' element={<BuildIndex />} />
         <Route path='build-order/:id/*' element={<BuildDetail />} />
+      </Route>
+      <Route path='fleet/'>
+        <Route index element={<Navigate to='index/' />} />
+        <Route path='index/*' element={<FleetIndex />} />
+        <Route path='site/:id/*' element={<FleetSiteDetail />} />
+        <Route path='deployment/:id/*' element={<FleetDeploymentDetail />} />
+        <Route path='device-type/:id/*' element={<FleetDeviceTypeDetail />} />
+        <Route path='task/:id/*' element={<FleetTaskDetail />} />
+        <Route path='trip/:id/*' element={<FleetTripDetail />} />
       </Route>
       <Route path='purchasing/'>
         <Route index element={<Navigate to='index/' />} />

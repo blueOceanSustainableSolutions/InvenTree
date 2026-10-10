@@ -741,6 +741,7 @@ class APISearchView(GenericAPIView):
         """Construct a list of search types we can return."""
         import build.api
         import company.api
+        import fleet.api
         import order.api
         import part.api
         import stock.api
@@ -761,6 +762,11 @@ class APISearchView(GenericAPIView):
             'salesordershipment': order.api.SalesOrderShipmentList,
             'stockitem': stock.api.StockList,
             'stocklocation': stock.api.StockLocationList,
+            # Fleet (BlueOasis fork)
+            'deployment': fleet.api.DeploymentList,
+            'maintenancetask': fleet.api.MaintenanceTaskList,
+            'fieldtrip': fleet.api.FieldTripList,
+            'site': fleet.api.SiteList,
         }
 
     def get_result_filters(self):

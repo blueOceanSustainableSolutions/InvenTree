@@ -61,9 +61,11 @@ class SiteAdmin(admin.ModelAdmin):
 class DeviceLinkAdmin(admin.ModelAdmin):
     """Admin class for the DeviceLink model."""
 
-    list_display = ('stock_item', 'platform_id', 'firmware_version')
+    list_display = ('stock_item', 'platform_id', 'firmware_version', 'state')
+    list_filter = ('state',)
     search_fields = ('platform_id', 'stock_item__serial', 'stock_item__part__name')
     autocomplete_fields = ['stock_item']
+    readonly_fields = ('state_changed_at', 'state_changed_by')
 
 
 class DataStreamInline(admin.TabularInline):
@@ -139,6 +141,7 @@ class TripKitLineInline(admin.TabularInline):
     model = models.TripKitLine
     extra = 0
     autocomplete_fields = ['part']
+    raw_id_fields = ['stock_item', 'task']
 
 
 @admin.register(models.FieldTrip)

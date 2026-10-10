@@ -21,6 +21,7 @@ from fleet.status_codes import (
     AlertStatus,
     DeploymentStatus,
     DeploymentStatusGroups,
+    HealthStatus,
     TaskStatus,
 )
 from InvenTree.unit_test import InvenTreeAPITestCase, InvenTreeTestCase
@@ -74,7 +75,7 @@ class FleetModelTest(InvenTreeTestCase):
 
         dep = Deployment.objects.create(device_type=self.device_type)
         self.assertEqual(dep.status, DeploymentStatus.PLANNED.value)
-        self.assertEqual(dep.health, 'UNKNOWN')
+        self.assertEqual(dep.health, HealthStatus.UNKNOWN.value)
         self.assertIn(dep.status, DeploymentStatusGroups.PIPELINE)
 
     def test_references(self):

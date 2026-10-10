@@ -16,6 +16,7 @@ import {
   IconBolt,
   IconBookmarks,
   IconBuilding,
+  IconBuildingLighthouse,
   IconChecklist,
   IconClipboardList,
   IconCurrencyDollar,
@@ -79,6 +80,7 @@ import { RenderPart } from '../../components/render/Part';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
 import { useApi } from '../../contexts/ApiContext';
 import { formatDecimal, formatPriceRange } from '../../defaults/formatters';
+import { PartFleetPanel } from '../../fleet/panels/PartFleetPanel';
 import { usePartFields } from '../../forms/PartForms';
 import { useFindSerialNumberForm } from '../../forms/StockForms';
 import {
@@ -789,6 +791,16 @@ export default function PartDetail() {
         icon: <IconTools />,
         hidden: !part.assembly || !user.hasViewRole(UserRoles.build),
         content: part.pk ? <BuildOrderTable partId={part.pk} /> : <Skeleton />
+      },
+      {
+        name: 'fleet',
+        label: t`Fleet Device`,
+        icon: <IconBuildingLighthouse />,
+        hidden:
+          !part.assembly ||
+          !part.trackable ||
+          !user.hasViewRole(UserRoles.fleet),
+        content: part.pk ? <PartFleetPanel part={part} /> : <Skeleton />
       },
       {
         name: 'quick_builds',

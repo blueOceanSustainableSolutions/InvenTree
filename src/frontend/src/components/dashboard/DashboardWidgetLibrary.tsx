@@ -204,6 +204,38 @@ function BuiltinQueryCountWidgets(): DashboardWidgetProps[] {
       modelType: ModelType.returnorder,
       params: { assigned_to_me: true, outstanding: true },
       icon: 'responsible'
+    }),
+    QueryCountDashboardWidget({
+      title: t`Critical Fleet Alerts`,
+      label: 'flt-crit',
+      description: t`Show the number of open critical alerts of deployed fleet devices`,
+      modelType: ModelType.alert,
+      params: { open: true, severity: 'CRITICAL' },
+      icon: 'fleet_alert'
+    }),
+    QueryCountDashboardWidget({
+      title: t`Fleet PM Overdue`,
+      label: 'flt-pm-od',
+      description: t`Show the number of deployed fleet devices whose preventive maintenance is overdue`,
+      modelType: ModelType.deployment,
+      params: { pm_overdue: true },
+      icon: 'overdue'
+    }),
+    QueryCountDashboardWidget({
+      title: t`Unscheduled Fleet Deployments`,
+      label: 'flt-unsch',
+      description: t`Show the number of fleet deployments in the pipeline without a target date`,
+      modelType: ModelType.deployment,
+      params: { unscheduled: true },
+      icon: 'calendar'
+    }),
+    QueryCountDashboardWidget({
+      title: t`My Fleet Tasks`,
+      label: 'flt-my-tasks',
+      description: t`Show the number of open fleet maintenance tasks assigned to you`,
+      modelType: ModelType.maintenancetask,
+      params: { assigned_to_me: true, open: true },
+      icon: 'fleet_task'
     })
   ];
 
