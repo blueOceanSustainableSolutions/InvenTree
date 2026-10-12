@@ -216,7 +216,7 @@ class DataExportSerializerMixin:
         return result
 
     @staticmethod
-    def _format_xlsx(datafile, headers):
+    def _format_xlsx(datafile, headers, sheet_name=None):
         """Apply consistent XLSX formatting to any exported spreadsheet.
 
         Styling:
@@ -234,7 +234,7 @@ class DataExportSerializerMixin:
             from openpyxl.utils import get_column_letter
 
             wb = openpyxl.load_workbook(BytesIO(datafile))
-            ws = wb.active
+            ws = wb[sheet_name] if sheet_name else wb.active
 
             header_fill = PatternFill(
                 start_color='4472C4', end_color='4472C4', fill_type='solid'
@@ -297,6 +297,84 @@ class DataExportSerializerMixin:
             return buf.getvalue()
         except Exception:
             return datafile
+
+    @staticmethod
+    def _append_purchase_order_items(datafile, queryset):
+        """Include individual lines from the filtered purchase orders in XLSX exports."""
+        from io import BytesIO
+
+        import openpyxl
+
+        headers = OrderedDict(
+            [
+                ('order', _('Purchase Order')),
+                ('supplier', _('Supplier')),
+                ('type', _('Line Type')),
+                ('pk', _('Line Item ID')),
+                ('line', _('Line Number')),
+                ('part', _('Part')),
+                ('ipn', _('IPN')),
+                ('sku', _('SKU')),
+                ('reference', _('Reference')),
+                ('quantity', _('Quantity')),
+                ('received', _('Received')),
+                ('purchase_price', _('Unit Price')),
+                ('currency', _('Currency')),
+                ('total_price', _('Total Price')),
+                ('target_date', _('Target Date')),
+                ('notes', _('Notes')),
+                ('link', _('Link')),
+            ]
+        )
+        workbook = openpyxl.load_workbook(BytesIO(datafile))
+        workbook.active.title = 'Purchase Orders'
+        sheet = workbook.create_sheet('Line Items')
+        sheet.append([str(label) for label in headers.values()])
+
+        orders = queryset.prefetch_related(
+            'supplier', 'lines__part__part', 'extra_lines'
+        )
+        for order in orders:
+            for lines, is_extra in (
+                (order.lines.all(), False),
+                (order.extra_lines.all(), True),
+            ):
+                for line in lines:
+                    supplier_part = None if is_extra else line.part
+                    part = supplier_part.part if supplier_part else None
+                    price = line.price
+                    amount = price.amount if price is not None else None
+                    sheet.append(
+                        [
+                            order.reference,
+                            order.supplier.name if order.supplier else '',
+                            str(_('Extra Line Item') if is_extra else _('Part')),
+                            line.pk,
+                            line.line,
+                            line.description
+                            if is_extra
+                            else (part.full_name if part else ''),
+                            part.IPN if part else '',
+                            supplier_part.SKU if supplier_part else '',
+                            line.reference,
+                            line.quantity,
+                            None if is_extra else line.received,
+                            amount,
+                            str(price.currency) if price is not None else '',
+                            amount * line.quantity if amount is not None else None,
+                            line.target_date or order.target_date,
+                            line.notes,
+                            line.link,
+                        ]
+                    )
+
+        sheet.freeze_panes = 'A2'
+        sheet.auto_filter.ref = sheet.dimensions
+        buffer = BytesIO()
+        workbook.save(buffer)
+        return DataExportSerializerMixin._format_xlsx(
+            buffer.getvalue(), headers, sheet_name='Line Items'
+        )
 
 
 class DataExportViewMixin:
@@ -500,6 +578,12 @@ class DataExportViewMixin:
         # Now, export the data to file
         try:
             datafile = serializer.export_to_file(data, headers, export_format)
+            if (
+                export_format == 'xlsx'
+                and serializer_class.Meta.model._meta.label_lower
+                == 'order.purchaseorder'
+            ):
+                datafile = serializer._append_purchase_order_items(datafile, queryset)
         except Exception as e:
             InvenTree.exceptions.log_error('export_to_file', plugin=export_plugin.slug)
             output.mark_failure(error=str(e))

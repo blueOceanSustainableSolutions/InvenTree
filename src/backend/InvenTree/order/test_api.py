@@ -1059,6 +1059,63 @@ class PurchaseOrderDownloadTest(OrderTest):
         ) as file:
             self.assertIsInstance(file, io.BytesIO)
 
+    def test_download_xlsx_with_order_items(self):
+        """Export every line, including extra charges, only for the filtered orders."""
+        import openpyxl
+
+        # Deleted supplier parts and zero-priced items must still be exported.
+        models.PurchaseOrderLineItem.objects.filter(order__supplier_id=3).update(
+            part=None, purchase_price=0
+        )
+
+        for params in ({}, {'supplier': 3}):
+            with self.subTest(params=params):
+                orders = models.PurchaseOrder.objects.filter(**params)
+                with self.export_data(
+                    reverse('api-po-list'), params, export_format='xlsx', decode=False
+                ) as file:
+                    workbook = openpyxl.load_workbook(file)
+
+                self.assertEqual(workbook.sheetnames, ['Purchase Orders', 'Line Items'])
+                summary = list(workbook['Purchase Orders'].values)
+                id_column = summary[0].index('ID')
+                self.assertEqual(
+                    {row[id_column] for row in summary[1:]},
+                    set(orders.values_list('pk', flat=True)),
+                )
+                sheet = workbook['Line Items']
+                rows = list(sheet.values)
+                items = [dict(zip(rows[0], row, strict=True)) for row in rows[1:]]
+                expected = {}
+                for order in orders:
+                    for line in order.lines.all():
+                        expected[(order.reference, 'Part', line.pk)] = line
+                    for line in order.extra_lines.all():
+                        expected[(order.reference, 'Extra Line Item', line.pk)] = line
+
+                self.assertEqual(len(items), len(expected))
+                self.assertEqual(
+                    {
+                        (row['Purchase Order'], row['Line Type'], row['Line Item ID'])
+                        for row in items
+                    },
+                    set(expected),
+                )
+                for row in items:
+                    line = expected[
+                        (row['Purchase Order'], row['Line Type'], row['Line Item ID'])
+                    ]
+                    self.assertEqual(row['Quantity'], float(line.quantity))
+                    if line.price is not None:
+                        self.assertEqual(row['Unit Price'], float(line.price.amount))
+                        self.assertEqual(
+                            row['Total Price'], float(line.price.amount * line.quantity)
+                        )
+
+                self.assertEqual(sheet.freeze_panes, 'A2')
+                self.assertEqual(sheet.auto_filter.ref, sheet.dimensions)
+                self.assertEqual(sheet['A1'].fill.fgColor.rgb, '004472C4')
+
 
 class PurchaseOrderReceiveTest(OrderTest):
     """Unit tests for receiving items against a PurchaseOrder."""
