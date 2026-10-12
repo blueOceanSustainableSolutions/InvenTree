@@ -1,26 +1,23 @@
-"""Stock-driven deployments: the stock list decides which devices are deployed.
+"""Stock-driven fleet rows: every fleet unit has its row in the deployment list.
 
-A serialized stock item of an active fleet device type part (or a variant of
-it) which has a customer is a deployed device (the legacy "deployed = has
-customer" convention). The fleet app follows the stock automatically:
+Shipping is not deploying. A device is DEPLOYED only through the fleet Deploy
+action (directly, or by completing its deployment task); the customer of the
+stock item does not open or close a deployment. A unit shipped to a customer
+is out of stock, but still waits to be deployed.
 
-- open: a deployed device without a DEPLOYED deployment gets one (its pipeline
-  deployment is reused when it has one)
-- close: a DEPLOYED deployment whose device no longer has a customer (returned,
-  or the item was deleted) becomes RECOVERED
+The fleet app follows the stock automatically:
+
+- close: a DEPLOYED deployment whose stock item was deleted, or whose device
+  is DECOMMISSIONED (internal state, section 2.11), becomes RECOVERED
 - update: the client of a DEPLOYED deployment follows the customer
-- pool: every other finished fleet unit which is not deployed (in stock, or
-  on its way back on a return order) gets a READY deployment without a date,
-  so the deployment list shows all of them
-- gone: a READY deployment whose unit left the pool (sold or used elsewhere,
+- pool: every other finished fleet unit which is not deployed (in stock,
+  shipped to a customer, or on its way back on a return order) gets a READY
+  deployment without a date, so the deployment list shows all of them
+- gone: a READY deployment whose unit left the pool (used elsewhere,
   destroyed, lost, decommissioned, deleted) is CANCELLED
 
-A device on its way back (an open return order line, not yet received)
-still has its customer, but is not deployed: it is never opened again.
-
-A DECOMMISSIONED device (internal state, section 2.11) is never opened while
-the state is set, even with a customer, and a DEPLOYED deployment of it is
-closed.
+A deployed device cannot be returned through the normal return order or
+stock menus; it comes back through the fleet (see pipeline.check_return_allowed).
 
 No stock tracking entries are written: the stock change is already recorded.
 Customers are often changed by bulk operations or sales order shipping (no
@@ -35,7 +32,7 @@ import structlog
 
 from fleet.events import trigger_status_event
 from fleet.models import Deployment, FleetDeviceType
-from fleet.services.deployment import compute_next_pm, copy_streams, resolve_open_alerts
+from fleet.services.deployment import resolve_open_alerts
 from fleet.services.device_state import (
     clear_on_close,
     close_decommissioned,
@@ -43,44 +40,16 @@ from fleet.services.device_state import (
 )
 from fleet.services.pipeline import (
     HOLDING_STATUSES,
-    ensure_device_link,
     ensure_unit_deployment,
-    returning_q,
     undeployed_units,
 )
-from fleet.status_codes import DeploymentStatus, DeploymentStatusGroups
-from stock.models import StockItem, StockItemTracking
-from stock.status_codes import StockHistoryCode
+from fleet.status_codes import DeploymentStatus
+from stock.models import StockItem
 
 logger = structlog.get_logger('inventree')
 
-# Tracking codes which mean "sent to a customer" (same as the legacy widget)
-DEPLOY_CODES = [
-    StockHistoryCode.SHIPPED_AGAINST_SALES_ORDER.value,
-    StockHistoryCode.SENT_TO_CUSTOMER.value,
-]
-
-# Tracking codes which mean "back from the customer" (by hand, or a return order)
-RETURN_CODES = [
-    StockHistoryCode.RETURNED_FROM_CUSTOMER.value,
-    StockHistoryCode.RETURNED_AGAINST_RETURN_ORDER.value,
-]
-
-
 class DryRunError(Exception):
     """Raised to roll back a dry run."""
-
-
-def last_tracking_date(item: StockItem, codes: list[int], after=None):
-    """Return the date of the last tracking entry of an item with one of the codes."""
-    entries = StockItemTracking.objects.filter(item=item, tracking_type__in=codes)
-
-    if after is not None:
-        entries = entries.filter(date__gte=after)
-
-    entry = entries.order_by('-date', '-pk').first()
-
-    return entry.date if entry else None
 
 
 def device_type_map() -> dict[int, FleetDeviceType]:
@@ -105,23 +74,6 @@ def device_type_map() -> dict[int, FleetDeviceType]:
     return result
 
 
-def deployed_items(parts: dict[int, FleetDeviceType]):
-    """Return the stock items which count as deployed fleet devices."""
-    return (
-        StockItem.objects
-        .filter(
-            part__in=list(parts.keys()),
-            customer__isnull=False,
-            serial__isnull=False,
-            quantity=1,
-            is_building=False,
-        )
-        .exclude(serial='')
-        .select_related('customer', 'part')
-        .order_by('serial_int', 'serial', 'pk')
-    )
-
-
 def describe(deployment: Deployment, item: StockItem | None = None) -> str:
     """Short description of a deployment for the summary."""
     item = item or deployment.device
@@ -136,83 +88,10 @@ def describe(deployment: Deployment, item: StockItem | None = None) -> str:
     return text
 
 
-def open_deployment(item: StockItem, device_type: FleetDeviceType) -> Deployment:
-    """Open the DEPLOYED deployment of a device which is with a customer.
-
-    A pipeline deployment of the device (e.g. from its build order) is moved
-    to DEPLOYED, otherwise a new deployment without a site or position is
-    created.
-    """
-    deployed_at = last_tracking_date(item, DEPLOY_CODES) or timezone.now()
-
-    deployment = (
-        Deployment.objects
-        .filter(device=item, status__in=DeploymentStatusGroups.PIPELINE)
-        .order_by('-status', 'pk')
-        .first()
-    )
-
-    if deployment is None:
-        deployment = Deployment(
-            device_type=device_type,
-            device=item,
-            deployment_type=Deployment.DeploymentType.NEW_STATION,
-        )
-
-    elif deployment.site is not None:
-        busy = (
-            Deployment.objects
-            .filter(site=deployment.site, status=DeploymentStatus.DEPLOYED.value)
-            .exclude(pk=deployment.pk)
-            .first()
-        )
-
-        if busy is not None:
-            # One active deployment per site: keep the device, drop the site
-            metadata = deployment.metadata or {}
-            metadata['warning'] = (
-                f'Site {deployment.site.reference} still had an active deployment '
-                f'({busy.reference}) when the device was sent to the customer; '
-                'the site was not set'
-            )
-            deployment.metadata = metadata
-            deployment.site = None
-
-        elif deployment.latitude is None and deployment.longitude is None:
-            deployment.latitude = deployment.site.latitude
-            deployment.longitude = deployment.site.longitude
-
-            if deployment.depth_m is None:
-                deployment.depth_m = deployment.site.depth_m
-
-    deployment.status = DeploymentStatus.DEPLOYED.value
-    deployment.client = item.customer
-    deployment.deployed_at = deployed_at
-    deployment.recovered_at = None
-    deployment.save()
-
-    copy_streams(deployment)
-    ensure_device_link(item)
-    compute_next_pm(deployment)
-
-    trigger_status_event(deployment)
-
-    return deployment
-
-
 def close_deployment(deployment: Deployment) -> Deployment:
-    """Close a DEPLOYED deployment whose device is no longer with a customer."""
-    recovered_at = None
-
-    if deployment.device is not None:
-        recovered_at = last_tracking_date(
-            deployment.device, RETURN_CODES, after=deployment.deployed_at
-        )
-
-    recovered_at = recovered_at or timezone.now()
-
+    """Close a DEPLOYED deployment whose stock item was deleted."""
     deployment.status = DeploymentStatus.RECOVERED.value
-    deployment.recovered_at = recovered_at
+    deployment.recovered_at = timezone.now()
     deployment.save()
 
     resolve_open_alerts(deployment)
@@ -237,13 +116,14 @@ def run_step(summary: dict, action, text: str):
 
 
 def sync_stock_deployments(dry_run: bool = False) -> dict:
-    """Make the DEPLOYED deployments follow the customer of the fleet devices.
+    """Keep the fleet rows in step with the stock (see the module docstring).
 
     Arguments:
         dry_run: Work out the changes, then roll them back
 
     Returns:
-        A summary dict with the lists 'opened', 'closed', 'updated',
+        A summary dict with the lists 'opened' (always empty: only the
+        fleet Deploy action deploys a device), 'closed', 'updated',
         'available' (new rows for undeployed units), 'cancelled' (units which
         are gone) and 'errors' (one line of text per device)
     """
@@ -273,15 +153,15 @@ def sync_changes(summary: dict) -> None:
     parts = device_type_map()
     active = Deployment.objects.filter(status=DeploymentStatus.DEPLOYED.value)
 
-    # 1. Close: the device was returned, or deleted, or is decommissioned
+    # 1. Close: the stock item was deleted, or the device is decommissioned
+    #    (a device with no customer stays deployed: shipping is not deploying)
     for deployment in active.filter(
-        Q(device__isnull=True) | Q(device__customer__isnull=True) | decommissioned_q()
+        Q(device__isnull=True) | decommissioned_q()
     ).select_related('device', 'device__part', 'device__fleet_link', 'site'):
         text = describe(deployment)
         action = close_deployment
 
-        if deployment.device is not None and deployment.device.customer_id:
-            # Still with the customer: closed because it is decommissioned
+        if deployment.device is not None:
             text += ' (decommissioned)'
             action = close_decommissioned
 
@@ -310,34 +190,7 @@ def sync_changes(summary: dict) -> None:
     if not parts:
         return
 
-    # 3. Open: a fleet device with a customer and no DEPLOYED deployment
-    #    (never a decommissioned one)
-    items = (
-        deployed_items(parts)
-        .exclude(fleet_deployments__status=DeploymentStatus.DEPLOYED.value)
-        .exclude(decommissioned_q('fleet_link__state'))
-        .exclude(returning_q())
-    )
-
-    for item in items:
-        device_type = parts[item.part_id]
-        text = f'{item.part.full_name} #{item.serial} ({item.customer.name})'
-
-        deployment = run_step(
-            summary,
-            lambda item=item, device_type=device_type: open_deployment(
-                item, device_type
-            ),
-            text,
-        )
-
-        if deployment is not None:
-            summary['opened'].append(
-                f'{describe(deployment, item)} (customer {item.customer.name}, '
-                f'deployed {deployment.deployed_at:%Y-%m-%d})'
-            )
-
-    # 4. Pool: an undeployed unit without an open deployment gets a READY one
+    # 3. Pool: an undeployed unit without an open deployment gets a READY one
     #    (an output of a fleet build order is linked by the pipeline sync)
     pool = undeployed_units(parts.keys())
     pool_ids = set(pool.values_list('pk', flat=True))
@@ -362,7 +215,7 @@ def sync_changes(summary: dict) -> None:
         if deployment is not None:
             summary['available'].append(describe(deployment, item))
 
-    # 5. Gone: a READY deployment whose unit left the pool is cancelled
+    # 4. Gone: a READY deployment whose unit left the pool is cancelled
     for deployment in Deployment.objects.filter(
         status=DeploymentStatus.READY.value
     ).select_related('device', 'device__part', 'site'):

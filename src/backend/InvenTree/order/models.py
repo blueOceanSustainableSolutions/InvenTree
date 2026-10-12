@@ -3180,6 +3180,11 @@ class ReturnOrder(TotalPriceMixin, Order):
 
         stock_item = line.item
 
+        # A device deployed in the fleet comes back through the fleet only
+        from fleet.services.pipeline import check_return_allowed
+
+        check_return_allowed(stock_item)
+
         if not stock_item.serialized and line.quantity < stock_item.quantity:
             # Split the stock item if we are returning less than the full quantity
             stock_item = stock_item.splitStock(line.quantity, user=user)
@@ -3275,6 +3280,14 @@ class ReturnOrderLineItem(StatusCodeMixin, OrderLineItem):
             raise ValidationError({
                 'quantity': _('Invalid quantity for serialized stock item')
             })
+
+        # A device deployed in the fleet comes back through the fleet only
+        from fleet.services.pipeline import check_return_allowed
+
+        try:
+            check_return_allowed(self.item)
+        except ValidationError as exc:
+            raise ValidationError({'item': exc.messages})
 
     order = models.ForeignKey(
         ReturnOrder,

@@ -30,9 +30,13 @@ class TemplateTagTest(InvenTreeTestCase):
 
         shipped_js = resp.split('<script type="module" src="')[1:]
         self.assertGreater(len(shipped_js), 0)
-        self.assertGreater(len(shipped_js), 3)
 
         manifest_file = Path(__file__).parent.joinpath('static/web/.vite/manifest.json')
+
+        # The entry and each of its dynamic imports (their number depends on
+        # how Rollup splits the bundle, which the Fleet Portal entry changes)
+        index = json.loads(manifest_file.read_text())['index.html']
+        self.assertEqual(len(shipped_js), 1 + len(index.get('dynamicImports', [])))
         # Try with removed manifest file
         new_name = manifest_file.rename(
             manifest_file.with_suffix('.json.bak')

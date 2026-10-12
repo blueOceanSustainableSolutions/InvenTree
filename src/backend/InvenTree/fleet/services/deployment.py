@@ -1,10 +1,15 @@
 """Deploying and recovering devices.
 
-A device is "deployed" when its stock item is assigned to a customer (the
-legacy "deployed = has customer" convention). Recovering it creates a return
-order to the office: the device stays with the customer until the office
-receives it, but it is no longer deployed, and it can be planned for its
-next deployment straight away.
+A device is "deployed" only through the fleet Deploy action (directly, or by
+completing its deployment task). Shipping it to a customer is not deploying
+it: a shipped unit is out of stock, but still waits to be deployed.
+
+Deploying a unit from stock assigns it to a customer; a shipped unit keeps
+the customer it was shipped to. Recovering a device creates a return order
+to the office: the device stays with the customer until the office receives
+it, but it is no longer deployed, and it can be planned for its next
+deployment straight away. A deployed device cannot be returned through the
+normal return order or stock menus (see pipeline.check_return_allowed).
 """
 
 from datetime import timedelta
@@ -29,13 +34,14 @@ from fleet.services.device_state import (
     clear_on_close,
     is_decommissioned,
 )
-from fleet.services.pipeline import ensure_device_link, get_return_line
+from fleet.services.pipeline import ensure_device_link, get_return_line, is_shipped
 from fleet.status_codes import (
     AlertStatus,
     AlertStatusGroups,
     DeploymentStatus,
     DeploymentStatusGroups,
     TaskStatus,
+    TaskStatusGroups,
     TripStatusGroups,
 )
 from stock.status_codes import StockHistoryCode
@@ -96,8 +102,8 @@ def deploy(
 
     - Records the nominal position and copies the site geofence if empty
     - Copies the stream templates into data streams
-    - Assigns the stock item to a customer (tracking code 100) and adds a
-      FLEET_DEPLOYED tracking entry
+    - Assigns a unit in stock to a customer (tracking code 100); a unit
+      already shipped keeps its customer. Adds a FLEET_DEPLOYED tracking entry
     - Recovers the deployment it replaces, if any (a return order brings
       that device to the office)
     - Computes the next preventive maintenance date
@@ -122,12 +128,17 @@ def deploy(
             + _('first')
         )
 
-    if device.customer is not None or device.is_building or not device.in_stock:
-        raise ValidationError(_('The device must be in stock to be deployed'))
+    shipped = is_shipped(device)
+
+    if not shipped and (device.is_building or not device.in_stock):
+        raise ValidationError(
+            _('The device must be in stock, or shipped to a customer, to be deployed')
+        )
 
     check_not_decommissioned(device)
 
-    customer = get_customer(deployment)
+    # A shipped unit stays with the customer it was shipped to
+    customer = device.customer if shipped else get_customer(deployment)
 
     if customer is None:
         raise ValidationError(
@@ -193,9 +204,10 @@ def deploy(
     if site is not None:
         notes += f' at {site.reference}'
 
-    device.allocateToCustomer(customer, user=user, notes=notes)
+    if not shipped:
+        device.allocateToCustomer(customer, user=user, notes=notes)
+        device.refresh_from_db()
 
-    device.refresh_from_db()
     device.add_tracking_entry(
         StockHistoryCode.FLEET_DEPLOYED,
         user,
@@ -293,6 +305,63 @@ def recover(deployment: Deployment, user=None, notes: str = ''):
 
     if deployment.device is not None and not is_decommissioned(deployment.device):
         ensure_unit_deployment(deployment.device, deployment.device_type)
+
+    return deployment
+
+
+def deployed_by_fleet(deployment: Deployment) -> bool:
+    """True if the fleet Deploy action deployed this deployment (FLEET_DEPLOYED entry).
+
+    Deployments opened by the old stock sync (a customer on the stock item,
+    e.g. a sales order shipment) have no such entry.
+    """
+    from stock.models import StockItemTracking
+
+    if deployment.device_id is None:
+        return False
+
+    return StockItemTracking.objects.filter(
+        item_id=deployment.device_id,
+        tracking_type=StockHistoryCode.FLEET_DEPLOYED.value,
+        deltas__deployment=deployment.pk,
+    ).exists()
+
+
+@transaction.atomic
+def undo_deploy(deployment: Deployment, user=None) -> Deployment:
+    """Put a DEPLOYED deployment back to READY: the device is not in the water.
+
+    For devices which the old stock sync marked as deployed because they were
+    shipped. Nothing moves in the stock: a shipped unit keeps its customer,
+    and waits for the fleet Deploy action. The open alerts are resolved.
+    """
+    Deployment.objects.select_for_update().filter(pk=deployment.pk).first()
+    deployment.refresh_from_db()
+
+    if deployment.status != DeploymentStatus.DEPLOYED.value:
+        raise ValidationError(_('Only a deployed device can be marked as not deployed'))
+
+    if deployment.device is None:
+        raise ValidationError(_('No device has been assigned to this deployment'))
+
+    if open_task := deployment.tasks.filter(status__in=TaskStatusGroups.OPEN).first():
+        raise ValidationError(
+            _('The deployment still has an open task') + f' ({open_task.reference})'
+        )
+
+    deployment.status = DeploymentStatus.READY.value
+    deployment.deployed_at = None
+    deployment.recovered_at = None
+
+    if not deployment.next_pm_manual:
+        deployment.next_pm_date = None
+
+    deployment.save()
+
+    resolve_open_alerts(deployment, user=user)
+    clear_on_close(deployment.device, user=user)
+
+    trigger_status_event(deployment)
 
     return deployment
 

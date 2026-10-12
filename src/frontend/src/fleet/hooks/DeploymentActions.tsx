@@ -194,7 +194,7 @@ export function useDeploymentActions({
     },
     preFormContent: (
       <Alert color='blue' icon={<IconInfoCircle />}>
-        {t`The device is assigned to the client of the deployment or site (or the default fleet customer) and leaves stock. The site and the position are optional and can be set later.`}
+        {t`A device in stock is assigned to the client of the deployment or site (or the default fleet customer) and leaves stock. A device already shipped to a customer stays with that customer. Shipping alone never deploys a device. The site and the position are optional and can be set later.`}
       </Alert>
     ),
     successMessage: t`Device deployed`,
@@ -238,7 +238,7 @@ export function useDeploymentActions({
             {t`Docked: back on land, still with the customer. Not monitored, no preventive maintenance, not on the map or in the overview.`}
           </List.Item>
           <List.Item>
-            {t`Decommissioned: will not become active again. The deployment is closed (the stock item keeps its customer), open tasks are cancelled, and the stock sync never reopens it.`}
+            {t`Decommissioned: will not become active again. The deployment is closed (the stock item keeps its customer), open tasks are cancelled, and it does not come back to the deployment list.`}
           </List.Item>
         </List>
       </Alert>

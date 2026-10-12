@@ -790,6 +790,8 @@ status/<class>/                 StatusView per status class
     - It has **not** been run against real data.
 
 ### 2.10 Stock-driven deployments (phase P2b)
+
+> **Superseded 2026-10-12: shipping is not deploying.** A device is DEPLOYED only through the fleet Deploy action (directly, or by completing its deployment/swap task). The customer on the stock item no longer opens or closes a deployment. A unit shipped to a customer (sales order, by hand, or to the default fleet customer) is out of stock but keeps its READY row: it still has to be deployed, and Deploy keeps the customer it was shipped to. A deployed device cannot be returned through the normal menus: `pipeline.check_return_allowed` refuses a return order line, receiving a line, and "return from customer"/"return to stock" for it. It comes back only through the fleet (Recover, or a completed recovery task), which creates its own return order. The sync now only closes a deployment whose stock item was deleted or whose device is decommissioned, makes the client follow the customer, adds rows for undeployed units and cancels rows of units which are gone. Deployments opened by the old rule can be put back to READY with `manage.py fleet_undeploy` (no arguments lists the DEPLOYED ones without a FLEET_DEPLOYED stock entry). The text below is the original P2b design.
 Decided 2026-10-08 (section 0.2). The stock list is the source of truth for which devices are deployed; the fleet app follows it automatically.
 
 **Who counts as deployed:** a serialized `StockItem` (quantity 1) whose part is the part of an **active** `FleetDeviceType`, or a variant of it, and whose `customer` is set. Items of other parts are ignored, even with a customer.

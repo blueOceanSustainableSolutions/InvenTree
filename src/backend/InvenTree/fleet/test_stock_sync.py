@@ -1,12 +1,18 @@
-"""Tests for the stock-driven deployments (phase P2b, FLEET_PLAN.md section 2.10)."""
+"""Tests for the stock-driven fleet rows (FLEET_PLAN.md section 2.10).
 
-from datetime import timedelta
+Shipping is not deploying: only the fleet Deploy action deploys a device, and
+a deployed device comes back only through the fleet.
+"""
+
 from io import StringIO
 
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.test import Client
+from django.urls import reverse
 from django.utils import timezone
 
-from fleet.helpers import to_local_date
 from fleet.models import Alert, Deployment, DeviceLink, FleetDeviceType, InternalState
 from fleet.services import deployment as deployment_service
 from fleet.services import device_state, monitoring, pipeline
@@ -19,8 +25,9 @@ from fleet.status_codes import (
 )
 from fleet.tasks import fleet_sync_pipeline
 from fleet.test_pipeline import FleetServiceTestBase
+from fleet.test_support import plan_unit
 from part.models import Part
-from stock.models import StockItem, StockItemTracking
+from stock.models import StockItem
 from stock.status_codes import StockHistoryCode
 
 # A sync which changes nothing
@@ -33,61 +40,61 @@ EMPTY_SUMMARY = {
     'errors': [],
 }
 
-class StockSyncTest(FleetServiceTestBase):
-    """Devices with a customer are DEPLOYED deployments, automatically."""
 
-    def give_to_customer(self, item, customer=None, days_ago=None):
+class StockSyncTest(FleetServiceTestBase):
+    """A customer on the stock item never deploys (or recovers) a device."""
+
+    def give_to_customer(self, item, customer=None):
         """Assign a stock item to a customer by hand (tracking code 100)."""
         item.allocateToCustomer(customer or self.client_company, user=self.user)
         item.refresh_from_db()
-
-        if days_ago is not None:
-            StockItemTracking.objects.filter(
-                item=item, tracking_type=StockHistoryCode.SENT_TO_CUSTOMER.value
-            ).update(date=timezone.now() - timedelta(days=days_ago))
-
         return item
 
-    def test_open_by_hand(self):
-        """A fleet device given a customer by hand gets a DEPLOYED deployment."""
-        item = self.give_to_customer(self.make_device('AUR-0500'), days_ago=40)
+    def deployed(self, serial, site=None):
+        """A device deployed through the fleet (without a site unless given)."""
+        dep = plan_unit(self.make_device(serial), self.device_type, site=site)
+        deployment_service.deploy(dep, user=self.user)
+        dep.refresh_from_db()
+        dep.device.refresh_from_db()
+        return dep
+
+    def test_customer_is_not_deployed(self):
+        """A fleet device given a customer by hand waits to be deployed."""
+        item = self.give_to_customer(self.make_device('AUR-0500'))
         codes_before = self.tracking_codes(item)
 
         summary = sync_stock_deployments()
-        self.assertEqual(len(summary['opened']), 1)
+        self.assertEqual(summary['opened'], [])
+        self.assertEqual(len(summary['available']), 1)
         self.assertEqual(summary['errors'], [])
 
         dep = Deployment.objects.get(device=item)
-        self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
-        self.assertEqual(dep.device_type, self.device_type)
-        self.assertEqual(dep.client, self.client_company)
-        self.assertEqual(dep.deployment_type, Deployment.DeploymentType.NEW_STATION)
-        self.assertIsNone(dep.site)
-        self.assertIsNone(dep.latitude)
-        self.assertIsNone(dep.longitude)
+        self.assertEqual(dep.status, DeploymentStatus.READY.value)
+        self.assertIsNone(dep.deployed_at)
 
-        # Deployment date from the stock history; next PM from it
-        sent = StockItemTracking.objects.get(
-            item=item, tracking_type=StockHistoryCode.SENT_TO_CUSTOMER.value
-        ).date
-        self.assertEqual(dep.deployed_at, sent)
-        self.assertEqual(dep.next_pm_date, to_local_date(sent) + timedelta(days=180))
-
-        self.assertEqual(
-            set(dep.streams.values_list('key', flat=True)), {'hydrophone', 'battery'}
-        )
-        self.assertTrue(DeviceLink.objects.filter(stock_item=item).exists())
-
-        # No stock tracking entries are written
+        # No stock tracking entries are written; idempotent
         self.assertEqual(self.tracking_codes(item), codes_before)
+        self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
 
-        # Idempotent
-        summary = sync_stock_deployments()
-        self.assertEqual(summary['opened'], [])
-        self.assertEqual(Deployment.objects.filter(device=item).count(), 1)
+        # The fleet Deploy action deploys it, with the customer it was given
+        deployment_service.deploy(
+            dep, user=self.user, latitude='37.0', longitude='-8.0'
+        )
 
-    def test_open_by_sales_order_shipment(self):
-        """A fleet device shipped against a sales order is deployed."""
+        dep.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
+        self.assertEqual(dep.client, self.client_company)
+        self.assertEqual(item.customer, self.client_company)
+        self.assertEqual(
+            self.tracking_codes(item),
+            [*codes_before, StockHistoryCode.FLEET_DEPLOYED.value],
+        )
+        self.assertTrue(deployment_service.deployed_by_fleet(dep))
+        self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
+
+    def test_shipped_on_sales_order_is_not_deployed(self):
+        """A fleet device shipped against a sales order keeps its READY row."""
         from order.models import (
             SalesOrder,
             SalesOrderAllocation,
@@ -108,7 +115,6 @@ class StockSyncTest(FleetServiceTestBase):
             line=line, shipment=shipment, item=item, quantity=1
         )
 
-        # Allocated but not shipped: not deployed (its row in the deployment list)
         sync_stock_deployments()
         row = Deployment.objects.get(device=item)
         self.assertEqual(row.status, DeploymentStatus.READY.value)
@@ -116,14 +122,30 @@ class StockSyncTest(FleetServiceTestBase):
         shipment.complete_shipment(None)
         item.refresh_from_db()
         self.assertEqual(item.customer, self.client_company)
+        self.assertFalse(item.in_stock)
 
         fleet_sync_pipeline()
 
-        # The same row is now deployed
-        dep = Deployment.objects.get(device=item)
-        self.assertEqual(dep.pk, row.pk)
-        self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
-        self.assertEqual(dep.client, self.client_company)
+        # Shipped, not in the water: the same row, still READY
+        row.refresh_from_db()
+        self.assertEqual(row.status, DeploymentStatus.READY.value)
+        self.assertEqual(Deployment.objects.filter(device=item).count(), 1)
+
+        # Shipped to the default fleet customer: the same
+        other = self.give_to_customer(self.make_device('AUR-0511'), self.customer)
+        sync_stock_deployments()
+        self.assertEqual(
+            Deployment.objects.get(device=other).status, DeploymentStatus.READY.value
+        )
+
+        # It is deployed through the fleet, and keeps its customer
+        pipeline.new_deployment(row, site=self.site)
+        deployment_service.deploy(row)
+        row.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(row.status, DeploymentStatus.DEPLOYED.value)
+        self.assertEqual(row.client, self.client_company)
+        self.assertEqual(item.customer, self.client_company)
 
     def test_ignored_items(self):
         """Other parts, non-serialized items, and inactive device types are ignored."""
@@ -140,7 +162,6 @@ class StockSyncTest(FleetServiceTestBase):
             part=inactive_part, quantity=1, serial='OB-1', customer=self.customer
         )
 
-        # In stock (no customer): not deployed, only its row in the list
         unit = self.make_device('AUR-0520')
 
         summary = sync_stock_deployments()
@@ -170,56 +191,98 @@ class StockSyncTest(FleetServiceTestBase):
 
         dep = Deployment.objects.get(device=item)
         self.assertEqual(dep.device_type, self.device_type)
+        self.assertEqual(dep.status, DeploymentStatus.READY.value)
 
-    def test_reuse_pipeline_deployment(self):
-        """A READY deployment of the device is moved to DEPLOYED (no new one)."""
-        dep = self.ready_deployment(serial='AUR-0530')
-        self.give_to_customer(dep.device)
+    def test_no_customer_stays_deployed(self):
+        """A deployed device whose customer is cleared stays deployed."""
+        dep = self.deployed('AUR-0530')
+        StockItem.objects.filter(pk=dep.device.pk).update(customer=None)
 
-        summary = sync_stock_deployments()
-        self.assertEqual(len(summary['opened']), 1)
-        self.assertEqual(Deployment.objects.count(), 1)
+        self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
+        dep.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
+
+    def test_return_from_customer_refused(self):
+        """A deployed device cannot be returned from the customer by hand."""
+        dep = self.deployed('AUR-0550')
+        item = dep.device
+
+        with self.assertRaises(ValidationError) as err:
+            item.return_from_customer(self.store, self.user)
+
+        self.assertIn(dep.reference, str(err.exception))
+
+        with self.assertRaises(ValidationError):
+            item.return_to_stock(self.store, self.user)
+
+        item.refresh_from_db()
+        self.assertEqual(item.customer, self.customer)
 
         dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
-        self.assertEqual(dep.client, self.client_company)
-        self.assertEqual(dep.site, self.site)
 
-        # The site position is used, as with deploy()
-        self.site.refresh_from_db()
-        self.assertEqual(dep.latitude, self.site.latitude)
+        # The same through the API
+        self.user.is_superuser = True
+        self.user.save()
 
-    def test_reuse_pipeline_deployment_site_busy(self):
-        """When the planned site is occupied, the device is deployed without it."""
-        first = self.ready_deployment(serial='AUR-0540')
-        deployment_service.deploy(first)
+        api = Client()
+        api.force_login(self.user)
 
-        dep = self.ready_deployment(serial='AUR-0541')
-        self.give_to_customer(dep.device)
-
-        summary = sync_stock_deployments()
-        self.assertEqual(summary['errors'], [])
-
-        dep.refresh_from_db()
-        self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
-        self.assertIsNone(dep.site)
-        self.assertIn(first.reference, dep.metadata['warning'])
-
-    def test_close_on_return(self):
-        """Returning the device closes the deployment and resolves its alerts."""
-        item = self.give_to_customer(self.make_device('AUR-0550'))
-        sync_stock_deployments()
-        dep = Deployment.objects.get(device=item)
-
-        alert = Alert.objects.create(
-            deployment=dep,
-            alert_type=Alert.AlertType.NO_CONTACT,
-            severity=AlertSeverity.CRITICAL.value,
-            message='No contact',
-            dedupe_key=f'dp:{dep.pk}:NO_CONTACT',
+        response = api.post(
+            reverse('api-stock-return'),
+            {'items': [{'pk': item.pk, 'quantity': 1}], 'location': self.store.pk},
+            content_type='application/json',
         )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(dep.reference, response.content.decode())
 
-        item.return_from_customer(self.store, self.user)
+        item.refresh_from_db()
+        self.assertEqual(item.customer, self.customer)
+
+        # Recovered through the fleet, it comes back on the fleet return order
+        deployment_service.recover(dep, user=self.user)
+        self.assertIsNotNone(pipeline.get_return_line(item))
+
+    def test_return_order_refused(self):
+        """A deployed device cannot be put on, or received from, a return order."""
+        from order.models import ReturnOrder, ReturnOrderLineItem
+
+        dep = self.deployed('AUR-0555')
+        item = dep.device
+
+        order = ReturnOrder.objects.create(customer=self.customer)
+        line = ReturnOrderLineItem(order=order, item=item, quantity=1)
+
+        with self.assertRaises(ValidationError) as err:
+            line.full_clean()
+
+        self.assertIn('item', err.exception.message_dict)
+
+        # A line which got there anyway (e.g. the admin) cannot be received
+        line.save()
+
+        with self.assertRaises(ValidationError):
+            order.receive_line_item(line, self.workshop, self.user)
+
+        item.refresh_from_db()
+        self.assertEqual(item.customer, self.customer)
+        line.delete()
+
+        # The fleet recovery creates its own return order, which is received
+        deployment_service.recover(dep, user=self.user)
+        fleet_line = pipeline.get_return_line(item)
+        fleet_line.full_clean()
+        fleet_line.order.receive_line_item(fleet_line, self.workshop, self.user)
+
+        item.refresh_from_db()
+        self.assertIsNone(item.customer)
+        self.assertEqual(item.location, self.workshop)
+
+    def test_close_when_item_deleted(self):
+        """A deployment whose stock item was deleted is closed."""
+        dep = self.deployed('AUR-0560')
+
+        dep.device.delete()
 
         summary = sync_stock_deployments()
         self.assertEqual(len(summary['closed']), 1)
@@ -228,86 +291,20 @@ class StockSyncTest(FleetServiceTestBase):
         self.assertEqual(dep.status, DeploymentStatus.RECOVERED.value)
         self.assertIsNotNone(dep.recovered_at)
 
-        returned = StockItemTracking.objects.get(
-            item=item, tracking_type=StockHistoryCode.RETURNED_FROM_CUSTOMER.value
-        )
-        self.assertEqual(dep.recovered_at, returned.date)
-
-        alert.refresh_from_db()
-        self.assertEqual(alert.status, AlertStatus.RESOLVED.value)
-        self.assertEqual(alert.resolution, Alert.Resolution.AUTO)
-
-        # Giving it to a customer again opens a new deployment
-        self.give_to_customer(item)
-        sync_stock_deployments()
-        self.assertEqual(
-            Deployment.objects.filter(
-                device=item, status=DeploymentStatus.DEPLOYED.value
-            ).count(),
-            1,
-        )
-        self.assertEqual(Deployment.objects.filter(device=item).count(), 2)
-
-    def test_close_on_return_order(self):
-        """Receiving the device on a return order closes the deployment (history kept)."""
-        from order.models import ReturnOrder, ReturnOrderLineItem
-
-        item = self.give_to_customer(self.make_device('AUR-0555'))
-        sync_stock_deployments()
-        dep = Deployment.objects.get(device=item)
-
-        order = ReturnOrder.objects.create(customer=self.client_company)
-        line = ReturnOrderLineItem.objects.create(order=order, item=item)
-        order.receive_line_item(line, self.workshop, self.user)
-
-        item.refresh_from_db()
-        self.assertIsNone(item.customer)
-
-        summary = sync_stock_deployments()
-        self.assertEqual(len(summary['closed']), 1)
-
-        dep.refresh_from_db()
-        self.assertEqual(dep.status, DeploymentStatus.RECOVERED.value)
-
-        received = StockItemTracking.objects.get(
-            item=item,
-            tracking_type=StockHistoryCode.RETURNED_AGAINST_RETURN_ORDER.value,
-        )
-        self.assertEqual(dep.recovered_at, received.date)
-
-        # Kept as history: listed as closed, not as active
-        self.assertTrue(
-            Deployment.objects.filter(
-                device=item, status=DeploymentStatus.RECOVERED.value
-            ).exists()
-        )
-
-    def test_close_when_item_deleted(self):
-        """A deployment whose stock item was deleted is closed."""
-        item = self.give_to_customer(self.make_device('AUR-0560'))
-        sync_stock_deployments()
-        dep = Deployment.objects.get(device=item)
-
-        item.delete()
-
-        sync_stock_deployments()
-        dep.refresh_from_db()
-        self.assertEqual(dep.status, DeploymentStatus.RECOVERED.value)
-
     def test_customer_changed(self):
         """The client follows the customer of the device."""
-        item = self.give_to_customer(self.make_device('AUR-0570'))
-        sync_stock_deployments()
+        dep = self.deployed('AUR-0570')
+        item = dep.device
 
-        item.customer = self.customer
+        item.customer = self.client_company
         item.save()
 
         summary = sync_stock_deployments()
         self.assertEqual(len(summary['updated']), 1)
 
-        dep = Deployment.objects.get(device=item)
+        dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
-        self.assertEqual(dep.client, self.customer)
+        self.assertEqual(dep.client, self.client_company)
 
     def test_deploy_and_recover_need_no_sync(self):
         """The fleet deploy and recover actions already match the stock."""
@@ -327,27 +324,90 @@ class StockSyncTest(FleetServiceTestBase):
         self.give_to_customer(self.make_device('AUR-0590'))
 
         summary = sync_stock_deployments(dry_run=True)
-        self.assertEqual(len(summary['opened']), 1)
+        self.assertEqual(len(summary['available']), 1)
         self.assertFalse(Deployment.objects.exists())
 
         out = StringIO()
         call_command('fleet_sync_stock', dry_run=True, stdout=out)
-        self.assertIn('Open: ', out.getvalue())
-        self.assertIn('Dry run: 1 opened', out.getvalue())
+        self.assertIn('Available: ', out.getvalue())
+        self.assertIn('1 available', out.getvalue())
+        self.assertIn('Dry run', out.getvalue())
         self.assertFalse(Deployment.objects.exists())
 
         out = StringIO()
         call_command('fleet_sync_stock', stdout=out)
-        self.assertIn('Done: 1 opened', out.getvalue())
+        self.assertIn('Done: 0 opened', out.getvalue())
         self.assertEqual(Deployment.objects.count(), 1)
+
+    def test_undeploy_command(self):
+        """Deployments opened by a shipment can be put back to READY."""
+        by_fleet = self.deployed('AUR-0595')
+
+        # As the old stock sync did it: DEPLOYED, without a FLEET_DEPLOYED entry
+        item = self.give_to_customer(self.make_device('AUR-0596'))
+        old = Deployment.objects.create(
+            status=DeploymentStatus.DEPLOYED.value,
+            device_type=self.device_type,
+            device=item,
+            client=self.client_company,
+            deployed_at=timezone.now(),
+        )
+        deployment_service.compute_next_pm(old)
+        self.assertIsNotNone(old.next_pm_date)
+
+        alert = Alert.objects.create(
+            deployment=old,
+            alert_type=Alert.AlertType.NO_CONTACT,
+            severity=AlertSeverity.CRITICAL.value,
+            message='No contact',
+            dedupe_key=f'dp:{old.pk}:NO_CONTACT',
+        )
+        self.assertFalse(deployment_service.deployed_by_fleet(old))
+
+        out = StringIO()
+        call_command('fleet_undeploy', stdout=out)
+        self.assertIn(old.reference, out.getvalue())
+        self.assertNotIn(by_fleet.reference, out.getvalue())
+
+        out = StringIO()
+        call_command('fleet_undeploy', old.reference, dry_run=True, stdout=out)
+        self.assertIn('Dry run', out.getvalue())
+        old.refresh_from_db()
+        self.assertEqual(old.status, DeploymentStatus.DEPLOYED.value)
+
+        call_command('fleet_undeploy', old.reference, stdout=StringIO())
+
+        old.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(old.status, DeploymentStatus.READY.value)
+        self.assertIsNone(old.deployed_at)
+        self.assertIsNone(old.next_pm_date)
+        self.assertEqual(item.customer, self.client_company)
+
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, AlertStatus.RESOLVED.value)
+
+        # The sync keeps it as the row of the unit; the fleet can deploy it
+        self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
+        deployment_service.deploy(old)
+        old.refresh_from_db()
+        self.assertEqual(old.status, DeploymentStatus.DEPLOYED.value)
+
+        with self.assertRaises(CommandError):
+            call_command('fleet_undeploy', 'DP-NONE', stdout=StringIO())
+
+        # Only DEPLOYED deployments
+        deployment_service.recover(by_fleet)
+
+        with self.assertRaises(CommandError):
+            call_command('fleet_undeploy', by_fleet.reference, stdout=StringIO())
 
     def test_monitoring_without_position(self):
         """A device without a position is monitored, without a geofence check."""
         from fleet.integrations.base import DeviceStatus, Position, StreamStatus
 
-        item = self.give_to_customer(self.make_device('AUR-0600'))
-        sync_stock_deployments()
-        dep = Deployment.objects.get(device=item)
+        dep = self.deployed('AUR-0600')
+        self.assertIsNone(dep.latitude)
 
         now = timezone.now()
         status = DeviceStatus(
@@ -385,10 +445,9 @@ class StockSyncTest(FleetServiceTestBase):
     # P7: internal device states (section 2.11)
 
     def test_decommissioned_survives_sync(self):
-        """A decommissioned device keeps its customer but is never reopened."""
-        item = self.give_to_customer(self.make_device('AUR-0700'))
-        sync_stock_deployments()
-        dep = Deployment.objects.get(device=item)
+        """A decommissioned device keeps its customer and gets no new row."""
+        dep = self.deployed('AUR-0700')
+        item = dep.device
         codes_before = self.tracking_codes(item)
 
         device_state.set_state(
@@ -401,7 +460,7 @@ class StockSyncTest(FleetServiceTestBase):
         self.assertIn('decommissioned', dep.metadata)
 
         # No stock movement: the item keeps its customer
-        self.assertEqual(item.customer, self.client_company)
+        self.assertEqual(item.customer, self.customer)
         self.assertEqual(self.tracking_codes(item), codes_before)
 
         link = DeviceLink.objects.get(stock_item=item)
@@ -409,7 +468,6 @@ class StockSyncTest(FleetServiceTestBase):
         self.assertEqual(link.state_note, 'End of life')
         self.assertEqual(link.state_changed_by, self.user)
 
-        # The sync neither reopens nor recreates it
         for _run in range(2):
             summary = sync_stock_deployments()
             self.assertEqual(summary, EMPTY_SUMMARY)
@@ -419,31 +477,30 @@ class StockSyncTest(FleetServiceTestBase):
             device_state.device_state(dep), InternalState.DECOMMISSIONED.value
         )
 
-        # Clearing the state lets the sync open the device again
+        # Clearing the state puts the unit back in the deployment list
         device_state.set_state(dep, InternalState.NONE, user=self.user)
         summary = sync_stock_deployments()
-        self.assertEqual(len(summary['opened']), 1)
-        self.assertEqual(
+        self.assertEqual(summary['opened'], [])
+        self.assertEqual(len(summary['available']), 1)
+        self.assertTrue(
             Deployment.objects.filter(
-                device=item, status=DeploymentStatus.DEPLOYED.value
-            ).count(),
-            1,
+                device=item, status=DeploymentStatus.READY.value
+            ).exists()
         )
 
     def test_decommissioned_before_first_sync(self):
-        """A device decommissioned before it was ever deployed is not opened."""
+        """A decommissioned unit never gets a row."""
         item = self.give_to_customer(self.make_device('AUR-0710'))
         DeviceLink.objects.create(stock_item=item, state=InternalState.DECOMMISSIONED)
 
-        self.assertEqual(sync_stock_deployments(dry_run=True)['opened'], [])
-        self.assertEqual(sync_stock_deployments()['opened'], [])
+        self.assertEqual(sync_stock_deployments(dry_run=True), EMPTY_SUMMARY)
+        self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
         self.assertFalse(Deployment.objects.filter(device=item).exists())
 
     def test_decommissioned_elsewhere_is_closed(self):
         """A DEPLOYED deployment of a device decommissioned elsewhere (e.g. the admin) is closed."""
-        item = self.give_to_customer(self.make_device('AUR-0720'))
-        sync_stock_deployments()
-        dep = Deployment.objects.get(device=item)
+        dep = self.deployed('AUR-0720')
+        item = dep.device
 
         DeviceLink.objects.filter(stock_item=item).update(
             state=InternalState.DECOMMISSIONED
@@ -456,23 +513,21 @@ class StockSyncTest(FleetServiceTestBase):
         dep.refresh_from_db()
         item.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.RECOVERED.value)
-        self.assertEqual(item.customer, self.client_company)
-        self.assertEqual(sync_stock_deployments()['opened'], [])
+        self.assertEqual(item.customer, self.customer)
+        self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
 
-    def test_return_clears_docked(self):
-        """Returning a docked device closes it and clears DOCKED."""
-        item = self.give_to_customer(self.make_device('AUR-0730'))
-        sync_stock_deployments()
-        dep = Deployment.objects.get(device=item)
+    def test_recover_clears_docked(self):
+        """Recovering a docked device closes it and clears DOCKED."""
+        dep = self.deployed('AUR-0730')
+        item = dep.device
 
         device_state.set_state(dep, InternalState.DOCKED, user=self.user)
         self.assertEqual(device_state.device_state(dep), 'DOCKED')
 
-        # Still with the customer: the sync leaves a docked device deployed
+        # Still deployed: the sync leaves a docked device alone
         self.assertEqual(sync_stock_deployments()['closed'], [])
 
-        item.return_from_customer(self.store, self.user)
-        sync_stock_deployments()
+        deployment_service.recover(dep, user=self.user)
 
         dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.RECOVERED.value)
@@ -483,10 +538,10 @@ class StockSyncTest(FleetServiceTestBase):
 
 
 class SalesBuildPipelineTest(FleetServiceTestBase):
-    """A sold device keeps one deployment from the BO to the customer."""
+    """A sold device keeps one deployment from the BO to the water."""
 
     def test_sales_build_to_deployed(self):
-        """PENDING sales BO -> PLANNED; output shipped -> the same deployment DEPLOYED."""
+        """PENDING sales BO -> PLANNED; shipped -> still READY; Deploy -> DEPLOYED."""
         from order.models import SalesOrder
 
         order = SalesOrder.objects.create(customer=self.client_company)
@@ -510,6 +565,12 @@ class SalesBuildPipelineTest(FleetServiceTestBase):
         sync_stock_deployments()
 
         dep.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.READY.value)
+        self.assertEqual(Deployment.objects.count(), 1)
+
+        deployment_service.deploy(dep)
+        dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
+        self.assertEqual(dep.client, self.client_company)
         self.assertEqual(Deployment.objects.count(), 1)
         self.assertEqual(pipeline.readiness_risks(dep), [])

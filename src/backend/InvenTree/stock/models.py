@@ -1501,6 +1501,11 @@ class StockItem(
 
         tracking_code = kwargs.get('tracking_code', StockHistoryCode.RETURNED_TO_STOCK)
 
+        # A device deployed in the fleet comes back through the fleet only
+        from fleet.services.pipeline import check_return_allowed
+
+        check_return_allowed(self)
+
         item = self
 
         if quantity is not None and not self.serialized:

@@ -1,4 +1,4 @@
-"""Make the fleet deployments follow the stock (devices with a customer).
+"""Keep the fleet rows in step with the stock (every fleet unit has its row).
 
 Runs the same sync as the scheduled pipeline task. Use --dry-run first (e.g.
 before the first run on production): it reports what would be opened, closed
@@ -12,9 +12,9 @@ from fleet.services.stock_sync import sync_stock_deployments
 
 
 class Command(BaseCommand):
-    """Open, close or update deployments from the customers of fleet devices."""
+    """Close, update or add fleet rows from the stock."""
 
-    help = str(_('Sync the deployed fleet devices with the stock customers'))
+    help = str(_('Sync the fleet deployment list with the stock'))
 
     def add_arguments(self, parser):
         """Add the --dry-run flag."""

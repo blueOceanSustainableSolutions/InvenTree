@@ -7,9 +7,10 @@ real unit.
   (IN_PRODUCTION). One linked to a sales order enters it earlier, as PLANNED,
   as soon as it is created (still PENDING). The build output becomes the
   device, and the deployment is READY once the output is complete.
-- Every other finished unit which is not deployed (in stock, or on its way
-  back on a return order) gets a READY deployment without a date (see
-  ensure_unit_deployment, run by the stock sync).
+- Every other finished unit which is not deployed gets a READY deployment
+  without a date (see ensure_unit_deployment, run by the stock sync). That
+  includes a unit shipped to a customer: shipping is not deploying, only the
+  fleet Deploy action puts a device in the water.
 
 "New deployment" means choosing one of these units and planning its site,
 date and trip (new_deployment).
@@ -327,9 +328,10 @@ def get_return_line(stock_item):
 def undeployed_units(part_ids):
     """The fleet units which are not deployed: the pool of the deployment list.
 
-    A finished, serialized unit of a fleet part which is not with a customer
-    (or is on its way back on a return order), not built into another item,
-    not gone (destroyed, lost, rejected) and not decommissioned.
+    A finished, serialized unit of a fleet part which is not built into
+    another item, not gone (destroyed, lost, rejected), not decommissioned and
+    not DEPLOYED in the fleet. It may be in stock, shipped to a customer (not
+    in the water yet), or on its way back on a return order.
     """
     from stock.models import StockItem
 
@@ -345,10 +347,51 @@ def undeployed_units(part_ids):
             consumed_by_quick_build=None,
         )
         .exclude(serial='')
-        .filter(Q(customer__isnull=True) | returning_q())
+        .exclude(fleet_deployments__status=DeploymentStatus.DEPLOYED.value)
         .exclude(status__in=GONE_STOCK_STATUSES)
         .exclude(decommissioned_q('fleet_link__state'))
         .distinct()
+    )
+
+
+def deployed_deployment(stock_item) -> Deployment | None:
+    """The DEPLOYED deployment of a stock item (None if it is not deployed)."""
+    if stock_item is None or stock_item.pk is None:
+        return None
+
+    return Deployment.objects.filter(
+        device=stock_item, status=DeploymentStatus.DEPLOYED.value
+    ).first()
+
+
+def check_return_allowed(stock_item) -> None:
+    """Refuse to return a device which is deployed in the fleet.
+
+    Called by the core return paths (return order lines, return from customer,
+    return to stock). A deployed device comes back only through the fleet
+    (Recover, or a completed recovery task), which closes the deployment
+    first and then creates its own return order.
+    """
+    if deployment := deployed_deployment(stock_item):
+        raise ValidationError(
+            _('This device is deployed in the fleet')
+            + f' ({deployment.reference}). '
+            + _('Recover it from the fleet maintenance to return it')
+        )
+
+
+def is_shipped(stock_item) -> bool:
+    """True for a unit shipped to a customer which can still be deployed.
+
+    Shipping is not deploying: the unit is out of stock, with the customer,
+    but nobody has put it in the water yet.
+    """
+    return (
+        stock_item.customer_id is not None
+        and not stock_item.is_building
+        and stock_item.belongs_to_id is None
+        and stock_item.consumed_by_id is None
+        and stock_item.status not in GONE_STOCK_STATUSES
     )
 
 
