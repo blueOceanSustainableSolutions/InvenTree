@@ -79,7 +79,7 @@ The plan is written for an engineer or agent who has **no prior context**. Read 
 ```
                     ┌──────────────── Caddy (D/Caddyfile) ────────────────┐
   :8443  ──────────►│  /web/*  → main SPA (index.html entry)              │
-  :8444  ──────────►│  "/" → redirect /fleet/ ; /fleet/* → Fleet Portal   │
+                    │  /fleet/* → Fleet Portal (fleet.html entry)         │
                     │  /api, /auth, /static, /media shared by both        │
                     └───────────────────────┬─────────────────────────────┘
                                             ▼
@@ -207,10 +207,10 @@ Add these to `SYSTEM_SETTINGS` in `B/common/setting/system.py`, and list them in
 | `FLEET_DEFAULT_CUSTOMER` | none | Model setting → Company (customer). Used when deploying a site that has no client. |
 | `FLEET_TEAMS_WEBHOOK_URL` | `''` | **protected**. A Teams *Workflows* (Power Automate) webhook URL. Classic O365 connectors are retired. |
 | `FLEET_ALERT_EMAILS` | `''` | Comma-separated |
-| `FLEET_PORTAL_URL` | `''` | For example `https://host:8444/fleet/`. Used for links in notifications. |
+| `FLEET_PORTAL_URL` | `''` | For example `https://host:8443/fleet/`. Used for links in notifications. |
 
 **Changed in P2:**
-- `FLEET_DATA_API_URL`, `FLEET_TEAMS_WEBHOOK_URL` and `FLEET_PORTAL_URL` use `fleet.validators.validate_optional_url` (http/https, may be empty, host names without a TLD such as `https://bo-server:8444/fleet/` allowed). P0 had used the core `BaseURLValidator`, which is the *site URL* validator: it rejects any value other than `SITE_URL` whenever `SITE_URL` is configured (as in production), so these settings could not be saved on the server.
+- `FLEET_DATA_API_URL`, `FLEET_TEAMS_WEBHOOK_URL` and `FLEET_PORTAL_URL` use `fleet.validators.validate_optional_url` (http/https, may be empty, host names without a TLD such as `https://bo-server:8443/fleet/` allowed). P0 had used the core `BaseURLValidator`, which is the *site URL* validator: it rejects any value other than `SITE_URL` whenever `SITE_URL` is configured (as in production), so these settings could not be saved on the server.
 - A hidden setting `_FLEET_POLL_STATE` (JSON, default `{}`) holds the last poll time and the consecutive-failure counter. The default cache is per process (locmem), so it cannot be used for this.
 
 Model-type settings use the `'model'` key (e.g. `'stock.stocklocation'`) plus `'model_filters'` (structural / non-structural location, `is_customer`), which gives a dropdown in the settings UI. Secrets use `'protected': True`, which the API returns as `***`. The settings test `common/tests.py::run_settings_check` had an outdated allow-list without these three keys; P0 added them.
@@ -1117,7 +1117,10 @@ Each entry sets `url_overview`/`url_detail` under `/fleet/...`, `api_endpoint`, 
 
 ---
 
-## 5. Fleet Portal (second UI, `:8444` → `/fleet/`)
+## 5. Fleet Portal (second UI, `/fleet/` on the same port as `/web/`)
+
+**Changed 2026-10-12 (product owner):** one port only. The second port 8444 is removed (Caddy block, compose port, `:8444` trusted origins); the portal is `https://<host>:8443/fleet/`, next to `/web/`. The portal and the main UI *Fleet* tab show **the same sections with the same content**, from one list: `F/src/fleet/FleetSectionList.tsx` (`fleetSectionList()`: name = main UI panel, path = portal screen, label, icon, phone tab bar flag; no table imports) and `F/src/fleet/FleetSections.tsx` (`fleetSections()` adds the content). **Gotcha:** the portal routing (`navigation.tsx`, loaded eagerly) must only import `FleetSectionList.tsx`; the table modules call `t` when they load, and before the locale is active that throws and the portal stays blank. The list is the union of both previous sets: Overview (KPIs, map, open alerts), My Work, Alerts, Plan (KPIs, map, horizon note, plan table), Deployments, Maintenance (table / calendar toggle), Trips, Calendar, Sites, Device Types. `FleetIndex` maps it to panels; the portal side nav, bottom tab bar and `/index/<panel>` redirects come from it, and one screen `portal/pages/Section.tsx` (route `:section`) renders any section; the old Overview/Plan/Trips/Alerts/Sites/MyWork portal pages are gone. The Playwright specs build their test unit through a build order (`F/tests/fleet.ts`, `buildFleetUnit`), since the API can no longer create a deployment directly (P9). Task and trip cards link as `/fleet/task/<id>/`, `/fleet/trip/<id>/` so they work in both UIs. Portal statements below about port 8444 are history.
+
 
 ### 5.1 Build and serve
 - **Vite:** in `F/vite.config.ts` add `build.rollupOptions.input = { index: 'index.html', fleet: 'fleet.html' }`. Keep the same `outDir`. The manifest will then contain the keys `index.html` and `fleet.html`.
@@ -1364,7 +1367,7 @@ Write these as backend service and API tests, and as Playwright tests where note
   - **Added in P5:** `templates/spa_fleet.html` (new in `D/`) is copied over `web/templates/web/fleet.html`, like `spa_index.html` over `index.html`: the portal page gets the BlueOasis favicon and theme stylesheet.
 
   The frontend stage already copies the whole `web/static/web` output, which now includes the `fleet.html` entry assets. A simpler alternative is to generate the COPY list with `git diff --name-only 0a9a8b1c5 HEAD -- src/backend`. Propose it, but don't silently change the overlay strategy.
-- **`Caddyfile`:** add
+- *(Superseded 2026-10-12: no second port; see section 5.)* **`Caddyfile`:** add
   ```
   https://:8444 {
       tls /certs/cert.pem /certs/key.pem
@@ -1378,7 +1381,7 @@ Write these as backend service and API tests, and as Playwright tests where note
 - **Migrations:** `INVENTREE_AUTO_UPDATE=False`, so migrations **don't run on boot**. After deploying, run `docker compose exec inventree-server invoke migrate`, then `./scripts/collect-static.sh`. Document this in `D/DEPLOY.md` and the new `D/docs/13-fleet.md`. Back up first (`D/BACKUPS.md`).
 - **Settings to configure after deploy:** the kit parent location (structural "Field Kits"), the workshop location, the default customer (e.g. company "BlueOasis Fleet"), the Teams webhook, the alert emails, the portal URL, and the data provider, URL and token. Also assign the `fleet` role to the manager and technician groups.
 
-**As built in P6** (deploy repo only, all files CRLF as before; no fork code changed, so the Dockerfile overlay still equals the fork's backend diff minus tests and was not changed):
+**As built in P6** (*the 8444 parts were removed on 2026-10-12, see section 5*) (deploy repo only, all files CRLF as before; no fork code changed, so the Dockerfile overlay still equals the fork's backend diff minus tests and was not changed):
 - `Caddyfile`: site block `https://:8444` with the same `tls /certs/cert.pem /certs/key.pem`, `redir / /fleet/ 302` (exact path `/` only; Caddy orders `redir` before the `route` of `common`) and `import common`, so `/static`, `/media` (with `forward_auth`), the plugin widget rewrite and the proxy are the same snippet on both ports. `/web/` also works on 8444.
 - `docker-compose.yml`: proxy port `"8444:8444"`.
 - `.env`: the three existing hosts (`192.168.1.153`, `100.66.76.10`, `ht-cop.taile85031.ts.net`) on `:8444` added to `INVENTREE_TRUSTED_ORIGINS` (product owner: same server and host names as InvenTree, nothing else opened). `.env.example`: placeholder line with both ports. Django's CSRF check compares the full origin including the port, so the `:8444` entries are required.
@@ -1419,7 +1422,7 @@ Write these as backend service and API tests, and as Playwright tests where note
 - (P1) A related object cached on an in-memory instance (e.g. `dep.build`) does not see later saves through another instance. Refresh (`refresh_from_db()`) before computing risks in tests. The API always reads fresh rows.
 - (P1) Build outputs for a trackable assembly need `create_build_output(1, serials=['…'])`, then `complete_build_output(output, user)`, then `complete_build(user)`. `complete_build` fires the Build `post_save` hook with status COMPLETE, which runs `sync_build_output`.
 
-- (P2) The core `BaseURLValidator` is the site-URL validator and is locked to `SITE_URL`; don't use it for other URL settings. Django's plain `URLValidator` rejects host names without a TLD (`https://bo-server:8444`); `fleet.validators.OptionalURLValidator` allows them.
+- (P2) The core `BaseURLValidator` is the site-URL validator and is locked to `SITE_URL`; don't use it for other URL settings. Django's plain `URLValidator` rejects host names without a TLD (`https://bo-server:8443`); `fleet.validators.OptionalURLValidator` allows them.
 - (P2) `NotificationMessage` rows are only created when the plugin registry is loaded. Tests that check in-app notifications must call `self.ensurePluginsLoaded()` (as `build/test_build.py` does).
 - (P2) `NotificationEntry.uid` is not nullable, so `trigger_notification(None, …)` fails after sending; `notify.send_in_app` skips notifications without an object.
 - (P2b) A stock item can have a customer **and** be in a fleet pipeline deployment at the same time, but only when the customer was set outside the fleet app (by hand, or by shipping a sales order). The stock sync resolves this by moving the pipeline deployment to DEPLOYED. `deploy()` still refuses a device that already has a customer.

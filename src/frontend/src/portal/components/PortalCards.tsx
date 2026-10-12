@@ -17,7 +17,9 @@ import { formatDate } from '../../defaults/formatters';
 import { taskTypeLabel } from '../../fleet/components/FleetBadges';
 
 /**
- * A card which opens a screen when tapped: the whole card is the touch target
+ * A card which opens a screen when tapped: the whole card is the touch target.
+ * Task and trip cards link in the main UI shape (/fleet/task/<id>/), which
+ * works in the main UI and in the portal (see portal/navigation.tsx).
  */
 export function LinkCard({
   to,
@@ -56,7 +58,10 @@ export function TaskCard({ task }: Readonly<{ task: any }>): ReactNode {
   const date = task.scheduled_date ?? task.due_date;
 
   return (
-    <LinkCard to={`/task/${task.pk}`} ariaLabel={`task-card-${task.reference}`}>
+    <LinkCard
+      to={`/fleet/task/${task.pk}/`}
+      ariaLabel={`task-card-${task.reference}`}
+    >
       <Group gap='xs' justify='space-between'>
         <Text fw={700}>{task.reference}</Text>
         <Group gap={4}>
@@ -107,7 +112,7 @@ export function TripCard({ trip }: Readonly<{ trip: any }>): ReactNode {
 
   return (
     <LinkCard
-      to={`/trips/${trip.pk}`}
+      to={`/fleet/trip/${trip.pk}/`}
       ariaLabel={`trip-card-${trip.reference}`}
     >
       <Group gap='xs' justify='space-between'>

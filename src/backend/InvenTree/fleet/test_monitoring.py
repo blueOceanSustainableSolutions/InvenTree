@@ -929,7 +929,7 @@ class NotifyTest(MonitoringTestBase):
         payload = notify.build_teams_card(
             'Title',
             'Text',
-            link='https://host:8444/fleet/deployment/1',
+            link='https://host:8443/fleet/deployment/1',
             severity='CRITICAL',
             facts=[('Site', 'Algarve #1'), ('Empty', None)],
         )
@@ -940,15 +940,15 @@ class NotifyTest(MonitoringTestBase):
             content['body'][2]['facts'], [{'title': 'Site', 'value': 'Algarve #1'}]
         )
         self.assertEqual(
-            content['actions'][0]['url'], 'https://host:8444/fleet/deployment/1'
+            content['actions'][0]['url'], 'https://host:8443/fleet/deployment/1'
         )
 
     def test_link(self):
         """Links use the portal URL when set."""
-        set_global_setting('FLEET_PORTAL_URL', 'https://host:8444/fleet')
+        set_global_setting('FLEET_PORTAL_URL', 'https://host:8443/fleet')
 
         self.assertEqual(
-            notify.build_link('deployment/3'), 'https://host:8444/fleet/deployment/3'
+            notify.build_link('deployment/3'), 'https://host:8443/fleet/deployment/3'
         )
 
         set_global_setting('FLEET_PORTAL_URL', '')
@@ -960,7 +960,7 @@ class NotifyTest(MonitoringTestBase):
             set_global_setting('FLEET_TEAMS_WEBHOOK_URL', WEBHOOK + '2')
             set_global_setting('FLEET_DATA_API_URL', 'https://data.example.com/api')
             set_global_setting(
-                'FLEET_PORTAL_URL', 'https://inventree.example.com:8444/fleet/'
+                'FLEET_PORTAL_URL', 'https://inventree.example.com:8443/fleet/'
             )
 
         with self.assertRaises(ValidationError):

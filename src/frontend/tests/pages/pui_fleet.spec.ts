@@ -1,16 +1,17 @@
-import { type APIRequestContext, type Page, expect } from '@playwright/test';
+import { type Page, expect } from '@playwright/test';
 import { createApi } from '../api.ts';
 import { test } from '../baseFixtures.ts';
 import { adminuser } from '../defaults.ts';
+import { buildFleetUnit, list, post, testLocation } from '../fleet.ts';
 
 /*
  * Fleet Portal (FLEET_PLAN scenario 10): log in on the portal path, open the
  * overview, open a deployment and run the task flow with mocked data.
  *
- * The test creates its own data through the API (a trackable device part, one
- * serialized unit, a customer, a device type with an essential stream and a
- * checklist item, a deployed deployment with a platform id, and a preventive
- * task), so it does not depend on the demo dataset. The data platform is the
+ * The test creates its own data through the API (a trackable device part, a
+ * device type with an essential stream and a checklist item, one unit built
+ * through a build order, a customer, the unit deployed with a platform id, and
+ * a preventive task), so it does not depend on the demo dataset. The data platform is the
  * built-in mock (FLEET_DATA_PROVIDER = mock), which reports every stream as
  * fresh, so "Verify data" passes.
  */
@@ -24,38 +25,6 @@ type FleetData = {
   deployment: { pk: number; reference: string };
   task: { pk: number; reference: string };
 };
-
-/** POST and return the JSON body, failing with the response text */
-async function post(api: APIRequestContext, url: string, data: any) {
-  const response = await api.post(url, { data: data });
-  expect(response.ok(), `POST ${url}: ${await response.text()}`).toBeTruthy();
-  return response.json();
-}
-
-/** GET a list and return the JSON body */
-async function list(api: APIRequestContext, url: string, params: any) {
-  const response = await api.get(url, { params: params });
-  expect(response.ok(), `GET ${url}: ${await response.text()}`).toBeTruthy();
-  return response.json();
-}
-
-/** A non-structural stock location for the test device (reused) */
-async function testLocation(api: APIRequestContext): Promise<number> {
-  const name = 'Fleet Playwright Workshop';
-  const existing = await list(api, 'stock/location/', { name: name });
-
-  if (existing.length > 0) {
-    return existing[0].pk;
-  }
-
-  const location = await post(api, 'stock/location/', {
-    name: name,
-    description: 'Fleet Portal tests',
-    structural: false
-  });
-
-  return location.pk;
-}
 
 /** Create a deployed device with a preventive task, through the API */
 async function setupFleetData(): Promise<FleetData> {
@@ -71,22 +40,6 @@ async function setupFleetData(): Promise<FleetData> {
     trackable: true,
     assembly: true,
     active: true
-  });
-
-  await post(api, 'stock/', {
-    part: part.pk,
-    quantity: 1,
-    serial_numbers: serial,
-    location: location
-  });
-
-  const items = await list(api, 'stock/', { part: part.pk, serial: serial });
-  expect(items.length).toBe(1);
-  const device = items[0];
-
-  const client = await post(api, 'company/', {
-    name: `Fleet PW Client ${uid}`,
-    is_customer: true
   });
 
   const deviceType = await post(api, 'fleet/device-type/', {
@@ -113,14 +66,23 @@ async function setupFleetData(): Promise<FleetData> {
     task_type: ''
   });
 
-  const planned = await post(api, 'fleet/deployment/', {
-    device_type: deviceType.pk,
-    client: client.pk
+  // The unit and its READY deployment (from the build order)
+  const { device, deployment: planned } = await buildFleetUnit(api, {
+    part: part.pk,
+    serial: serial,
+    uid: uid,
+    location: location
   });
 
-  await post(api, `fleet/deployment/${planned.pk}/assign-device/`, {
-    stock_item: device.pk
+  const client = await post(api, 'company/', {
+    name: `Fleet PW Client ${uid}`,
+    is_customer: true
   });
+
+  const withClient = await api.patch(`fleet/deployment/${planned.pk}/`, {
+    data: { client: client.pk }
+  });
+  expect(withClient.ok(), await withClient.text()).toBeTruthy();
 
   const deployed = await post(api, `fleet/deployment/${planned.pk}/deploy/`, {
     latitude: '37.010000',
@@ -155,12 +117,12 @@ async function setupFleetData(): Promise<FleetData> {
   };
 }
 
-/** Return the test device to stock (so its deployment is closed) */
+/** Recover the test device (a return order brings it back) */
 async function recoverDevice(data: FleetData) {
   const api = await createApi({});
 
   await api.post(`fleet/deployment/${data.deployment.pk}/recover/`, {
-    data: { location: data.location, notes: 'Fleet Portal test' }
+    data: { notes: 'Fleet Portal test' }
   });
 }
 
@@ -179,7 +141,7 @@ async function portalLogin(page: Page) {
 
   // Back to the portal overview (not the main UI)
   await page.waitForURL(/\/fleet\/?$/);
-  await page.getByRole('heading', { name: 'Fleet Overview' }).waitFor();
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
 }
 
 /** The page must not scroll sideways */
@@ -199,12 +161,14 @@ test('Fleet Portal - Scenario 10', async ({ browser }) => {
     // Log in on the portal path
     await portalLogin(page);
 
-    // Overview: KPI tiles, map and the deployed devices
+    // Overview: KPI tiles, map and the open alerts
     await page.getByText('Deployed', { exact: true }).first().waitFor();
-    await page.getByRole('heading', { name: 'Deployed Devices' }).waitFor();
+    await page.getByRole('heading', { name: 'Open Alerts' }).waitFor();
     await expect(page.locator('.leaflet-container').first()).toBeVisible();
 
     // Open the deployment from the deployed devices table
+    await page.getByLabel('portal-nav-/deployments').click();
+    await page.waitForURL('**/fleet/deployments');
     await page.getByLabel('table-search-input').last().fill(data.serial);
     await page.waitForLoadState('networkidle');
     await page
@@ -346,11 +310,11 @@ test('Fleet Portal - Phone width', async ({ browser }) => {
   await page.getByLabel('portal-tab-more').click();
   await page.getByRole('menuitem', { name: 'Plan' }).click();
   await page.waitForURL('**/fleet/plan');
-  await page.getByRole('heading', { name: 'Fleet Plan' }).waitFor();
+  await page.getByRole('heading', { name: 'Plan', exact: true }).waitFor();
   await expectNoHorizontalScroll(page);
 
   await page.getByLabel('portal-tab-/trips').click();
-  await page.getByRole('heading', { name: 'Field Trips' }).waitFor();
+  await page.getByRole('heading', { name: 'Trips', exact: true }).waitFor();
   await expectNoHorizontalScroll(page);
 });
 
@@ -361,11 +325,13 @@ test('Fleet Portal - Links from the main UI shape', async ({ browser }) => {
   // A main UI fleet path opens the matching portal screen
   await page.goto(`${portalUrl}/index/alerts`);
   await page.waitForURL('**/fleet/alerts');
-  await page.getByRole('heading', { name: 'Alerts' }).waitFor();
+  await page.getByRole('heading', { name: 'Alerts', exact: true }).waitFor();
 
   await page.goto(`${portalUrl}/fleet/index/maintenance`);
-  await page.waitForURL('**/fleet/plan');
-  await page.getByRole('heading', { name: 'Fleet Plan' }).waitFor();
+  await page.waitForURL('**/fleet/maintenance');
+  await page
+    .getByRole('heading', { name: 'Maintenance', exact: true })
+    .waitFor();
 
   // The old pipeline screen is now part of the plan
   await page.goto(`${portalUrl}/pipeline`);

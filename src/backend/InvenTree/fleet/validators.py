@@ -123,7 +123,7 @@ def validate_email_list(value):
 class OptionalURLValidator(URLValidator):
     """http(s) URL validator which also accepts host names without a TLD.
 
-    e.g. https://bo-server:8444/fleet/ on a LAN.
+    e.g. https://bo-server:8443/fleet/ on a LAN.
     """
 
     host_re = (

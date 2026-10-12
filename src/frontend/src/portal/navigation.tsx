@@ -1,65 +1,18 @@
-import { t } from '@lingui/core/macro';
-import {
-  IconAlertTriangle,
-  IconCalendarEvent,
-  IconClipboardList,
-  IconDashboard,
-  IconMapPin,
-  IconSailboat
-} from '@tabler/icons-react';
 import type { ReactNode } from 'react';
 import { useEffect } from 'react';
 import { Navigate, useLocation, useParams } from 'react-router-dom';
 
-/** One entry of the portal navigation (side nav, bottom tab bar) */
-export type PortalNavItem = {
-  path: string;
-  label: string;
-  icon: ReactNode;
-  /** Shown in the bottom tab bar on phones (the others are under "More") */
-  primary: boolean;
-};
+import {
+  type FleetSectionInfo,
+  fleetSectionList
+} from '../fleet/FleetSectionList';
 
-/** The screens of the portal, in navigation order */
+/** One entry of the portal navigation (side nav, bottom tab bar) */
+export type PortalNavItem = FleetSectionInfo;
+
+/** The screens of the portal, in navigation order (the main UI sections) */
 export function portalNavItems(): PortalNavItem[] {
-  return [
-    {
-      path: '/',
-      label: t`Overview`,
-      icon: <IconDashboard />,
-      primary: true
-    },
-    {
-      path: '/my',
-      label: t`My Work`,
-      icon: <IconClipboardList />,
-      primary: true
-    },
-    {
-      path: '/plan',
-      label: t`Plan`,
-      icon: <IconCalendarEvent />,
-      primary: false
-    },
-    {
-      path: '/trips',
-      label: t`Trips`,
-      icon: <IconSailboat />,
-      primary: true
-    },
-    {
-      path: '/alerts',
-      label: t`Alerts`,
-      icon: <IconAlertTriangle />,
-      primary: true
-    },
-    {
-      path: '/sites',
-      label: t`Sites`,
-      icon: <IconMapPin />,
-      primary: false
-    }
-  ];
+  return fleetSectionList();
 }
 
 /** Is a navigation item the current screen (or one of its detail pages)? */
@@ -82,18 +35,14 @@ export function mainUiUrl(path = ''): string {
   return `/${getMainBaseUrl()}${path}`;
 }
 
-/** Main UI fleet index panels which have their own portal screen */
-const INDEX_PANELS: Record<string, string> = {
-  overview: '/',
-  deployments: '/',
-  plan: '/plan',
-  pipeline: '/plan',
-  alerts: '/alerts',
-  maintenance: '/plan',
-  calendar: '/plan',
-  trips: '/trips',
-  sites: '/sites'
-};
+/** Main UI fleet index panel -> portal screen (same sections, own path) */
+function indexPanelPath(panel: string): string | undefined {
+  if (panel == 'pipeline') {
+    return '/plan';
+  }
+
+  return fleetSectionList().find((section) => section.name == panel)?.path;
+}
 
 /**
  * Shared components link to the fleet pages of the main UI (e.g. table rows
@@ -112,11 +61,13 @@ export function StripFleetPrefix(): ReactNode {
 export function IndexRedirect(): ReactNode {
   const { panel } = useParams();
 
-  if (panel && !(panel in INDEX_PANELS)) {
+  const path = indexPanelPath(panel ?? 'overview');
+
+  if (!path) {
     return <MainUiRedirect />;
   }
 
-  return <Navigate to={INDEX_PANELS[panel ?? 'overview']} replace />;
+  return <Navigate to={path} replace />;
 }
 
 /** `/trip/<id>` and `/site/<id>` (main UI) -> `/trips/<id>`, `/sites/<id>` */

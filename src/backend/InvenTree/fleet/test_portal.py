@@ -137,33 +137,17 @@ class PortalViewTest(InvenTreeTestCase):
             settings.FRONTEND_URL_BASE,
         )
 
-    def test_portal_port(self):
-        """The portal port (8444) of the same host passes the host checks.
+    def test_portal_same_origin(self):
+        """The portal is served on the same origin as the main UI.
 
-        The proxy serves the portal on its own port. With the default lax
-        check the same host name is enough; with the strict check the portal
-        origin must be in the trusted origins (INVE-E7 otherwise).
+        /fleet/ and /web/ share one port, so the main UI origin in the
+        trusted origins is enough, also with the strict host check.
         """
-        headers = {'host': 'testserver:8444'}
+        headers = {'host': 'testserver:8443'}
 
         with self.settings(
             SITE_URL='http://testserver:8443',
             CSRF_TRUSTED_ORIGINS=['http://testserver:8443'],
-            SITE_LAX_PROTOCOL_CHECK=True,
-        ):
-            self.check_portal(self.client.get('/fleet/', headers=headers))
-
-        with self.settings(
-            SITE_URL='http://testserver:8443',
-            CSRF_TRUSTED_ORIGINS=['http://testserver:8443'],
-            SITE_LAX_PROTOCOL_CHECK=False,
-        ):
-            response = self.client.get('/fleet/', headers=headers)
-            self.assertContains(response, 'INVE-E7', status_code=500)
-
-        with self.settings(
-            SITE_URL='http://testserver:8443',
-            CSRF_TRUSTED_ORIGINS=['http://testserver:8443', 'http://testserver:8444'],
             SITE_LAX_PROTOCOL_CHECK=False,
         ):
             self.check_portal(self.client.get('/fleet/', headers=headers))

@@ -1,7 +1,8 @@
-import { type APIRequestContext, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { createApi } from '../api.ts';
 import { test } from '../baseFixtures.ts';
 import { adminuser } from '../defaults.ts';
+import { buildFleetUnit, post, testLocation } from '../fleet.ts';
 import {
   clearTableFilters,
   loadTab,
@@ -16,8 +17,9 @@ import { doCachedLogin } from '../login.ts';
  * detail pages (deployment, task, trip, site, device type) with their tabs.
  *
  * The demo dataset has no fleet data, so the detail tests create their own
- * through the API (a trackable part with one serialized unit, a device type,
- * a site, a planned deployment, a corrective task and a field trip). The
+ * through the API (a trackable part, a device type, one unit built through a
+ * build order with its next deployment planned at a site, a corrective task
+ * and a field trip). The
  * admin user is used: the "fleet" role is not assigned to the other demo
  * users.
  */
@@ -31,25 +33,13 @@ type FleetMainData = {
   trip: { pk: number; reference: string; title: string };
 };
 
-/** POST and return the JSON body, failing with the response text */
-async function post(api: APIRequestContext, url: string, data: any) {
-  const response = await api.post(url, { data: data });
-  expect(response.ok(), `POST ${url}: ${await response.text()}`).toBeTruthy();
-  return response.json();
-}
-
-/** GET a list and return the JSON body */
-async function list(api: APIRequestContext, url: string, params: any) {
-  const response = await api.get(url, { params: params });
-  expect(response.ok(), `GET ${url}: ${await response.text()}`).toBeTruthy();
-  return response.json();
-}
-
 /** Create the fleet records opened by the detail page tests */
 async function setupFleetMainData(): Promise<FleetMainData> {
   const api = await createApi({});
   const uid = `${Date.now()}`.slice(-8);
   const serial = `PWM${uid}`;
+
+  const location = await testLocation(api);
 
   const part = await post(api, 'part/', {
     name: `Fleet PW Main Unit ${uid}`,
@@ -58,16 +48,6 @@ async function setupFleetMainData(): Promise<FleetMainData> {
     assembly: true,
     active: true
   });
-
-  await post(api, 'stock/', {
-    part: part.pk,
-    quantity: 1,
-    serial_numbers: serial
-  });
-
-  const items = await list(api, 'stock/', { part: part.pk, serial: serial });
-  expect(items.length).toBe(1);
-  const device = items[0];
 
   const deviceType = await post(api, 'fleet/device-type/', {
     part: part.pk,
@@ -81,10 +61,19 @@ async function setupFleetMainData(): Promise<FleetMainData> {
     longitude: '-7.930000'
   });
 
-  const deployment = await post(api, 'fleet/deployment/', {
-    device_type: deviceType.pk,
+  // The unit (READY) and its next deployment at the site ("New Deployment")
+  const { device, deployment: unit } = await buildFleetUnit(api, {
+    part: part.pk,
+    serial: serial,
+    uid: uid,
+    location: location
+  });
+
+  const deployment = await post(api, 'fleet/deployment/new/', {
+    deployment: unit.pk,
     site: site.pk
   });
+  expect(deployment.site).toBe(site.pk);
 
   const task = await post(api, 'fleet/task/', {
     device: device.pk,
@@ -93,7 +82,8 @@ async function setupFleetMainData(): Promise<FleetMainData> {
   });
 
   const trip = await post(api, 'fleet/trip/', {
-    title: `PW Trip ${uid}`
+    title: `PW Trip ${uid}`,
+    start_date: new Date().toISOString().slice(0, 10)
   });
 
   return {
@@ -117,6 +107,7 @@ test('Fleet - Index', async ({ browser }) => {
   // Each panel of the fleet index loads
   for (const [tab, path] of [
     ['Overview', 'overview'],
+    ['My Work', 'my-work'],
     ['Alerts', 'alerts'],
     ['Plan', 'plan'],
     ['Deployments', 'deployments'],
@@ -147,13 +138,13 @@ test('Fleet - Detail Pages', async ({ browser }) => {
     url: `fleet/deployment/${data.deployment.pk}/`
   });
 
-  // Planned deployment: details, custom status hidden, readiness
+  // Ready deployment: details, custom status hidden, readiness
   await page
     .getByText(`Deployment: ${data.deployment.reference}`)
     .first()
     .waitFor();
   await loadTab(page, 'Deployment Details');
-  await page.getByText('Planned').first().waitFor();
+  await page.getByText('Ready').first().waitFor();
   await page.getByText(data.site.name).first().waitFor();
   await expect(page.getByText('Custom Status')).toHaveCount(0);
   await loadTab(page, 'Readiness');

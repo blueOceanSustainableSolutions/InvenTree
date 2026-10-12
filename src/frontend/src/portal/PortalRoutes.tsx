@@ -43,39 +43,31 @@ const PortalLayout = Loadable(
   true
 );
 
-const Overview = Loadable(lazy(() => import('./pages/Overview')));
-const Plan = Loadable(lazy(() => import('./pages/Plan')));
-const Trips = Loadable(lazy(() => import('./pages/Trips')));
+const Section = Loadable(lazy(() => import('./pages/Section')));
 const TripDetail = Loadable(lazy(() => import('./pages/TripDetail')));
-const MyWork = Loadable(lazy(() => import('./pages/MyWork')));
 const DeploymentDetail = Loadable(
   lazy(() => import('./pages/DeploymentDetail'))
 );
 const TaskDetail = Loadable(lazy(() => import('./pages/TaskDetail')));
-const Alerts = Loadable(lazy(() => import('./pages/Alerts')));
-const Sites = Loadable(lazy(() => import('./pages/Sites')));
 const SiteDetail = Loadable(lazy(() => import('./pages/SiteDetail')));
 
 /**
  * Routes of the Fleet Portal (relative to the base path /fleet/).
  *
- * The screens of FLEET_PLAN section 5.2, the login pages of the main UI, and
- * redirects for links to the main UI (see navigation.tsx).
+ * One screen per fleet section (the same sections as the main UI fleet index,
+ * see fleet/FleetSections.tsx), the detail screens, the login pages of the
+ * main UI, and redirects for links to the main UI (see navigation.tsx).
  */
 export function PortalRoutes() {
   return (
     <Routes>
       <Route path='/' element={<PortalLayout />} errorElement={<ErrorPage />}>
-        <Route index element={<Overview />} />
+        <Route index element={<Section />} />
+        <Route path=':section' element={<Section />} />
         <Route path='pipeline' element={<Navigate to='/plan' replace />} />
-        <Route path='plan' element={<Plan />} />
-        <Route path='trips' element={<Trips />} />
         <Route path='trips/:id' element={<TripDetail />} />
-        <Route path='my' element={<MyWork />} />
         <Route path='deployment/:id' element={<DeploymentDetail />} />
         <Route path='task/:id' element={<TaskDetail />} />
-        <Route path='alerts' element={<Alerts />} />
-        <Route path='sites' element={<Sites />} />
         <Route path='sites/:id' element={<SiteDetail />} />
         {/* Links in the shape of the main UI fleet pages */}
         <Route path='fleet/*' element={<StripFleetPrefix />} />
