@@ -1067,6 +1067,14 @@ class PurchaseOrderDownloadTest(OrderTest):
         models.PurchaseOrderLineItem.objects.filter(order__supplier_id=3).update(
             part=None, purchase_price=0
         )
+        models.PurchaseOrder.objects.update(order_currency='USD')
+        models.PurchaseOrderLineItem.objects.filter(pk=1).update(
+            purchase_price=3.5, purchase_price_currency='USD'
+        )
+        SupplierPart.objects.filter(pk=1).update(link='https://supplier.example/part')
+        models.PurchaseOrderExtraLine.objects.filter(pk=1).update(
+            price=12.5, price_currency='USD'
+        )
 
         for params in ({}, {'supplier': 3}):
             with self.subTest(params=params):
@@ -1078,6 +1086,9 @@ class PurchaseOrderDownloadTest(OrderTest):
 
                 self.assertEqual(workbook.sheetnames, ['Purchase Orders', 'Line Items'])
                 summary = list(workbook['Purchase Orders'].values)
+                summary_rows = [
+                    dict(zip(summary[0], row, strict=True)) for row in summary[1:]
+                ]
                 id_column = summary[0].index('ID')
                 self.assertEqual(
                     {row[id_column] for row in summary[1:]},
@@ -1088,6 +1099,27 @@ class PurchaseOrderDownloadTest(OrderTest):
                 items = [dict(zip(rows[0], row, strict=True)) for row in rows[1:]]
                 expected = {}
                 for order in orders:
+                    summary_row = next(
+                        row for row in summary_rows if row['ID'] == order.pk
+                    )
+                    self.assertEqual(
+                        summary_row['Quantity'],
+                        float(sum(line.quantity for line in order.lines.all())),
+                    )
+                    self.assertEqual(
+                        summary_row['Received'],
+                        float(sum(line.received for line in order.lines.all())),
+                    )
+                    self.assertEqual(summary_row['Order Currency'], 'USD')
+                    if order.pk == 1:
+                        self.assertIsNone(summary_row['Total Order Price'])
+                        self.assertEqual(summary_row['Known Line Total'], 350)
+                        self.assertEqual(summary_row['Unpriced Lines'], 3)
+                    if order.pk == 2:
+                        self.assertEqual(summary_row['Total Order Price'], 0)
+                        self.assertEqual(summary_row['Unpriced Lines'], 0)
+                    if order.pk == 7:
+                        self.assertEqual(summary_row['Total Order Price'], 12.5)
                     for line in order.lines.all():
                         expected[(order.reference, 'Part', line.pk)] = line
                     for line in order.extra_lines.all():
@@ -1107,14 +1139,98 @@ class PurchaseOrderDownloadTest(OrderTest):
                     ]
                     self.assertEqual(row['Quantity'], float(line.quantity))
                     if line.price is not None:
+                        self.assertEqual(row['Line Price'], row['Unit Price'])
                         self.assertEqual(row['Unit Price'], float(line.price.amount))
                         self.assertEqual(
                             row['Total Price'], float(line.price.amount * line.quantity)
+                        )
+                    if line.pk == 1 and row['Line Type'] == 'Part':
+                        self.assertEqual(
+                            row['Purchase Link'], 'https://supplier.example/part'
+                        )
+                        self.assertEqual(row['Price Source'], 'Saved Purchase Price')
+                        self.assertEqual(row['Currency'], 'USD')
+
+                purchase_link_column = rows[0].index('Purchase Link') + 1
+                for row_index, item in enumerate(items, 2):
+                    if item['Purchase Link']:
+                        self.assertEqual(
+                            sheet.cell(
+                                row_index, purchase_link_column
+                            ).hyperlink.target,
+                            item['Purchase Link'],
                         )
 
                 self.assertEqual(sheet.freeze_panes, 'A2')
                 self.assertEqual(sheet.auto_filter.ref, sheet.dimensions)
                 self.assertEqual(sheet['A1'].fill.fgColor.rgb, '004472C4')
+
+    def test_download_xlsx_supplier_estimates(self):
+        """Use supplier price breaks only for missing prices and label estimates."""
+        import openpyxl
+
+        models.PurchaseOrder.objects.filter(pk=1).update(order_currency='USD')
+        SupplierPriceBreak.objects.create(part_id=1, quantity=1, price=Money(2, 'USD'))
+        SupplierPriceBreak.objects.create(
+            part_id=1, quantity=100, price=Money(1.5, 'USD')
+        )
+        with self.export_data(
+            reverse('api-po-list'), {'supplier': 1}, export_format='xlsx', decode=False
+        ) as file:
+            workbook = openpyxl.load_workbook(file)
+        values = list(workbook['Line Items'].values)
+        rows = [dict(zip(values[0], row, strict=True)) for row in values[1:]]
+        item = next(row for row in rows if row['Line Item ID'] == 1)
+        self.assertEqual(item['Unit Price'], 1.5)
+        self.assertEqual(item['Line Price'], 1.5)
+        self.assertEqual(item['Total Price'], 150)
+        self.assertEqual(item['Currency'], 'USD')
+        self.assertEqual(item['Price Source'], 'Supplier Estimate')
+        self.assertIsNone(models.PurchaseOrderLineItem.objects.get(pk=1).price)
+
+        # A saved zero is a real price, not a reason to substitute a supplier price.
+        models.PurchaseOrderLineItem.objects.filter(pk=1).update(purchase_price=0)
+        with self.export_data(
+            reverse('api-po-list'), {'supplier': 1}, export_format='xlsx', decode=False
+        ) as file:
+            workbook = openpyxl.load_workbook(file)
+        values = list(workbook['Line Items'].values)
+        rows = [dict(zip(values[0], row, strict=True)) for row in values[1:]]
+        item = next(row for row in rows if row['Line Item ID'] == 1)
+        self.assertEqual(item['Unit Price'], 0)
+        self.assertEqual(item['Total Price'], 0)
+        self.assertEqual(item['Price Source'], 'Saved Purchase Price')
+
+    def test_download_xlsx_missing_exchange_rate(self):
+        """Keep original line prices when the order total cannot be converted."""
+        from unittest.mock import patch
+
+        import openpyxl
+        from djmoney.contrib.exchange.exceptions import MissingRate
+
+        models.PurchaseOrder.objects.filter(pk=1).update(order_currency='EUR')
+        models.PurchaseOrderLineItem.objects.filter(order_id=1).update(
+            purchase_price=2, purchase_price_currency='USD'
+        )
+        with patch(
+            'djmoney.contrib.exchange.models.convert_money', side_effect=MissingRate
+        ):
+            with self.export_data(
+                reverse('api-po-list'),
+                {'supplier': 1},
+                export_format='xlsx',
+                decode=False,
+            ) as file:
+                workbook = openpyxl.load_workbook(file)
+        values = list(workbook['Purchase Orders'].values)
+        summary = dict(zip(values[0], values[1], strict=True))
+        self.assertIsNone(summary['Total Order Price'])
+        self.assertEqual(summary['Unpriced Lines'], 4)
+        self.assertIn('Missing Exchange Rate', summary['Price Source'])
+        values = list(workbook['Line Items'].values)
+        rows = [dict(zip(values[0], row, strict=True)) for row in values[1:]]
+        self.assertEqual({row['Currency'] for row in rows}, {'USD'})
+        self.assertTrue(all(row['Unit Price'] == 2 for row in rows))
 
 
 class PurchaseOrderReceiveTest(OrderTest):

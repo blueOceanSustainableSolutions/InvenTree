@@ -299,11 +299,15 @@ class DataExportSerializerMixin:
             return datafile
 
     @staticmethod
-    def _append_purchase_order_items(datafile, queryset):
+    def _append_purchase_order_items(datafile, queryset, summary_headers, data):
         """Include individual lines from the filtered purchase orders in XLSX exports."""
+        from decimal import Decimal
         from io import BytesIO
 
         import openpyxl
+        from djmoney.contrib.exchange.exceptions import MissingRate
+        from djmoney.contrib.exchange.models import convert_money
+        from djmoney.money import Money
 
         headers = OrderedDict(
             [
@@ -315,26 +319,55 @@ class DataExportSerializerMixin:
                 ('part', _('Part')),
                 ('ipn', _('IPN')),
                 ('sku', _('SKU')),
+                ('mpn', _('MPN')),
                 ('reference', _('Reference')),
                 ('quantity', _('Quantity')),
                 ('received', _('Received')),
+                ('line_price', _('Line Price')),
                 ('purchase_price', _('Unit Price')),
                 ('currency', _('Currency')),
                 ('total_price', _('Total Price')),
+                ('price_source', _('Price Source')),
                 ('target_date', _('Target Date')),
                 ('notes', _('Notes')),
-                ('link', _('Link')),
+                ('link', _('Purchase Link')),
+                ('order_link', _('Order Link')),
+                ('line_link', _('Line Link')),
             ]
         )
         workbook = openpyxl.load_workbook(BytesIO(datafile))
-        workbook.active.title = 'Purchase Orders'
+        summary = workbook.active
+        summary.title = 'Purchase Orders'
+        summary_headers = OrderedDict(summary_headers)
+        for key, label in (
+            ('quantity', _('Quantity')),
+            ('received', _('Received')),
+            ('extra_line_items', _('Extra Line Items')),
+            ('total_price', _('Total Order Price')),
+            ('known_total_price', _('Known Line Total')),
+            ('order_currency', _('Order Currency')),
+            ('unpriced_lines', _('Unpriced Lines')),
+            ('price_source', _('Price Source')),
+        ):
+            summary_headers[key] = label
+        for column, label in enumerate(summary_headers.values(), 1):
+            summary.cell(1, column, str(label))
         sheet = workbook.create_sheet('Line Items')
         sheet.append([str(label) for label in headers.values()])
 
         orders = queryset.prefetch_related(
-            'supplier', 'lines__part__part', 'extra_lines'
+            'supplier',
+            'lines__part__part',
+            'lines__part__manufacturer_part',
+            'lines__part__pricebreaks',
+            'extra_lines',
         )
+        totals = {}
         for order in orders:
+            quantity = received = Decimal(0)
+            total = Money(0, order.currency)
+            unpriced = 0
+            sources = set()
             for lines, is_extra in (
                 (order.lines.all(), False),
                 (order.extra_lines.all(), True),
@@ -343,7 +376,40 @@ class DataExportSerializerMixin:
                     supplier_part = None if is_extra else line.part
                     part = supplier_part.part if supplier_part else None
                     price = line.price
+                    source = _('Saved Purchase Price')
+                    if price is None and supplier_part and line.quantity > 0:
+                        try:
+                            estimate = supplier_part.get_price(
+                                line.quantity, currency=order.currency
+                            )
+                        except MissingRate:
+                            estimate = None
+                        if estimate is not None:
+                            price = Money(
+                                Decimal(estimate) / line.quantity, order.currency
+                            )
+                            source = _('Supplier Estimate')
+                    if price is None:
+                        source = _('Missing Price')
+                        unpriced += 1
+                    else:
+                        try:
+                            total += convert_money(
+                                price * line.quantity, order.currency
+                            )
+                        except MissingRate:
+                            unpriced += 1
+                            sources.add(str(_('Missing Exchange Rate')))
+                    sources.add(str(source))
                     amount = price.amount if price is not None else None
+                    if not is_extra:
+                        quantity += line.quantity
+                        received += line.received
+                    purchase_link = (
+                        line.link
+                        or (supplier_part.link if supplier_part else '')
+                        or (part.link if part else '')
+                    )
                     sheet.append(
                         [
                             order.reference,
@@ -356,24 +422,65 @@ class DataExportSerializerMixin:
                             else (part.full_name if part else ''),
                             part.IPN if part else '',
                             supplier_part.SKU if supplier_part else '',
+                            supplier_part.manufacturer_part.MPN
+                            if supplier_part and supplier_part.manufacturer_part
+                            else '',
                             line.reference,
                             line.quantity,
                             None if is_extra else line.received,
                             amount,
-                            str(price.currency) if price is not None else '',
+                            amount,
+                            str(price.currency)
+                            if price is not None
+                            else (
+                                line.price_currency
+                                if is_extra
+                                else line.purchase_price_currency
+                            ),
                             amount * line.quantity if amount is not None else None,
+                            str(source),
                             line.target_date or order.target_date,
                             line.notes,
+                            purchase_link,
+                            order.link,
                             line.link,
                         ]
                     )
+            totals[order.pk] = {
+                'quantity': quantity,
+                'received': received,
+                'extra_line_items': len(order.extra_lines.all()),
+                'total_price': total.amount if not unpriced else None,
+                'known_total_price': total.amount,
+                'order_currency': order.currency,
+                'unpriced_lines': unpriced,
+                'price_source': ', '.join(sorted(sources)),
+            }
 
+        for row_index, row in enumerate(data, 2):
+            values = totals.get(row.get('pk'))
+            if values is None:
+                continue
+            for column, key in enumerate(summary_headers, 1):
+                if key in values:
+                    summary.cell(row_index, column).value = values[key]
+
+        summary.freeze_panes = 'A2'
+        summary.auto_filter.ref = summary.dimensions
         sheet.freeze_panes = 'A2'
         sheet.auto_filter.ref = sheet.dimensions
+        for row in sheet.iter_rows(min_row=2):
+            for key in ('link', 'order_link', 'line_link'):
+                cell = row[list(headers).index(key)]
+                if cell.value:
+                    cell.hyperlink = cell.value
         buffer = BytesIO()
         workbook.save(buffer)
+        formatted = DataExportSerializerMixin._format_xlsx(
+            buffer.getvalue(), summary_headers, sheet_name='Purchase Orders'
+        )
         return DataExportSerializerMixin._format_xlsx(
-            buffer.getvalue(), headers, sheet_name='Line Items'
+            formatted, headers, sheet_name='Line Items'
         )
 
 
@@ -583,7 +690,9 @@ class DataExportViewMixin:
                 and serializer_class.Meta.model._meta.label_lower
                 == 'order.purchaseorder'
             ):
-                datafile = serializer._append_purchase_order_items(datafile, queryset)
+                datafile = serializer._append_purchase_order_items(
+                    datafile, queryset, headers, data
+                )
         except Exception as e:
             InvenTree.exceptions.log_error('export_to_file', plugin=export_plugin.slug)
             output.mark_failure(error=str(e))
