@@ -122,7 +122,11 @@ export function FleetMap({
     >
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+        url='https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+        // OSM tile policy requires a Referer; Django's default
+        // Referrer-Policy (same-origin) strips it for cross-origin tiles
+        referrerPolicy='strict-origin-when-cross-origin'
+        maxZoom={19}
       />
       <FitBounds points={bounds} />
       {track && track.length > 1 && (
