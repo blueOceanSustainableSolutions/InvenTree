@@ -9,6 +9,14 @@ customer" convention). The fleet app follows the stock automatically:
 - close: a DEPLOYED deployment whose device no longer has a customer (returned,
   or the item was deleted) becomes RECOVERED
 - update: the client of a DEPLOYED deployment follows the customer
+- pool: every other finished fleet unit which is not deployed (in stock, or
+  on its way back on a return order) gets a READY deployment without a date,
+  so the deployment list shows all of them
+- gone: a READY deployment whose unit left the pool (sold or used elsewhere,
+  destroyed, lost, decommissioned, deleted) is CANCELLED
+
+A device on its way back (an open return order line, not yet received)
+still has its customer, but is not deployed: it is never opened again.
 
 A DECOMMISSIONED device (internal state, section 2.11) is never opened while
 the state is set, even with a customer, and a DEPLOYED deployment of it is
@@ -33,7 +41,13 @@ from fleet.services.device_state import (
     close_decommissioned,
     decommissioned_q,
 )
-from fleet.services.pipeline import ensure_device_link
+from fleet.services.pipeline import (
+    HOLDING_STATUSES,
+    ensure_device_link,
+    ensure_unit_deployment,
+    returning_q,
+    undeployed_units,
+)
 from fleet.status_codes import DeploymentStatus, DeploymentStatusGroups
 from stock.models import StockItem, StockItemTracking
 from stock.status_codes import StockHistoryCode
@@ -229,10 +243,18 @@ def sync_stock_deployments(dry_run: bool = False) -> dict:
         dry_run: Work out the changes, then roll them back
 
     Returns:
-        A summary dict with the lists 'opened', 'closed', 'updated' and
-        'errors' (one line of text per device)
+        A summary dict with the lists 'opened', 'closed', 'updated',
+        'available' (new rows for undeployed units), 'cancelled' (units which
+        are gone) and 'errors' (one line of text per device)
     """
-    summary = {'opened': [], 'closed': [], 'updated': [], 'errors': []}
+    summary = {
+        'opened': [],
+        'closed': [],
+        'updated': [],
+        'available': [],
+        'cancelled': [],
+        'errors': [],
+    }
 
     try:
         with transaction.atomic():
@@ -294,6 +316,7 @@ def sync_changes(summary: dict) -> None:
         deployed_items(parts)
         .exclude(fleet_deployments__status=DeploymentStatus.DEPLOYED.value)
         .exclude(decommissioned_q('fleet_link__state'))
+        .exclude(returning_q())
     )
 
     for item in items:
@@ -313,3 +336,53 @@ def sync_changes(summary: dict) -> None:
                 f'{describe(deployment, item)} (customer {item.customer.name}, '
                 f'deployed {deployment.deployed_at:%Y-%m-%d})'
             )
+
+    # 4. Pool: an undeployed unit without an open deployment gets a READY one
+    #    (an output of a fleet build order is linked by the pipeline sync)
+    pool = undeployed_units(parts.keys())
+    pool_ids = set(pool.values_list('pk', flat=True))
+
+    for item in (
+        pool
+        .exclude(fleet_deployments__status__in=HOLDING_STATUSES)
+        .exclude(build__fleet_deployment__status__in=HOLDING_STATUSES)
+        .select_related('part')
+    ):
+        device_type = parts[item.part_id]
+        text = f'{item.part.full_name} #{item.serial}'
+
+        deployment = run_step(
+            summary,
+            lambda item=item, device_type=device_type: ensure_unit_deployment(
+                item, device_type
+            ),
+            text,
+        )
+
+        if deployment is not None:
+            summary['available'].append(describe(deployment, item))
+
+    # 5. Gone: a READY deployment whose unit left the pool is cancelled
+    for deployment in Deployment.objects.filter(
+        status=DeploymentStatus.READY.value
+    ).select_related('device', 'device__part', 'site'):
+        if deployment.device_id in pool_ids:
+            continue
+
+        if deployment.device_id is not None and deployment.device.is_building:
+            continue
+
+        text = describe(deployment)
+
+        if run_step(summary, lambda dep=deployment: cancel_gone(dep), text):
+            summary['cancelled'].append(text)
+
+
+def cancel_gone(deployment: Deployment) -> Deployment:
+    """Cancel the READY deployment of a unit which is no longer a fleet unit."""
+    deployment.status = DeploymentStatus.CANCELLED.value
+    deployment.save()
+
+    trigger_status_event(deployment)
+
+    return deployment

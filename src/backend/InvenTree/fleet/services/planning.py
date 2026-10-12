@@ -50,15 +50,18 @@ logger = structlog.get_logger('inventree')
 PM_ALERT_TYPES = [Alert.AlertType.PM_DUE, Alert.AlertType.PM_OVERDUE]
 
 # Alert types raised and cleared by pipeline_alerts() (the readiness risk codes)
-PIPELINE_ALERT_TYPES = [
+PIPELINE_ALERT_TYPES = [Alert.AlertType.NOT_READY, Alert.AlertType.NO_DEPLOY_DATE]
+
+# Retired pipeline alert types: the fleet no longer looks inside the build
+# order (manufacturing owns it). They are never raised, and open ones are
+# resolved by the next pipeline_alerts() run.
+RETIRED_PIPELINE_ALERT_TYPES = [
     Alert.AlertType.BUILD_LATE,
-    Alert.AlertType.NOT_READY,
     Alert.AlertType.PARTS_SHORT,
-    Alert.AlertType.NO_DEPLOY_DATE,
 ]
 
 # Pipeline alerts which are notified (Teams, email, in-app) when they open
-NOTIFIED_PIPELINE_TYPES = [Alert.AlertType.BUILD_LATE, Alert.AlertType.NOT_READY]
+NOTIFIED_PIPELINE_TYPES = [Alert.AlertType.NOT_READY]
 
 # Kit suggestion: a part which failed in at least FAILURE_MIN_TASKS of the last
 # FAILURE_HISTORY_TASKS completed tasks of a device type is LIKELY needed
@@ -262,9 +265,10 @@ def pm_alerts(today: date | None = None) -> dict:
 def pipeline_alerts(today: date | None = None) -> dict:
     """Raise or clear alerts for the readiness risks of pipeline deployments.
 
-    BUILD_LATE and NOT_READY are notified (Teams, email, in-app) when they
-    open. A CRITICAL alert is notified by open_or_update_alert itself (on open
-    and on escalation), so it is not notified twice.
+    NOT_READY is notified (Teams, email, in-app) when it opens. A CRITICAL
+    alert is notified by open_or_update_alert itself (on open and on
+    escalation), so it is not notified twice. Open alerts of the retired types
+    (BUILD_LATE, PARTS_SHORT) are resolved.
 
     Returns:
         {'raised': n, 'notified': n, 'resolved': n}
@@ -299,13 +303,15 @@ def pipeline_alerts(today: date | None = None) -> dict:
                 notify_pipeline_alert(alert)
                 notified += 1
 
-    resolved = resolve_cleared(PIPELINE_ALERT_TYPES, active_keys)
+    resolved = resolve_cleared(
+        PIPELINE_ALERT_TYPES + RETIRED_PIPELINE_ALERT_TYPES, active_keys
+    )
 
     return {'raised': len(active_keys), 'notified': notified, 'resolved': resolved}
 
 
 def notify_pipeline_alert(alert: Alert) -> None:
-    """Notify a pipeline alert which is not CRITICAL (e.g. BUILD_LATE)."""
+    """Notify a pipeline alert which is not CRITICAL (e.g. a NOT_READY warning)."""
     deployment = alert.deployment
     facts = alert_facts(alert)
 

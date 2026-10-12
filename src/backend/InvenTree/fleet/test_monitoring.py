@@ -31,7 +31,7 @@ from fleet.models import (
     StreamTemplate,
 )
 from fleet.services import deployment as deployment_service
-from fleet.services import device_state, monitoring, pipeline
+from fleet.services import device_state, monitoring
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -39,6 +39,7 @@ from fleet.status_codes import (
     HealthStatus,
 )
 from fleet.tasks import fleet_daily_planning, fleet_poll
+from fleet.test_support import plan_unit
 from InvenTree.unit_test import InvenTreeTestCase
 from part.models import Part
 from stock.models import StockItem, StockLocation
@@ -120,8 +121,7 @@ class MonitoringTestBase(InvenTreeTestCase):
             part=self.part, quantity=1, serial=serial, location=self.workshop
         )
 
-        dep = pipeline.create_planned(self.device_type, site=site)
-        pipeline.assign_existing_device(dep, device)
+        dep = plan_unit(device, self.device_type, site=site)
         deployment_service.deploy(
             dep, deployed_at=deployed_at or self.now - timedelta(days=2)
         )

@@ -45,7 +45,7 @@ from fleet.models import (
     StreamTemplate,
     TripKitLine,
 )
-from fleet.services import device_state, monitoring, trips
+from fleet.services import device_state, monitoring, plan, trips
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -462,13 +462,11 @@ class DeploymentOutputOptions(OutputConfiguration):
     ]
 
 
-class DeploymentList(
-    DataExportViewMixin, DeploymentMixin, OutputOptionsMixin, ListCreateAPI
-):
-    """List and plan deployments.
+class DeploymentList(DataExportViewMixin, DeploymentMixin, OutputOptionsMixin, ListAPI):
+    """List deployments (pipeline, active and closed).
 
-    - GET: List deployments (pipeline, active and closed)
-    - POST: Plan a deployment by hand (status PLANNED)
+    There is no POST: the fleet never creates a deployment out of nothing.
+    Each undeployed unit has its row already (see DeploymentNew).
     """
 
     output_options = DeploymentOutputOptions
@@ -517,17 +515,12 @@ class DeploymentDetail(DeploymentMixin, OutputOptionsMixin, RetrieveUpdateDestro
     output_options = DeploymentOutputOptions
 
     def destroy(self, request, *args, **kwargs):
-        """Only planned or cancelled deployments can be deleted."""
+        """Only cancelled deployments can be deleted (the others follow a unit)."""
         deployment = self.get_object()
 
-        if deployment.status not in [
-            DeploymentStatus.PLANNED.value,
-            DeploymentStatus.CANCELLED.value,
-        ]:
+        if deployment.status != DeploymentStatus.CANCELLED.value:
             raise ValidationError({
-                'non_field_errors': [
-                    _('Only planned or cancelled deployments can be deleted')
-                ]
+                'non_field_errors': [_('Only cancelled deployments can be deleted')]
             })
 
         return super().destroy(request, *args, **kwargs)
@@ -547,18 +540,25 @@ class DeploymentActionMixin(FleetActionMixin):
         return super().post(request, *args, **kwargs)
 
 
-class DeploymentCreateBuild(DeploymentActionMixin, CreateAPI):
-    """Create the build order (quantity 1) for a planned deployment."""
+class DeploymentNew(DeploymentActionMixin, CreateAPI):
+    """New deployment: choose an undeployed unit, and plan its site and date.
 
-    serializer_class = fleet_serializers.DeploymentCreateBuildSerializer
-    rolemap = {'POST': 'add'}
-    extra_roles = [('build', 'add')]
+    The unit is given in the request ('deployment', its row in the pipeline).
+    """
 
+    serializer_class = fleet_serializers.DeploymentNewSerializer
 
-class DeploymentAssignDevice(DeploymentActionMixin, CreateAPI):
-    """Assign an existing serialized unit to a pipeline deployment."""
+    def get_target(self):
+        """The deployment row of the chosen unit."""
+        if getattr(self, '_target', None) is None:
+            pk = self.request.data.get('deployment')
 
-    serializer_class = fleet_serializers.DeploymentAssignDeviceSerializer
+            if not pk:
+                raise ValidationError({'deployment': [_('Select a device')]})
+
+            self._target = get_object_or_404(Deployment, pk=pk)
+
+        return self._target
 
 
 class DeploymentDeploy(DeploymentActionMixin, CreateAPI):
@@ -1312,6 +1312,57 @@ class FleetCalendar(FleetReadView):
         )
 
 
+class FleetPlan(FleetReadView):
+    """The fleet plan: deployments to do and deployed devices to maintain, in one list.
+
+    Ordered as: the next FLEET_PLAN_HORIZON_DAYS days (overdue first) by date,
+    then the rows without a date, then the later dates. Paginated when
+    'limit' is given (as the other list endpoints).
+    """
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                'kind', type=str, description="'deployment' or 'maintenance'"
+            ),
+            OpenApiParameter('site', type=int, description='Site'),
+            OpenApiParameter('search', type=str, description='Search text'),
+            OpenApiParameter('limit', type=int, description='Page size'),
+            OpenApiParameter('offset', type=int, description='Page offset'),
+        ],
+        responses={200: fleet_serializers.PlanRowSerializer(many=True)},
+    )
+    def get(self, request, *args, **kwargs):
+        """Return the plan rows."""
+        params = request.query_params
+
+        try:
+            site = int(params['site']) if params.get('site') else None
+        except ValueError:
+            raise ValidationError({'site': [_('Invalid site')]})
+
+        rows = plan.plan_rows(
+            kind=params.get('kind'), site=site, search=params.get('search')
+        )
+        data = fleet_serializers.PlanRowSerializer(rows, many=True).data
+
+        if 'limit' not in params:
+            return Response(data)
+
+        try:
+            limit = max(int(params.get('limit')), 0)
+            offset = max(int(params.get('offset') or 0), 0)
+        except ValueError:
+            raise ValidationError({'limit': [_('Invalid page')]})
+
+        return Response({
+            'count': len(data),
+            'next': None,
+            'previous': None,
+            'results': data[offset : offset + limit] if limit else data[offset:],
+        })
+
+
 class FleetOverview(FleetReadView):
     """KPI counts for the fleet overview."""
 
@@ -1609,6 +1660,7 @@ fleet_api_urls = [
                 ]),
             ),
             path('map/', DeploymentMap.as_view(), name='api-fleet-deployment-map'),
+            path('new/', DeploymentNew.as_view(), name='api-fleet-deployment-new'),
             path(
                 '<int:pk>/',
                 include([
@@ -1621,16 +1673,6 @@ fleet_api_urls = [
                         'track/',
                         DeploymentTrack.as_view(),
                         name='api-fleet-deployment-track',
-                    ),
-                    path(
-                        'create-build/',
-                        DeploymentCreateBuild.as_view(),
-                        name='api-fleet-deployment-create-build',
-                    ),
-                    path(
-                        'assign-device/',
-                        DeploymentAssignDevice.as_view(),
-                        name='api-fleet-deployment-assign-device',
                     ),
                     path(
                         'deploy/',
@@ -1828,6 +1870,7 @@ fleet_api_urls = [
     ),
     path('calendar/', FleetCalendar.as_view(), name='api-fleet-calendar'),
     path('overview/', FleetOverview.as_view(), name='api-fleet-overview'),
+    path('plan/', FleetPlan.as_view(), name='api-fleet-plan'),
     # Status code information
     path(
         'status/',

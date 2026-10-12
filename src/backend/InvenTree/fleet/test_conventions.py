@@ -14,7 +14,7 @@ from django.utils import timezone
 from fleet import api as fleet_api
 from fleet.events import FleetEvents
 from fleet.models import Deployment, MaintenanceTask, TaskType
-from fleet.services import maintenance, pipeline, trips
+from fleet.services import maintenance, trips
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -23,6 +23,7 @@ from fleet.status_codes import (
     TripStatus,
 )
 from fleet.test_maintenance import MaintenanceDataMixin, MaintenanceTestBase
+from fleet.test_support import plan_unit
 from generic.states import StateTransitionMixin
 from InvenTree.unit_test import InvenTreeAPITestCase
 from users.models import Owner
@@ -42,8 +43,7 @@ class TransitionTest(MaintenanceTestBase):
 
     def ready_deployment(self, serial):
         """A READY deployment of a new unit."""
-        dep = pipeline.create_planned(self.device_type, site=self.site)
-        pipeline.assign_existing_device(dep, self.make_device(serial))
+        dep = plan_unit(self.make_device(serial), self.device_type, site=self.site)
         dep.refresh_from_db()
         return dep
 
@@ -359,6 +359,3 @@ class ConventionsAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
 
         scopes = fleet_api.TaskStart().required_alternate_scopes['POST']
         self.assertEqual(scopes, [['r:change:fleet']])
-
-        scopes = fleet_api.DeploymentCreateBuild().required_alternate_scopes['POST']
-        self.assertEqual(scopes, [['r:add:fleet', 'r:add:build']])

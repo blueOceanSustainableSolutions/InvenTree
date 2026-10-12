@@ -115,12 +115,8 @@ export function CoverageBadge({
 /** Short label for each readiness risk code */
 function riskLabel(code: string): string {
   switch (code) {
-    case 'BUILD_LATE':
-      return t`Build late`;
     case 'NOT_READY':
       return t`Not ready`;
-    case 'PARTS_SHORT':
-      return t`Parts short`;
     case 'NO_DEPLOY_DATE':
       return t`No date`;
     default:
@@ -173,6 +169,11 @@ export function alertTypeLabel(alertType: string): string {
       return t`Maintenance due`;
     case 'PM_OVERDUE':
       return t`Maintenance overdue`;
+    // Retired types (no longer raised), kept for older alerts
+    case 'BUILD_LATE':
+      return t`Build late`;
+    case 'PARTS_SHORT':
+      return t`Parts short`;
     default:
       return riskLabel(alertType);
   }

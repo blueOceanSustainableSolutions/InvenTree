@@ -118,7 +118,7 @@ test('Fleet - Index', async ({ browser }) => {
   for (const [tab, path] of [
     ['Overview', 'overview'],
     ['Alerts', 'alerts'],
-    ['Pipeline', 'pipeline'],
+    ['Plan', 'plan'],
     ['Deployments', 'deployments'],
     ['Maintenance', 'maintenance'],
     ['Trips', 'trips'],

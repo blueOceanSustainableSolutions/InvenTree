@@ -33,6 +33,8 @@ class Command(BaseCommand):
             ('opened', 'Open'),
             ('closed', 'Close'),
             ('updated', 'Update'),
+            ('available', 'Available'),
+            ('cancelled', 'Cancel'),
             ('errors', 'Error'),
         ]:
             for line in summary[key]:
@@ -40,7 +42,9 @@ class Command(BaseCommand):
 
         counts = (
             f'{len(summary["opened"])} opened, {len(summary["closed"])} closed, '
-            f'{len(summary["updated"])} updated, {len(summary["errors"])} errors'
+            f'{len(summary["updated"])} updated, '
+            f'{len(summary["available"])} available, '
+            f'{len(summary["cancelled"])} cancelled, {len(summary["errors"])} errors'
         )
 
         if dry_run:

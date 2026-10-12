@@ -323,7 +323,8 @@ PositionFix                # downsampled track
 Alert  (reference AL-xxxxx, status AlertStatus)
   deployment FK null, site FK null, stream FK DataStream null
   alert_type choice: STREAM_LATE | STREAM_MISSING | NO_CONTACT | GEOFENCE_BREACH |
-                     PM_DUE | PM_OVERDUE | NOT_READY | BUILD_LATE | NO_DEPLOY_DATE | PARTS_SHORT
+                     PM_DUE | PM_OVERDUE | NOT_READY | NO_DEPLOY_DATE
+                     (BUILD_LATE, PARTS_SHORT: retired 2026-10-12, kept for old alerts)
   severity choice: INFO | WARNING | CRITICAL
   message str, data JSON
   opened_at, acknowledged_at/by, resolved_at/by, resolution choice: AUTO | TASK | MANUAL
@@ -399,20 +400,18 @@ MaintenanceAction          # one physical/logical action performed in a task
   - If the output is complete (`is_building=False`) and the status is IN_PRODUCTION, set it to **READY**.
   - **Also call this from a scheduled task every 10 minutes.** Build outputs are created with bulk operations, so a `post_save` receiver on StockItem is not reliable.
 - Manual planning:
-  - `create_planned(device_type, site, target_date, …)` creates a deployment with status PLANNED.
-  - `create_build_for(dep, user)` creates a Build (quantity 1, part = `device_type.part`, target_date = `dep.target_date - FLEET_READY_LEAD_DAYS`) and links it. Issuing the BO later moves the deployment to IN_PRODUCTION through the hook.
-  - `assign_existing_device(dep, stock_item)` covers refurbished units: the item must be in stock and serialized, with the same part or a variant. The deployment goes to READY.
+  - `create_planned(device_type, site, target_date, …)` creates a deployment with status PLANNED. *(Superseded on 2026-10-12, see section 2.13.)*
+  - ~~`create_build_for(dep, user)`~~ **Removed 2026-10-12**: the fleet never creates build orders (see "Fleet and manufacturing" below).
+  - `assign_existing_device(dep, stock_item)` covers refurbished units: the item must be in stock and serialized, with the same part or a variant. The deployment goes to READY. *(Superseded on 2026-10-12, see section 2.13.)*
 - `readiness_risks(dep)` returns a list of `{code, severity, message}` and is computed, not stored:
-  - `BUILD_LATE`: `build.target_date > dep.target_date`.
   - `NOT_READY`: `target_date - today <= FLEET_READY_LEAD_DAYS` and the status is below READY.
-  - `PARTS_SHORT`: any BuildLine where required − allocated − consumed > available stock of the part. Reuse the annotations the BuildLine serializer already computes (`available_stock` etc. in `B/build/serializers.py`); check them before writing new queries.
   - `NO_DEPLOY_DATE`: `target_date` is null and the deployment has existed for more than `FLEET_UNSCHEDULED_REMINDER_DAYS`.
 - **As built in P1:**
-  - `on_build_saved` also moves a PLANNED deployment linked to the build (from `create_build_for`) to IN_PRODUCTION when its BO is issued, so there is still one deployment per BO. Device types are matched on the exact part (`active=True`); variants of a device-type part don't create deployments.
+  - `on_build_saved` also moves a PLANNED deployment linked to the build (a sold device's pending BO) to IN_PRODUCTION when its BO is issued, so there is still one deployment per BO. Device types are matched on the exact part (`active=True`); variants of a device-type part don't create deployments.
   - `sync_build_output` picks completed outputs first (`order_by('is_building', 'pk')`) and also catches up a PLANNED deployment whose BO is already in production.
-  - `assign_existing_device` is allowed from PLANNED, IN_PRODUCTION, READY or SCHEDULED, but is refused while the linked BO is still open (PENDING / PRODUCTION / ON_HOLD), because that BO produces the device. The unit must be serialized and in stock, the device-type part or a variant, and not in another pipeline or active deployment. A SCHEDULED deployment stays SCHEDULED; the others become READY.
-  - Risk severities: BUILD_LATE WARNING, NOT_READY WARNING (CRITICAL once the target date has passed), PARTS_SHORT WARNING (only while the BO is open), NO_DEPLOY_DATE INFO. BUILD_LATE and PARTS_SHORT are only raised while the BO is open. `readiness_risks` returns `[]` outside the PIPELINE statuses.
-  - `create_build_for` titles the BO `Fleet deployment DP-xxxx (site name)`, sets `issued_by=user`, and leaves it PENDING.
+  - `assign_existing_device` is allowed from PLANNED, IN_PRODUCTION, READY or SCHEDULED, but is refused while the linked BO is still open (PENDING / PRODUCTION / ON_HOLD), because that BO produces the device. The unit must be serialized and in stock, the device-type part or a variant, and not in another pipeline or active deployment. A SCHEDULED deployment stays SCHEDULED; the others become READY. *(Superseded on 2026-10-12, see section 2.13.)*
+  - Risk severities: NOT_READY WARNING (CRITICAL once the target date has passed), NO_DEPLOY_DATE INFO. `readiness_risks` returns `[]` outside the PIPELINE statuses.
+- **Fleet and manufacturing (2026-10-12):** the fleet team is not responsible for manufacturing. The fleet has an *outside view* of the build order: its reference, status (complete or not) and target date, shown read-only on the deployment (`build_detail`, the deployment table and both detail pages). The fleet never creates or changes a build order, and never looks inside it (BOM lines, allocations, stock, build schedule). The only readiness question is "is the device ready X days before the deployment date?" (NOT_READY, `FLEET_READY_LEAD_DAYS`). Removed: `create_build_for` and the `create-build` action, the BUILD_LATE risk (compared the build schedule) and the PARTS_SHORT risk (read the build lines; it also ignored variant and substitute stock, so it fired falsely on template parts, e.g. AL-00001 on BO-0085). Their alert types stay in the model for old alerts; `pipeline_alerts()` resolves any that are still open (`RETIRED_PIPELINE_ALERT_TYPES`).
 
 **`services/deployment.py`**
 - `schedule(dep, trip)`: requires status READY. Sets SCHEDULED, links it to the trip through a DEPLOYMENT task, and adds the device to the trip kit.
@@ -425,7 +424,7 @@ MaintenanceAction          # one physical/logical action performed in a task
   6. Compute `next_pm_date`.
 - `recover(dep, user, destination=FLEET_WORKSHOP_LOCATION)`:
   - Set status RECOVERED and `recovered_at`.
-  - Call `device.return_from_customer(location, user, notes)`.
+  - Call `device.return_from_customer(location, user, notes)`. *(Superseded on 2026-10-12, see section 2.13.)*
   - Add a `FLEET_RECOVERED` tracking entry.
   - Auto-resolve the deployment's open alerts (resolution AUTO).
 - `compute_next_pm(dep)`:
@@ -439,7 +438,7 @@ MaintenanceAction          # one physical/logical action performed in a task
   - ~~To change in P2b: the site becomes optional in `deploy()`~~ **Done in P2b**, see below.
   - `deploy()` recovers `dep.replaces` **first** (step 5 runs before step 1). The partial unique constraint allows one DEPLOYED deployment per site, so the old one has to be RECOVERED before the new one becomes DEPLOYED in the same transaction. It then refuses if the site still has another DEPLOYED deployment.
   - `deploy()` locks the row and refreshes the caller's instance, so the object passed in reflects the new state.
-  - `recover()` needs a **non-structural** location (the given one, else `FLEET_WORKSHOP_LOCATION`), or it raises. Without a trip (P1) the device goes straight to the workshop. P4 passes the trip's "Removed" location.
+  - `recover()` needs a **non-structural** location (the given one, else `FLEET_WORKSHOP_LOCATION`), or it raises. Without a trip (P1) the device goes straight to the workshop. P4 passes the trip's "Removed" location. *(Superseded on 2026-10-12, see section 2.13.)*
   - Deploy and recover don't create a MaintenanceTask (no trip in P1), so `compute_next_pm` uses `deployed_at` as the base until P3/P4 create DEPLOYMENT tasks.
   - `fleet.helpers.to_local_date()` converts aware and naive datetimes (tests run with `USE_TZ=False`).
 - **As built in P2b:**
@@ -513,7 +512,7 @@ def get_client() -> DataPlatformClient: # by FLEET_DATA_PROVIDER
   - PM_DUE (INFO): due within `FLEET_PM_DUE_WARNING_DAYS`.
   - PM_OVERDUE (WARNING): past due and no completed task.
   - NO_SERVICE deployments get none.
-- `pipeline_alerts()`: raises or resolves alerts for the `readiness_risks` codes. Teams is notified only for BUILD_LATE and NOT_READY.
+- `pipeline_alerts()`: raises or resolves alerts for the `readiness_risks` codes. Teams is notified only for NOT_READY.
 - `suggest_kit(trip)`: for each planned task in the trip:
   - add KitTemplateLines with mode ALWAYS;
   - add LIKELY lines from the template, plus parts from the device's history that failed (fault codes on REPLACE actions) in ≥ 2 of the last N tasks for that device type. Keep this simple in v1.
@@ -524,7 +523,7 @@ def get_client() -> DataPlatformClient: # by FLEET_DATA_PROVIDER
   - `propose_pm_tasks(today=None)`: DEPLOYED, coverage **FULL**, a device, `next_pm_date <= today + FLEET_PLAN_HORIZON_DAYS`. With an open PREVENTIVE task nothing is created, but the due date of a task that is still PROPOSED follows `next_pm_date`. No site is needed (`site` is copied from the deployment, may be null).
   - `cancel_stale_proposals()`: PROPOSED PREVENTIVE tasks whose deployment is no longer DEPLOYED or no longer FULL coverage are CANCELLED.
   - `pm_alerts(today=None)`: dedupe keys `dp:<pk>:PM_DUE` / `dp:<pk>:PM_OVERDUE`; DEPLOYED, not NO_SERVICE (FULL and THIRD_PARTY get them, as the plan says). Overdue = `next_pm_date < today`. The message names the site nickname, else the serial. Cleared alerts resolve AUTO. Not notified (INFO/WARNING).
-  - `pipeline_alerts(today=None)`: one alert per `readiness_risks` code, dedupe `dp:<pk>:<CODE>`; risks that disappear (or deployments that leave the pipeline) resolve AUTO. **BUILD_LATE and NOT_READY are notified once when they open** (`notify` event `pipeline_risk`, Teams + email + in-app). A CRITICAL NOT_READY is already notified by `open_or_update_alert`, so it is not sent twice. PARTS_SHORT and NO_DEPLOY_DATE are raised but not notified.
+  - `pipeline_alerts(today=None)`: one alert per `readiness_risks` code, dedupe `dp:<pk>:<CODE>`; risks that disappear (or deployments that leave the pipeline) resolve AUTO. **NOT_READY is notified once when it opens** (`notify` event `pipeline_risk`, Teams + email + in-app). A CRITICAL NOT_READY is already notified by `open_or_update_alert`, so it is not sent twice. NO_DEPLOY_DATE is raised but not notified. (BUILD_LATE and PARTS_SHORT were retired on 2026-10-12; open ones are resolved.)
   - `run_daily_planning(today=None)`: cancel stale proposals, propose, PM alerts, pipeline alerts; each step in its own transaction, a failing step is logged and returns `None` in the summary without stopping the others. `fleet_daily_planning` calls it, then prunes positions.
   - `suggest_kit` is **not** in P3: it needs trips (P4). **Done in P4**, see `services/trips.py` "As built in P4" below.
 
@@ -552,7 +551,7 @@ def get_client() -> DataPlatformClient: # by FLEET_DATA_PROVIDER
 - `create_from_alert(alert, user)` creates a CORRECTIVE task (SCHEDULED if a date is given, otherwise PROPOSED), links the alert, and acknowledges it.
 - **Swap** is a task of type SWAP. Its steps:
   1. A REPLACEMENT deployment with status READY or SCHEDULED, and the same site.
-  2. Calling `deploy(new_dep, replaces=old_dep)` recovers the old device into the trip "Removed" location. At reconcile it moves on to the workshop.
+  2. Calling `deploy(new_dep, replaces=old_dep)` recovers the old device into the trip "Removed" location. At reconcile it moves on to the workshop. *(Superseded on 2026-10-12, see section 2.13.)*
 - **As built in P3:**
   - `create_task(device, task_type=CORRECTIVE, deployment=None, site=None, description, due_date, scheduled_date, **kwargs)`: the device must be a single serialized unit. The deployment defaults to the device's DEPLOYED deployment (none = workshop task) and must be for that device; the site defaults to the deployment's. SCHEDULED when a date is given, else PROPOSED. The task API `POST` goes through it.
   - `update_schedule(task)` (after an edit): PROPOSED + scheduled date -> SCHEDULED; SCHEDULED without date and without trip -> PROPOSED. P3 has no `schedule_tasks(trip, …)`: that comes with trips (P4).
@@ -600,7 +599,7 @@ def get_client() -> DataPlatformClient: # by FLEET_DATA_PROVIDER
   - `trips.remove_task(trip, task)` calls `maintenance.unschedule_task(task)`, which only works on tasks that have not started.
     - The task becomes PROPOSED again, with no trip and no date, and its kit lines are deleted.
     - A deployment task's deployment becomes READY again (`deployment.unschedule`).
-  - `pipeline.assign_existing_device` on a SCHEDULED deployment moves the open deployment task, and its kit line, to the new unit.
+  - `pipeline.assign_existing_device` on a SCHEDULED deployment moves the open deployment task, and its kit line, to the new unit. *(Superseded on 2026-10-12, see section 2.13.)*
   - `create_from_alert(..., trip=)` schedules the new task on the trip. The alert → task API accepts `trip` again.
 - **Kit suggestion: `planning.suggest_kit(trip, apply=True)`.** It goes through the trip's open tasks:
   - **Deployment or swap task of a pipeline deployment:** only a `DEVICE` line for the device, with the deployment reference as the note. Template lines are skipped: they are the PM kit, which a new unit does not need.
@@ -642,7 +641,7 @@ def get_client() -> DataPlatformClient: # by FLEET_DATA_PROVIDER
 - **As built in P2:** `notify()` never raises; each channel runs in its own savepoint and failures are logged. Teams uses the Workflows message format (`type: message` with an Adaptive Card 1.4 attachment: coloured title, text, fact set, "Open" button) and is posted through `offload_task(post_teams_card, …)`. Links use `FLEET_PORTAL_URL` + a portal path when set, else the object's page in the main UI. In-app notifications use only the built-in `inventree-ui-notification` method (`check_recent=False`), are sent to active users with the fleet view role and superusers, and are **skipped when there is no object** (InvenTree stores each notification against an object id; e.g. "platform unreachable" goes to Teams and email only).
 - Events notified:
   - alert opened or escalated (CRITICAL);
-  - BUILD_LATE / NOT_READY;
+  - NOT_READY;
   - trip kit ready;
   - task completed;
   - data platform unreachable.
@@ -669,8 +668,8 @@ device-link/            (+ <pk>/)
 deployment/             (+ <pk>/)          filters: status(+group pipeline/active), site, health,
                                            coverage, client, device, build, pm_due_before, unscheduled,
                                            has_open_alerts; output option: risks (readiness_risks)
-deployment/<pk>/create-build/   POST
-deployment/<pk>/assign-device/  POST {stock_item}
+deployment/new/                 POST {deployment, site?, target_date?, deployment_type?, replaces?, coverage?}  (2.13)
+plan/                           GET ?kind&site&search&limit&offset  (2.13)
 deployment/<pk>/deploy/         POST {latitude, longitude, depth_m, deployed_at}
 deployment/<pk>/recover/        POST {location?, notes}
 deployment/<pk>/verify/         POST {since?}         → verify_now result (no state change)
@@ -718,10 +717,10 @@ status/<class>/                 StatusView per status class
   - Filters: `status` (incl. custom keys), `pipeline`, `active`, `closed`, `unscheduled`, `has_device`, `pm_due_before`, `target_before`, `target_after`, `has_open_alerts`, `site`, `health`, `coverage`, `client`, `device`, `build`, `device_type`, `deployment_type`.
   - Output options: `device_type_detail`, `build_detail`, `device_detail`, `site_detail` (default on), `client_detail`, `risks` (default off).
   - Extra read-only fields: `platform_id`, `replaces_reference`, `open_alert_count`, `metadata_warning`, `creation_date`.
-  - `status` and the live-state fields are read-only. POST always creates a PLANNED deployment and copies the coverage from the site unless `coverage` is sent.
+  - `status` and the live-state fields are read-only. POST always creates a PLANNED deployment and copies the coverage from the site unless `coverage` is sent. *(Superseded on 2026-10-12, see section 2.13.)*
   - Delete is allowed only for PLANNED or CANCELLED deployments.
-- Actions `deployment/<pk>/create-build|assign-device|deploy|recover/`: POST, returning the updated deployment (200).
-  - Required roles: `create-build` needs **fleet.add + build.add**; `assign-device` needs fleet.change; `deploy` and `recover` need **fleet.change + stock.change** (checked explicitly, 403 otherwise).
+- Actions `deployment/<pk>/deploy|recover/` and `deployment/new/`: POST, returning the updated deployment (200). (`create-build` and `assign-device` were removed on 2026-10-12.)
+  - Required roles: `new` needs fleet.change; `deploy` and `recover` need **fleet.change + stock.change** (checked explicitly, 403 otherwise).
   - These views use `FleetRoleMixin` (`IsAuthenticated`, `RolePermission`, token scopes; `role_required='fleet'`, `rolemap={'POST': 'change'}`). The default `ModelPermission` would require `add_deployment` for any POST.
 - `calendar/?start&end`: returns `[{model_type, pk, title, start, end, status, url}]` for pipeline deployments (target date), open tasks (scheduled or due date) and trips. `model_type` is `deployment`, `maintenancetask` or `fieldtrip`.
 - `overview/`: returns `deployed`, `planned`, `in_production`, `ready`, `scheduled`, `to_deploy_30`, `unscheduled`, `pm_due_30`, `pm_overdue`, and (P2) `health_ok|degraded|critical|unknown` (deployed only), `open_alerts`, `alerts_critical|warning|info`.
@@ -924,6 +923,24 @@ A review compared the module with the core apps (build, order, stock) and aligne
 
 ---
 
+### 2.13 Units, not plans (phase P9, 2026-10-12)
+
+Product owner's rules (2026-10-12): the fleet never invents a deployment; a deployment belongs to a real unit, and the fleet team plans deployments and maintenance in one list.
+
+- **Every row is a unit.** A deployment comes from:
+  - a fleet build order: PLANNED while a sold BO is pending (kept, decision Q4), IN_PRODUCTION once issued, READY when the output is complete (section 2.1, unchanged);
+  - any other finished, undeployed fleet unit: the stock sync gives it a READY deployment without a date (`pipeline.ensure_unit_deployment`, sync step 4 "pool"). The pool (`pipeline.undeployed_units`) is: serialized, quantity 1, a fleet part (or variant), not building, not installed in or consumed by another item, no customer **or on its way back on a return order**, not DESTROYED / LOST / REJECTED, not DECOMMISSIONED. Units already in stock join automatically (decision Q1). A build output is left to its build order (no second row).
+  - A READY row whose unit leaves the pool (sold or used elsewhere, gone, decommissioned, deleted) is CANCELLED (sync step 5 "gone"). SCHEDULED rows are left to their trip.
+- **Removed:** POST on `deployment/` (405), `pipeline.create_planned`, `pipeline.assign_existing_device` and the `assign-device` action. Only CANCELLED deployments can be deleted.
+- **New deployment** (`deployment/new/`, `pipeline.new_deployment`): choose a unit's row (any PIPELINE status), then site, target date, type, replaces and coverage (from the site unless given). The UI button "New Deployment" replaces "Plan Deployment".
+- **Recovery → return order** (decision Q2): `deployment.recover()` (the Recover action, and the replaced device of a swap) marks the deployment RECOVERED, resolves its alerts, and creates and issues an InvenTree **Return Order** for the device's customer (line = the device, description "Fleet recovery DP-xxxx (site)"). The device keeps its customer until the office receives the line (the receipt moves it to a location and clears the customer). No stock location is chosen at recovery any more; the swap no longer moves the old device to the trip "Removed" location, and reconcile no longer moves it.
+  - The device gets its next READY row straight away (decision Q3: it can be planned, and scheduled on a trip, while on its way back). `deploy()` refuses it until the return line is received ("still on its way back… return order RMA-xxxx"), then the usual in-stock check applies (a receipt into QUARANTINED needs its stock status set to OK first).
+  - The stock sync never reopens a DEPLOYED deployment for a device on an open return line (`pipeline.returning_q`).
+  - `DeploymentSerializer` gained `return_order` / `return_order_reference` (the open return order of the device); both UIs show a "On its way back to the office" alert (`ReturningAlert`) and the plan list a *Returning* badge.
+- **One plan list** (`plan/`, `services/plan.py`, `PlanTable`): rows of kind `deployment` (every PIPELINE deployment; date = target date) and `maintenance` (DEPLOYED, coverage FULL, not docked/decommissioned; date = the earliest open task date (scheduled, else due) or the next PM date). Order: group `soon` (date ≤ today + `FLEET_PLAN_HORIZON_DAYS`, overdue included) by date, then `undated`, then `later` by date. Each row has `pk` (the deployment), device, site, status (or health), build order (reference + status, read only), return order, open-task count, trip and risks. Filters `kind`, `site`, `search`; paginated with `limit`/`offset`. The horizon setting (default 45) is shared with the PM task proposals.
+  - Rows are ticked into a trip with the usual *Create Field Trip* / *Add to Trip*: a deployment row (READY) gets its DEPLOYMENT / SWAP task; a maintenance row brings its open tasks, or a new PREVENTIVE task due on the next PM date (`maintenance.visit_tasks`, used by `trips.add_tasks`; the trip `deployments` input accepts DEPLOYED deployments).
+  - Main UI: the **Pipeline** panel of the fleet index is now **Plan** (`PipelineKpis` + `PlanTable`). Portal: `/plan` ("Fleet Plan", list or calendar) replaces both the Pipeline and the Maintenance Plan pages; `/pipeline` redirects to `/plan`, and *Pipeline* left the navigation. The Maintenance panel (task table and calendar) is unchanged.
+
 ## 3. Frontend: shared building blocks (`F/src/fleet/`)
 
 Register these model types in `F/lib/enums/ModelType.tsx`, with a `ModelInformation` entry each in `F/lib/enums/ModelInformation.tsx` (the entry is mandatory) and a renderer in `F/src/components/render/Instance.tsx` (in a new `F/src/components/render/Fleet.tsx`):
@@ -1014,7 +1031,7 @@ Each entry sets `url_overview`/`url_detail` under `/fleet/...`, `api_endpoint`, 
 
 | Route | Page | Content |
 |---|---|---|
-| `/fleet/index/:panel` | `FleetIndex` (pattern `BuildIndex.tsx`: `PageDetail` + `PanelGroup pageKey='fleet-index'`) | Panels: **Overview** (KPIs, map, open alerts), **Pipeline** (DeploymentTable pipeline mode + "Unscheduled" filter), **Deployments** (active), **Sites**, **Alerts**, **Maintenance** (TaskTable; table/calendar via `SegmentedControlPanel`), **Trips**, **Calendar**, **Device types** |
+| `/fleet/index/:panel` | `FleetIndex` (pattern `BuildIndex.tsx`: `PageDetail` + `PanelGroup pageKey='fleet-index'`) | Panels: **Overview** (KPIs, map, open alerts), **Plan** (`PlanTable`: deployments and maintenance in one list, section 2.13; was **Pipeline**), **Deployments** (active), **Sites**, **Alerts**, **Maintenance** (TaskTable; table/calendar via `SegmentedControlPanel`), **Trips**, **Calendar**, **Device types** |
 | `/fleet/site/:id/*` | `SiteDetail` | details; map; deployments history; maintenance history; alerts; uptime stats; attachments; notes |
 | `/fleet/deployment/:id/*` | `DeploymentDetail` | status and badges; actions (plan/create build/assign device/deploy/recover/edit); panels: details, health and streams, map and track, alerts, maintenance, risks (pipeline), attachments, notes |
 | `/fleet/task/:id/*` | `TaskDetail` | details; `TaskExecution` (when IN_PROGRESS); actions list; checklist; verification; attachments; print service report |
@@ -1145,7 +1162,7 @@ Each entry sets `url_overview`/`url_detail` under `/fleet/...`, `api_endpoint`, 
 | Route | Screen | Users |
 |---|---|---|
 | `/` (Overview) | KPI tiles; **map** with health pins and geofences; open alerts list (acknowledge or create task); deployments table (site nickname, device, health, last data, days deployed, next PM, coverage) with filters for client, health, PM due and coverage | Manager |
-| `/pipeline` | Grouped list: **Unscheduled** (set date or site inline), **Scheduled** (by target date, with risk badges), **Ready**. Actions: plan deployment, create BO, assign existing unit, add to trip | Manager |
+| `/pipeline` | Grouped list: **Unscheduled** (set date or site inline), **Scheduled** (by target date, with risk badges), **Ready**. Actions: plan deployment, create BO, assign existing unit, add to trip | Manager | *(Superseded on 2026-10-12, see section 2.13.)*
 | `/plan` | Upcoming PM and open corrective tasks within the horizon, listed by due date with the site nickname and the map; the manager **ticks the tasks to group** (no region grouping) and uses **Create field trip** / **Add to trip**; calendar toggle (deployments, tasks and trips) | Manager |
 | `/trips`, `/trips/:id` | Trip header and status steps (Planning → Kit ready → In progress → Reconciling → Closed); tasks by site; **Kit** tab (suggested vs available vs taken; Prepare kit); **Reconcile** tab (leftovers back to stock, removed parts to workshop); report | Manager |
 | `/my` | Technician home: my trips today and upcoming; open tasks assigned to me | Technician |
@@ -1156,11 +1173,11 @@ Each entry sets `url_overview`/`url_detail` under `/fleet/...`, `api_endpoint`, 
 
 **As built in P5 (screens, `F/src/portal/pages/`):** nothing needs a site or a position; devices without a site show their serial.
 - `/` **Overview**: `OverviewKpis`, `FleetMapView` (shorter on phones), open alerts (`AlertTable openOnly`: acknowledge, resolve, create task), deployed devices (`DeploymentTable mode='active'` with the new Last Data / Days Deployed columns and Client / Health / PM Due Before / PM Overdue / Coverage filters).
-- `/pipeline`: `PipelineKpis` and three tabs (remembered): **Unscheduled** (`unscheduled=true`; row action *Set Site and Date*), **Scheduled** (target date set, soonest first, risk badges), **Ready** (status READY, tick → *Create Field Trip* / *Add to Trip*). *Plan Deployment*, *Create Build Order* and *Assign Device* are in the table.
+- `/pipeline`: `PipelineKpis` and three tabs (remembered): **Unscheduled** (`unscheduled=true`; row action *Set Site and Date*), **Scheduled** (target date set, soonest first, risk badges), **Ready** (status READY, tick → *Create Field Trip* / *Add to Trip*). *Plan Deployment*, *Create Build Order* and *Assign Device* are in the table. *(Superseded on 2026-10-12, see section 2.13.)*
 - `/plan`: **Tasks** view = `MaintenanceKpis`, map, open tasks without a trip ordered by due date (`TaskTable selection='trip'`: tick → *Create Field Trip* / *Add to Trip*), with a note on the PM horizon (`FLEET_PLAN_HORIZON_DAYS`; PM tasks are only proposed inside it, so no extra date filter); **Calendar** view = `FleetCalendar`. The view is remembered.
 - `/trips` (`TripTable`) and `/trips/:id`: header with status and `TripStatusSteps`; actions *Start Trip*, *Add Tasks*, print (trip report), More (edit, cancel, delete) through `useTripActions`; tabs **Tasks** (cards grouped by site nickname, or the `TaskTable` with *Remove from Trip*), **Kit** (`TripKitTable`, kit contents, removed components), **Reconcile** (`TripReconcilePanel`), Details, Attachments, Notes.
 - `/my` (technician): cards for **Trips Today** (in progress, or started on/before today), **My Tasks** (`assigned_to_me`, open; in progress first, then by due date) and **Upcoming Trips**.
-- `/deployment/:id` (device card): site (link), device (link to the main UI stock item), platform id, client, coverage, last data, target/deployed date, next PM, position ("Not set"), build order. Actions *Start Maintenance* (a dialog with the open tasks of the device as cards, and *New Task* for managers), *Deploy*, *Recover*, *Set Position*, *Create Build Order*, *Assign Device*, More (*Set Site and Date*, edit, delete). Tabs **Live Data** (streams + map snippet, deployed only), **Readiness** (pipeline), **Components** (`ComponentTree`, read only), **Alerts**, **History** (`DeploymentTimeline`), **Maintenance**, Attachments, Notes.
+- `/deployment/:id` (device card): site (link), device (link to the main UI stock item), platform id, client, coverage, last data, target/deployed date, next PM, position ("Not set"), build order (reference, status and target date, read only). Actions *Start Maintenance* (a dialog with the open tasks of the device as cards, and *New Task* for managers), *Deploy*, *Recover*, *Set Position*, *Assign Device*, More (*Set Site and Date*, edit, delete). Tabs **Live Data** (streams + map snippet, deployed only), **Readiness** (pipeline), **Components** (`ComponentTree`, read only), **Alerts**, **History** (`DeploymentTimeline`), **Maintenance**, Attachments, Notes.
 - `/task/:id`: header (status, type, overdue), *Start Task* (then the Work tab opens), print (service report), More (edit, cancel, delete). Tabs **Work** (`TaskExecution`, while in progress), Details, **Checklist** and **Actions** (closed tasks), Alerts, Attachments (photos), Notes.
 - `/alerts` (`AlertTable`), `/sites` (`SiteTable`) and `/sites/:id`: details, three tiles (**Deployed time, % of the last 12 months** = union of the deployed periods of the site's deployments; this is "uptime" as time with a device in the water, not data availability; **Visits** = completed tasks in 12 months; **Devices** deployed there), tabs **Devices** (one card per deployment with its dates: devices over time), **Visits** (`TaskTable`), Alerts, Map (when a device is deployed), Attachments, Notes.
 
@@ -1178,9 +1195,8 @@ Write these as backend service and API tests, and as Playwright tests where note
    5. Set the site and target date.
    6. Create the output with serial AUR-0161 → the sync links the device.
    7. Complete the build → READY.
-   8. If `build.target_date > target_date`, the risk is BUILD_LATE and a Teams notification is sent (mock the webhook).
-      - *P1 tests the BUILD_LATE risk only.* The notification needs `notify.py` (P2) and `pipeline_alerts()` (planning). Extend `test_scenario_1_pipeline_from_bo_issue` in P2 or P3, whichever adds `pipeline_alerts`. *P2 added `notify.py` but not `pipeline_alerts()` (it belongs to `planning.py`), so this is left for P3.*
-      - **Done in P3:** the scenario runs `pipeline_alerts()` twice with a mocked webhook: one BUILD_LATE alert (OPEN) and exactly one Teams card ("Build late - Algarve #1").
+   8. A build target date after the deployment date is **not** a risk (the fleet does not judge the build schedule). Within `FLEET_READY_LEAD_DAYS` of the deployment date with the device not ready, the risk is NOT_READY and a Teams notification is sent (mock the webhook).
+      - *Changed 2026-10-12* (was BUILD_LATE): the scenario runs `pipeline_alerts()` twice with a mocked webhook: one NOT_READY alert (OPEN) and exactly one Teams card ("Not ready - Algarve #1"); it resolves once the build completes.
 
    Scenarios 1–3 are covered by `fleet/test_pipeline.py` (services, using the real build flow) and `fleet/test_api.py`. Scenario 3 is the "deploy without a trip" variant; the trip part (3.1) comes with P4.
    Scenarios 5 (without a trip: steps 5.1, 5.4–5.7; 5.2 is scheduling by date, 5.3 and 5.8 need trips), 6, 8 and 9 are covered by `fleet/test_maintenance.py` (P3), with service and API tests.
@@ -1238,6 +1254,7 @@ Write these as backend service and API tests, and as Playwright tests where note
 | **P6 Deployment and docs** ✅ done 2026-10-09 (question 9 moved to a later phase, question 6 is data) | Caddy, compose and env changes (section 9; Dockerfile COPY lines are added by each phase), migration runbook, `D/docs/13-fleet.md` user guide, retire the plugin's Deployed Systems widget **only after sign-off** | Staging deploy verified end to end. **Result:** **1495 backend tests OK on Linux** (`local-inventree.ps1 test`, 0 failures, 636 s; P6 changed no backend file). `caddy validate` passes (caddy:alpine; the adapted config has a `:8444` server whose only extra route is `path /` → 302 `/fleet/`). Image built from a scratch copy (frontend extract/compile/tsc/build inside); `check`, `migrate` on empty Postgres 17, `makemigrations --check`, fleet `0005` reverse/forward, `fleet_install_reports`, `fleet_sync_stock --dry-run` pass; the image manifest has `index.html` and `fleet.html`. **Staging** = the full compose stack on the dev PC (scratch copy, project `inventree-p6-staging`, override for container names, image tag and a named DB volume), run with the new runbook order: worker stopped → one-off `invoke migrate` → `collect-static.sh` → `fleet_install_reports` → device type for a unit that already had a customer → dry run listed `Open: DP-0001 …` → worker started → deployment opened by the worker within 90 s. Through Caddy: `:8444/` → 302 `/fleet/`, `/fleet/` 200 with its assets from `/static/web`, `/web/` and `/api/` 200 on both ports. Playwright against `https://192.168.1.33:8444` (Chromium, temporary copy of the tests, no retries): *Scenario 10* (portal login, overview, device card, task Start → checklist → Verify data → Complete: session + CSRF POSTs from the `:8444` origin), *Phone width* (390×844), *Links from the main UI shape*, and a P6 spec (bare `:8444` → portal login; after the portal login the main UI on `:8443` is logged in; logout on `:8443` logs the portal out). Not checked on a physical phone (the staging stack was left running for that). The legacy widget stays (question 7: keep for now) |
 | **P7 Internal device states** ✅ done 2026-10-09 (question 9 answered at the start: section 2.11) | Seven states (Decommissioned, Docked, Maintenance Scheduled, Maintenance Overdue, Problem Acknowledged, Unresponsive, Active) on the physical device, honoured by the stock sync, monitoring, planning, overview, map and lists; set-state action, badge and filter in both UIs | Product owner's confirmed scenarios pass; plus the definition of done. **Result:** **1513 backend tests OK on Linux** (`local-inventree.ps1 test`, 0 failures, 597 s, P6 staging stack stopped during the run), including 186 fleet tests (18 new: 4 in `test_stock_sync.py`, 4 in `test_monitoring.py`, 10 in `test_maintenance.py` for planning, maintenance and the API). Image built from a scratch copy (frontend extract/compile/tsc/build inside); `check`, `migrate` on empty Postgres 17, `makemigrations --check` ("No changes detected"), fleet `0006` → `0005` → `0006`, `fleet_install_reports` and `fleet_sync_stock --dry-run` pass; the manifest has `index.html` and `fleet.html`. Playwright `pui_fleet.spec.ts` (4 tests incl. the new *Device state*) passes against a throwaway server from the built image (Chromium, no retries); on the very first run, *Scenario 10* timed out at its first portal login right after the server started (still on the login form), and passed on the re-run and in a full second run. tsc, Biome and Ruff (`--preview`) clean on the changed files. The Dockerfile needed no change. The main UI deployment page was not clicked through in a browser (tsc only) |
 | **P8 InvenTree conventions pass** ✅ done 2026-10-10 (requested by the product owner after a review of the module against the core apps) | Section 2.12: transitions on the models (`StateTransitionMixin`, `can_*`), `FleetEvents`, health/severity/stream state as status classes, `FieldTrip.responsible` → `Owner`, barcodes, `clean()` rules, `DeviceLink.comment`, core-style action endpoints and token scopes, user/owner detail fields, global search, importer, decimals, N+1 and DB-side filters, notifications on commit; frontend status codes from the backend, user/owner columns, barcode/print actions, shared detail fields and bootstrap, table-style kit form, main-UI Playwright tests | Definition of done. **Result:** **1528 backend tests OK on Linux** (`local-inventree.ps1 test`, 0 failures, 696 s), including 225 in `fleet`, `generic.states` and `users.tests` (new: `test_conventions.py` with 13 tests and `test_migrations.py` with the 0007 forward and reverse data checks). The first full run failed core `build.test_api.BuildTest.test_complete` (458 queries, cap 450) because of the fleet build hook; fixed with `pipeline.is_fleet_build` (section 2.12). **The P6 staging stack was not stopped during the runs** (stopping it was not allowed in this session); the suite still passed. Image `bo-inventree-p8-check` built from a scratch copy (frontend extract/compile/tsc/build inside); `check`, `migrate` on empty Postgres 17, `makemigrations --check` ("No changes detected"), fleet `0007` → `0006` → `0007`, `fleet_install_reports` and `fleet_sync_stock --dry-run` pass; the manifest has `index.html` and `fleet.html`. tsc clean, Biome clean on the changed frontend files, Ruff (`--preview`) clean on fleet. **Not run:** Playwright (`pui_fleet.spec.ts`, new `pui_fleet_main.spec.ts`); no click-through in a browser |
+| **P9 Units, not plans** ✅ done 2026-10-12 (product owner's rules of 2026-10-12, section 2.13) | Deployments only from real units (build orders and the pool of undeployed units), New Deployment, recovery through a return order, one plan list of deployments and maintenance in date order (API, `PlanTable`, main UI and portal) | Definition of done. **Result:** **1529 backend tests OK on Linux** (`local-inventree.ps1 test`, 0 failures, 635 s), including 202 fleet tests (new: `test_unit_rows`, `test_plan_list`, `test_maintenance_row_on_trip`, the return-order flow in `test_recover`, `test_actions` and scenario 7; `test_support.plan_unit` replaces the removed `create_planned` + `assign_existing_device`). Image `bo-inventree-p9-check` built from a scratch copy (frontend extract/compile/tsc/build inside); `check`, `migrate` on empty Postgres 17, `makemigrations --check` ("No changes detected") and `fleet_sync_stock --dry-run` pass; the manifest has `index.html` and `fleet.html`. tsc and Biome clean on the changed frontend files; Ruff clean on fleet (except the old `notify.py` import order). The Dockerfile needed no change. **Not run:** Playwright (specs updated for Plan); no click-through in a browser |
 
 ---
 

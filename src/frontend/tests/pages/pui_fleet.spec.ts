@@ -344,9 +344,9 @@ test('Fleet Portal - Phone width', async ({ browser }) => {
 
   // The other screens are under "More"
   await page.getByLabel('portal-tab-more').click();
-  await page.getByRole('menuitem', { name: 'Pipeline' }).click();
-  await page.waitForURL('**/fleet/pipeline');
-  await page.getByRole('heading', { name: 'Deployment Pipeline' }).waitFor();
+  await page.getByRole('menuitem', { name: 'Plan' }).click();
+  await page.waitForURL('**/fleet/plan');
+  await page.getByRole('heading', { name: 'Fleet Plan' }).waitFor();
   await expectNoHorizontalScroll(page);
 
   await page.getByLabel('portal-tab-/trips').click();
@@ -365,7 +365,11 @@ test('Fleet Portal - Links from the main UI shape', async ({ browser }) => {
 
   await page.goto(`${portalUrl}/fleet/index/maintenance`);
   await page.waitForURL('**/fleet/plan');
-  await page.getByRole('heading', { name: 'Maintenance Plan' }).waitFor();
+  await page.getByRole('heading', { name: 'Fleet Plan' }).waitFor();
+
+  // The old pipeline screen is now part of the plan
+  await page.goto(`${portalUrl}/pipeline`);
+  await page.waitForURL('**/fleet/plan');
 
   // Other paths open the main UI
   await page.goto(`${portalUrl}/part/category/index/`);

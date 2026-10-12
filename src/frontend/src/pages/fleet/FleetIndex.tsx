@@ -34,18 +34,19 @@ import { TaskCalendar } from '../../fleet/components/TaskCalendar';
 import { AlertTable } from '../../fleet/tables/AlertTable';
 import { DeploymentTable } from '../../fleet/tables/DeploymentTable';
 import { DeviceTypeTable } from '../../fleet/tables/DeviceTypeTable';
+import { PlanTable } from '../../fleet/tables/PlanTable';
 import { SiteTable } from '../../fleet/tables/SiteTable';
 import { TaskTable } from '../../fleet/tables/TaskTable';
 import { TripTable } from '../../fleet/tables/TripTable';
 import { useUserState } from '../../states/UserState';
 
 /**
- * Fleet index page: overview (map and open alerts), alerts, deployment
- * pipeline, deployed devices, maintenance tasks, field trips, calendar,
- * sites and device types.
+ * Fleet index page: overview (map and open alerts), alerts, the plan
+ * (deployments and maintenance in one list), deployed devices, maintenance
+ * tasks, field trips, calendar, sites and device types.
  *
- * Plan selection: tick open tasks (Maintenance) or ready deployments
- * (Pipeline) and use "Create Field Trip" / "Add to Trip".
+ * Plan selection: tick rows of the plan (or open tasks under Maintenance)
+ * and use "Create Field Trip" / "Add to Trip".
  */
 export default function FleetIndex() {
   const user = useUserState();
@@ -79,13 +80,13 @@ export default function FleetIndex() {
         content: <AlertTable />
       },
       {
-        name: 'pipeline',
-        label: t`Pipeline`,
+        name: 'plan',
+        label: t`Plan`,
         icon: <IconTimeline />,
         content: (
           <Stack gap='xs'>
             <PipelineKpis />
-            <DeploymentTable mode='pipeline' selection='trip' />
+            <PlanTable />
           </Stack>
         )
       },

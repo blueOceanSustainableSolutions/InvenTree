@@ -1370,9 +1370,9 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'units': '%',
     },
     'FLEET_PLAN_HORIZON_DAYS': {
-        'name': _('Maintenance Planning Horizon'),
+        'name': _('Planning Horizon'),
         'description': _(
-            'Preventive maintenance tasks are proposed when due within this period'
+            'The fleet plan lists this period first, and preventive maintenance tasks are proposed when due within it'
         ),
         'default': 45,
         'validator': [int, MinValueValidator(1)],
@@ -1415,7 +1415,7 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
     },
     'FLEET_WORKSHOP_LOCATION': {
         'name': _('Fleet Workshop Location'),
-        'description': _('Stock location for recovered devices and removed components'),
+        'description': _('Stock location for the components removed from devices'),
         'model': 'stock.stocklocation',
         'model_filters': {'structural': False},
     },

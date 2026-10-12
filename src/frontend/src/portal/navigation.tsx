@@ -5,8 +5,7 @@ import {
   IconClipboardList,
   IconDashboard,
   IconMapPin,
-  IconSailboat,
-  IconTimeline
+  IconSailboat
 } from '@tabler/icons-react';
 import type { ReactNode } from 'react';
 import { useEffect } from 'react';
@@ -35,12 +34,6 @@ export function portalNavItems(): PortalNavItem[] {
       label: t`My Work`,
       icon: <IconClipboardList />,
       primary: true
-    },
-    {
-      path: '/pipeline',
-      label: t`Pipeline`,
-      icon: <IconTimeline />,
-      primary: false
     },
     {
       path: '/plan',
@@ -93,7 +86,8 @@ export function mainUiUrl(path = ''): string {
 const INDEX_PANELS: Record<string, string> = {
   overview: '/',
   deployments: '/',
-  pipeline: '/pipeline',
+  plan: '/plan',
+  pipeline: '/plan',
   alerts: '/alerts',
   maintenance: '/plan',
   calendar: '/plan',

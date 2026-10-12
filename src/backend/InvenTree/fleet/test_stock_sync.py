@@ -23,6 +23,15 @@ from part.models import Part
 from stock.models import StockItem, StockItemTracking
 from stock.status_codes import StockHistoryCode
 
+# A sync which changes nothing
+EMPTY_SUMMARY = {
+    'opened': [],
+    'closed': [],
+    'updated': [],
+    'available': [],
+    'cancelled': [],
+    'errors': [],
+}
 
 class StockSyncTest(FleetServiceTestBase):
     """Devices with a customer are DEPLOYED deployments, automatically."""
@@ -99,9 +108,10 @@ class StockSyncTest(FleetServiceTestBase):
             line=line, shipment=shipment, item=item, quantity=1
         )
 
-        # Allocated but not shipped: not deployed
+        # Allocated but not shipped: not deployed (its row in the deployment list)
         sync_stock_deployments()
-        self.assertFalse(Deployment.objects.filter(device=item).exists())
+        row = Deployment.objects.get(device=item)
+        self.assertEqual(row.status, DeploymentStatus.READY.value)
 
         shipment.complete_shipment(None)
         item.refresh_from_db()
@@ -109,7 +119,9 @@ class StockSyncTest(FleetServiceTestBase):
 
         fleet_sync_pipeline()
 
+        # The same row is now deployed
         dep = Deployment.objects.get(device=item)
+        self.assertEqual(dep.pk, row.pk)
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
         self.assertEqual(dep.client, self.client_company)
 
@@ -128,12 +140,16 @@ class StockSyncTest(FleetServiceTestBase):
             part=inactive_part, quantity=1, serial='OB-1', customer=self.customer
         )
 
-        # In stock (no customer)
-        self.make_device('AUR-0520')
+        # In stock (no customer): not deployed, only its row in the list
+        unit = self.make_device('AUR-0520')
 
         summary = sync_stock_deployments()
         self.assertEqual(summary['opened'], [])
-        self.assertFalse(Deployment.objects.exists())
+        self.assertEqual(len(summary['available']), 1)
+        self.assertEqual(
+            list(Deployment.objects.values_list('device', 'status')),
+            [(unit.pk, DeploymentStatus.READY.value)],
+        )
 
     def test_variant(self):
         """Variants of a device type part are fleet devices too."""
@@ -299,16 +315,12 @@ class StockSyncTest(FleetServiceTestBase):
         deployment_service.deploy(dep)
 
         summary = sync_stock_deployments()
-        self.assertEqual(
-            summary, {'opened': [], 'closed': [], 'updated': [], 'errors': []}
-        )
+        self.assertEqual(summary, EMPTY_SUMMARY)
 
         deployment_service.recover(dep)
 
         summary = sync_stock_deployments()
-        self.assertEqual(
-            summary, {'opened': [], 'closed': [], 'updated': [], 'errors': []}
-        )
+        self.assertEqual(summary, EMPTY_SUMMARY)
 
     def test_dry_run(self):
         """A dry run reports the changes but saves nothing."""
@@ -400,9 +412,7 @@ class StockSyncTest(FleetServiceTestBase):
         # The sync neither reopens nor recreates it
         for _run in range(2):
             summary = sync_stock_deployments()
-            self.assertEqual(
-                summary, {'opened': [], 'closed': [], 'updated': [], 'errors': []}
-            )
+            self.assertEqual(summary, EMPTY_SUMMARY)
 
         self.assertEqual(Deployment.objects.filter(device=item).count(), 1)
         self.assertEqual(
