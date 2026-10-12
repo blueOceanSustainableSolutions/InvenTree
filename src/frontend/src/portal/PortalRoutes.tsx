@@ -44,7 +44,6 @@ const PortalLayout = Loadable(
 );
 
 const Overview = Loadable(lazy(() => import('./pages/Overview')));
-const Pipeline = Loadable(lazy(() => import('./pages/Pipeline')));
 const Plan = Loadable(lazy(() => import('./pages/Plan')));
 const Trips = Loadable(lazy(() => import('./pages/Trips')));
 const TripDetail = Loadable(lazy(() => import('./pages/TripDetail')));
@@ -68,7 +67,7 @@ export function PortalRoutes() {
     <Routes>
       <Route path='/' element={<PortalLayout />} errorElement={<ErrorPage />}>
         <Route index element={<Overview />} />
-        <Route path='pipeline' element={<Pipeline />} />
+        <Route path='pipeline' element={<Navigate to='/plan' replace />} />
         <Route path='plan' element={<Plan />} />
         <Route path='trips' element={<Trips />} />
         <Route path='trips/:id' element={<TripDetail />} />

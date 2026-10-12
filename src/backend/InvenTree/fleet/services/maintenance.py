@@ -35,7 +35,7 @@ from fleet.models import (
     TaskType,
 )
 from fleet.services import deployment as deployment_service
-from fleet.services import device_state, monitoring
+from fleet.services import device_state, monitoring, pipeline
 from fleet.status_codes import (
     AlertStatusGroups,
     DataStreamStatus,
@@ -268,6 +268,36 @@ def create_task(
         scheduled_date=scheduled_date,
         **kwargs,
     )
+
+
+def visit_tasks(deployment: Deployment) -> list[MaintenanceTask]:
+    """The maintenance tasks of a deployed device which a trip visit covers.
+
+    Its open tasks (not started, not on another trip) other than deployment
+    tasks; when it has none, a new PREVENTIVE task due on the next PM date.
+    """
+    tasks = list(
+        deployment.tasks
+        .filter(
+            status__in=[TaskStatus.PROPOSED.value, TaskStatus.SCHEDULED.value],
+            trip__isnull=True,
+        )
+        .exclude(task_type__in=DEPLOY_TASK_TYPES)
+        .order_by('pk')
+    )
+
+    if tasks or deployment.device is None:
+        return tasks
+
+    return [
+        create_task(
+            deployment.device,
+            task_type=TaskType.PREVENTIVE,
+            deployment=deployment,
+            description=str(_('Preventive maintenance')),
+            due_date=deployment.next_pm_date,
+        )
+    ]
 
 
 def update_schedule(task: MaintenanceTask) -> None:
@@ -807,9 +837,8 @@ def deploy(
 ) -> MaintenanceAction:
     """Deploy the device of a deployment (or swap) task.
 
-    Calls deployment.deploy(). For a swap, the replaced device is recovered
-    into the trip "Removed" location (else the workshop); reconciling the
-    trip moves it on to the workshop.
+    Calls deployment.deploy(). For a swap, the replaced device is recovered:
+    a return order brings it to the office, which receives it into stock.
     """
     lock_task(task)
     require_in_progress(task)
@@ -834,7 +863,6 @@ def deploy(
         longitude=longitude,
         depth_m=depth_m,
         deployed_at=deployed_at,
-        recover_location=get_removed_location(task) if swapped else None,
     )
 
     metadata = {'deployed': deployment.reference}
@@ -844,9 +872,10 @@ def deploy(
         metadata['recovered'] = replaced.reference
 
         if replaced.device is not None:
-            replaced.device.refresh_from_db()
             metadata['recovered_device'] = replaced.device.serial
-            metadata['recovered_location'] = replaced.device.location_id
+
+            if return_line := pipeline.get_return_line(replaced.device):
+                metadata['return_order'] = return_line.order.reference
 
     record = MaintenanceAction.objects.create(
         task=task,
@@ -855,7 +884,6 @@ def deploy(
         component_in=task.device,
         part=task.device.part,
         quantity=1,
-        destination=replaced.device.location if swapped and replaced.device else None,
         note=(note or (str(_('Deployed')) + f' {deployment.reference}'))[:500],
         metadata=metadata,
         created_by=user if user is not None and user.is_authenticated else None,

@@ -1,17 +1,26 @@
-"""Deployment pipeline: from build order to a device which is ready to deploy.
+"""Deployment pipeline: the fleet units which are not deployed.
 
-A deployment enters the pipeline when the build order for a fleet device is
-issued (or when it is planned by hand). A build order linked to a sales order
-enters it earlier, as PLANNED, as soon as it is created (still PENDING). The
-build output becomes the device, and the deployment is READY once the output
-is complete.
+The fleet never plans a deployment out of nothing: every row belongs to a
+real unit.
+
+- A build order for a fleet device enters the pipeline when it is issued
+  (IN_PRODUCTION). One linked to a sales order enters it earlier, as PLANNED,
+  as soon as it is created (still PENDING). The build output becomes the
+  device, and the deployment is READY once the output is complete.
+- Every other finished unit which is not deployed (in stock, or on its way
+  back on a return order) gets a READY deployment without a date (see
+  ensure_unit_deployment, run by the stock sync).
+
+"New deployment" means choosing one of these units and planning its site,
+date and trip (new_deployment).
+
+The fleet has an outside view of the build order: it follows its status and
+target date, but never creates or changes it. Manufacturing owns the build.
 """
 
-from datetime import date, timedelta
-from decimal import Decimal
+from datetime import date
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 
@@ -19,12 +28,14 @@ import structlog
 
 import InvenTree.helpers
 import InvenTree.ready
-from build.status_codes import BuildStatus, BuildStatusGroups
+from build.status_codes import BuildStatus
 from common.settings import get_global_setting
 from fleet.events import trigger_status_event
 from fleet.models import Alert, Deployment, DeviceLink, FleetDeviceType
-from fleet.services.device_state import is_decommissioned
+from fleet.services.device_state import check_not_decommissioned, decommissioned_q
 from fleet.status_codes import AlertSeverity, DeploymentStatus, DeploymentStatusGroups
+from order.status_codes import ReturnOrderStatusGroups
+from stock.status_codes import StockStatus
 
 logger = structlog.get_logger('inventree')
 
@@ -274,30 +285,142 @@ def sync_all() -> int:
     return count
 
 
-def create_planned(
-    device_type: FleetDeviceType,
+# Stock statuses of a unit which is gone for good (not a fleet unit any more)
+GONE_STOCK_STATUSES = [
+    StockStatus.DESTROYED.value,
+    StockStatus.LOST.value,
+    StockStatus.REJECTED.value,
+]
+
+# Statuses of a deployment which holds its device (one per device)
+HOLDING_STATUSES = DeploymentStatusGroups.PIPELINE + DeploymentStatusGroups.ACTIVE
+
+
+def returning_q(prefix: str = '') -> Q:
+    """Q for the stock items on their way back: an open return order line, not received."""
+    return Q(**{
+        f'{prefix}return_order_lines__received_date__isnull': True,
+        f'{prefix}return_order_lines__order__status__in': ReturnOrderStatusGroups.OPEN,
+    })
+
+
+def get_return_line(stock_item):
+    """The open return order line of a device on its way back (None if not returning)."""
+    from order.models import ReturnOrderLineItem
+
+    if stock_item is None:
+        return None
+
+    return (
+        ReturnOrderLineItem.objects
+        .filter(
+            item=stock_item,
+            received_date__isnull=True,
+            order__status__in=ReturnOrderStatusGroups.OPEN,
+        )
+        .select_related('order')
+        .order_by('-pk')
+        .first()
+    )
+
+
+def undeployed_units(part_ids):
+    """The fleet units which are not deployed: the pool of the deployment list.
+
+    A finished, serialized unit of a fleet part which is not with a customer
+    (or is on its way back on a return order), not built into another item,
+    not gone (destroyed, lost, rejected) and not decommissioned.
+    """
+    from stock.models import StockItem
+
+    return (
+        StockItem.objects
+        .filter(
+            part__in=list(part_ids),
+            serial__isnull=False,
+            quantity=1,
+            is_building=False,
+            belongs_to=None,
+            consumed_by=None,
+            consumed_by_quick_build=None,
+        )
+        .exclude(serial='')
+        .filter(Q(customer__isnull=True) | returning_q())
+        .exclude(status__in=GONE_STOCK_STATUSES)
+        .exclude(decommissioned_q('fleet_link__state'))
+        .distinct()
+    )
+
+
+def ensure_unit_deployment(stock_item, device_type: FleetDeviceType | None = None):
+    """Return the open deployment of a fleet unit, creating a READY one if missing.
+
+    The fleet never plans a deployment out of nothing: each undeployed unit
+    has its own row in the deployment list, without a date until someone
+    plans it.
+    """
+    deployment = (
+        Deployment.objects
+        .filter(device=stock_item, status__in=HOLDING_STATUSES)
+        .order_by('-status', 'pk')
+        .first()
+    )
+
+    if deployment is not None:
+        return deployment
+
+    if device_type is None:
+        from fleet.services.stock_sync import device_type_map
+
+        device_type = device_type_map().get(stock_item.part_id)
+
+    if device_type is None:
+        raise ValidationError(_('This item is not a fleet device'))
+
+    check_not_decommissioned(stock_item)
+
+    deployment = Deployment.objects.create(
+        status=DeploymentStatus.READY.value,
+        device_type=device_type,
+        device=stock_item,
+        deployment_type=Deployment.DeploymentType.NEW_STATION,
+    )
+
+    ensure_device_link(stock_item)
+    trigger_status_event(deployment)
+
+    return deployment
+
+
+def new_deployment(
+    deployment: Deployment,
     site=None,
     target_date: date | None = None,
-    deployment_type: str = Deployment.DeploymentType.NEW_STATION,
+    deployment_type: str | None = None,
     replaces: Deployment | None = None,
-    **kwargs,
+    coverage: str | None = None,
 ) -> Deployment:
-    """Plan a deployment by hand, before any build order exists.
+    """Plan the next deployment of an undeployed unit: site, date and type.
 
+    "New deployment" means choosing a unit which is not deployed (built, in
+    production, or on its way back) and arranging where and when it goes.
     The coverage is copied from the site unless given.
     """
-    if 'coverage' not in kwargs and site is not None:
-        kwargs['coverage'] = site.coverage
+    if deployment.status not in DeploymentStatusGroups.PIPELINE:
+        raise ValidationError(_('Only a device which is not deployed can be planned'))
 
-    deployment = Deployment(
-        status=DeploymentStatus.PLANNED.value,
-        device_type=device_type,
-        site=site,
-        target_date=target_date,
-        deployment_type=deployment_type,
-        replaces=replaces,
-        **kwargs,
-    )
+    deployment.site = site
+    deployment.target_date = target_date
+
+    if deployment_type:
+        deployment.deployment_type = deployment_type
+
+    deployment.replaces = replaces
+
+    if coverage:
+        deployment.coverage = coverage
+    elif site is not None:
+        deployment.coverage = site.coverage
 
     deployment.full_clean()
     deployment.save()
@@ -305,200 +428,21 @@ def create_planned(
     return deployment
 
 
-@transaction.atomic
-def create_build_for(deployment: Deployment, user=None):
-    """Create the build order (quantity 1) which will produce the device.
-
-    The build order is left PENDING. Issuing it moves the deployment to
-    IN_PRODUCTION (through the build hook).
-    """
-    from build.models import Build
-
-    if deployment.status != DeploymentStatus.PLANNED.value:
-        raise ValidationError(
-            _('A build order can only be created for a planned deployment')
-        )
-
-    if deployment.build is not None:
-        raise ValidationError(_('This deployment already has a build order'))
-
-    if deployment.device is not None:
-        raise ValidationError(_('This deployment already has a device'))
-
-    target_date = None
-
-    if deployment.target_date:
-        target_date = deployment.target_date - timedelta(
-            days=get_global_setting('FLEET_READY_LEAD_DAYS', cache=False)
-        )
-
-    title = str(_('Fleet deployment')) + f' {deployment.reference}'
-
-    if deployment.site:
-        title += f' ({deployment.site.name})'
-
-    build = Build.objects.create(
-        part=deployment.device_type.part,
-        quantity=1,
-        title=title[:100],
-        target_date=target_date,
-        issued_by=user,
-    )
-
-    deployment.build = build
-    deployment.save()
-
-    return build
-
-
-def assign_existing_device(deployment: Deployment, stock_item, user=None):
-    """Assign an existing (e.g. refurbished) unit to a deployment.
-
-    The unit must be serialized and in stock, of the device type part or one of
-    its variants, and not already part of another open deployment.
-    """
-    allowed = [
-        DeploymentStatus.PLANNED.value,
-        DeploymentStatus.IN_PRODUCTION.value,
-        DeploymentStatus.READY.value,
-        DeploymentStatus.SCHEDULED.value,
-    ]
-
-    if deployment.status not in allowed:
-        raise ValidationError(
-            _('A device can only be assigned to a pipeline deployment')
-        )
-
-    if (
-        deployment.build is not None
-        and deployment.build.status in BuildStatusGroups.ACTIVE_CODES
-    ):
-        raise ValidationError(
-            _(
-                'This deployment is linked to an open build order, which will produce the device'
-            )
-        )
-
-    if not stock_item.serialized:
-        raise ValidationError({'stock_item': _('The device must be serialized')})
-
-    if not stock_item.in_stock or stock_item.is_building:
-        raise ValidationError({'stock_item': _('The device must be in stock')})
-
-    if is_decommissioned(stock_item):
-        raise ValidationError({
-            'stock_item': _('This device is decommissioned. Clear its state first')
-        })
-
-    valid_parts = deployment.device_type.part.get_descendants(include_self=True)
-
-    if stock_item.part not in valid_parts:
-        raise ValidationError({
-            'stock_item': _(
-                'The device must be of the device type part, or a variant of it'
-            )
-        })
-
-    other = (
-        Deployment.objects
-        .filter(device=stock_item)
-        .filter(
-            status__in=DeploymentStatusGroups.PIPELINE + DeploymentStatusGroups.ACTIVE
-        )
-        .exclude(pk=deployment.pk)
-        .first()
-    )
-
-    if other is not None:
-        raise ValidationError({
-            'stock_item': _('The device is already part of deployment')
-            + f' {other.reference}'
-        })
-
-    previous = deployment.device
-    deployment.device = stock_item
-
-    if deployment.status != DeploymentStatus.SCHEDULED.value:
-        deployment.status = DeploymentStatus.READY.value
-
-    deployment.save()
-
-    ensure_device_link(stock_item)
-
-    # A scheduled deployment: its deployment task (and trip kit line) follow
-    if previous is not None and previous != stock_item:
-        from fleet.models import MaintenanceTask, TaskType, TripKitLine
-        from fleet.status_codes import TaskStatus
-
-        tasks = deployment.tasks.filter(
-            status__in=[TaskStatus.PROPOSED.value, TaskStatus.SCHEDULED.value],
-            task_type__in=[TaskType.DEPLOYMENT, TaskType.SWAP],
-        )
-
-        TripKitLine.objects.filter(
-            task__in=tasks, source=TripKitLine.Source.DEVICE
-        ).update(stock_item=stock_item, part=stock_item.part)
-        MaintenanceTask.objects.filter(pk__in=tasks.values('pk')).update(
-            device=stock_item
-        )
-
-    return deployment
-
-
-def get_parts_short(build) -> list[dict]:
-    """Return the build lines which cannot be covered by the available stock.
-
-    Uses the same annotations as the build line API (allocated, available_stock).
-    """
-    from build.serializers import BuildLineSerializer
-
-    lines = BuildLineSerializer.annotate_queryset(build.build_lines.all(), build=build)
-
-    short = []
-
-    for line in lines:
-        required = (
-            Decimal(line.quantity)
-            - Decimal(line.allocated or 0)
-            - Decimal(line.consumed or 0)
-        )
-        available = Decimal(line.available_stock or 0)
-
-        if required > available:
-            short.append({
-                'part': line.part.pk,
-                'name': line.part.full_name,
-                'short': float(required - available),
-            })
-
-    return short
-
-
 def readiness_risks(deployment: Deployment, today: date | None = None) -> list[dict]:
     """Return the readiness risks of a pipeline deployment (computed, not stored).
 
     Each risk is a dict of {code, severity, message}. The codes match the
-    alert types: BUILD_LATE, NOT_READY, PARTS_SHORT and NO_DEPLOY_DATE.
+    alert types: NOT_READY and NO_DEPLOY_DATE.
+
+    The fleet only looks at the outcome of the build order (is the device
+    ready in time?), never at how it is built: parts, stock and the build
+    schedule belong to manufacturing.
     """
     if deployment.status not in DeploymentStatusGroups.PIPELINE:
         return []
 
     today = today or InvenTree.helpers.current_date()
-    build = deployment.build
-    build_open = build is not None and build.status in BuildStatusGroups.ACTIVE_CODES
     risks = []
-
-    if (
-        build_open
-        and build.target_date
-        and deployment.target_date
-        and build.target_date > deployment.target_date
-    ):
-        risks.append({
-            'code': Alert.AlertType.BUILD_LATE.value,
-            'severity': AlertSeverity.WARNING.value,
-            'message': str(_('Build order target date is after the deployment date')),
-        })
 
     if (
         deployment.target_date
@@ -512,14 +456,6 @@ def readiness_risks(deployment: Deployment, today: date | None = None) -> list[d
             if deployment.target_date < today
             else AlertSeverity.WARNING.value,
             'message': str(_('Device is not ready for the deployment date')),
-        })
-
-    if build_open and (short := get_parts_short(build)):
-        names = ', '.join(line['name'] for line in short[:5])
-        risks.append({
-            'code': Alert.AlertType.PARTS_SHORT.value,
-            'severity': AlertSeverity.WARNING.value,
-            'message': str(_('Not enough stock for the build order')) + f': {names}',
         })
 
     if deployment.target_date is None and deployment.creation_date:

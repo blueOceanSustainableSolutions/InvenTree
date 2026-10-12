@@ -50,8 +50,16 @@ from fleet.services import (
     planning,
     trips,
 )
-from fleet.status_codes import AlertSeverity, AlertStatus, DeploymentStatus, TaskStatus
+from fleet.services.stock_sync import sync_stock_deployments
+from fleet.status_codes import (
+    AlertSeverity,
+    AlertStatus,
+    DeploymentStatus,
+    DeploymentStatusGroups,
+    TaskStatus,
+)
 from fleet.tasks import fleet_daily_planning
+from fleet.test_support import plan_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeAPITestCase, InvenTreeTestCase
 from part.models import Part
@@ -188,8 +196,7 @@ class MaintenanceDataMixin:
         """
         device = self.make_device(serial, battery=battery or f'BAT-{serial}')
 
-        dep = pipeline.create_planned(self.device_type, site=site)
-        pipeline.assign_existing_device(dep, device)
+        dep = plan_unit(device, self.device_type, site=site)
         deployment_service.deploy(
             dep, deployed_at=timezone.now() - timedelta(days=days_ago)
         )
@@ -664,43 +671,75 @@ class PlanningTest(MaintenanceTestBase):
         )
 
     def test_pipeline_alerts(self):
-        """Readiness risks become alerts; BUILD_LATE is notified once."""
-        dep = pipeline.create_planned(
+        """Readiness risks become alerts; NOT_READY is notified once."""
+        dep = plan_unit(
+            self.make_device('AUR-0901'),
             self.device_type,
             site=self.site,
-            target_date=current_date() + timedelta(days=60),
+            target_date=current_date() + timedelta(days=3),
         )
-        build = pipeline.create_build_for(dep)
-        build.target_date = dep.target_date + timedelta(days=5)
-        build.save()
+        # Not ready yet: still in production (not in stock)
+        StockItem.objects.filter(pk=dep.device.pk).update(is_building=True)
+        Deployment.objects.filter(pk=dep.pk).update(
+            status=DeploymentStatus.IN_PRODUCTION.value
+        )
+        dep.refresh_from_db()
 
         summary = planning.pipeline_alerts()
         self.assertEqual(summary['notified'], 1)
 
-        alert = Alert.objects.get(deployment=dep, alert_type=Alert.AlertType.BUILD_LATE)
+        alert = Alert.objects.get(deployment=dep, alert_type=Alert.AlertType.NOT_READY)
         self.assertEqual(alert.severity, AlertSeverity.WARNING.value)
-        self.assertEqual(alert.dedupe_key, f'dp:{dep.pk}:BUILD_LATE')
+        self.assertEqual(alert.dedupe_key, f'dp:{dep.pk}:NOT_READY')
         self.assertEqual(self.teams.call_count, 1)
 
         # Again: no duplicate, no second notification
         self.assertEqual(planning.pipeline_alerts()['notified'], 0)
         self.assertEqual(
-            Alert.objects.filter(alert_type=Alert.AlertType.BUILD_LATE).count(), 1
+            Alert.objects.filter(alert_type=Alert.AlertType.NOT_READY).count(), 1
         )
         self.assertEqual(self.teams.call_count, 1)
 
-        # Fixed: the alert clears
-        build.target_date = dep.target_date - timedelta(days=10)
-        build.save()
+        # Fixed (the deployment is moved later): the alert clears
+        dep.target_date = current_date() + timedelta(days=60)
+        dep.save()
 
         planning.pipeline_alerts()
         alert.refresh_from_db()
         self.assertEqual(alert.status, AlertStatus.RESOLVED.value)
         self.assertEqual(alert.resolution, Alert.Resolution.AUTO)
 
+    def test_retired_pipeline_alerts_resolved(self):
+        """Open BUILD_LATE / PARTS_SHORT alerts (no longer raised) are resolved."""
+        dep = plan_unit(
+            self.make_device('AUR-0902'),
+            self.device_type,
+            site=self.site,
+            target_date=current_date() + timedelta(days=60),
+        )
+
+        retired = [
+            monitoring.open_or_update_alert(
+                f'dp:{dep.pk}:{alert_type}',
+                alert_type,
+                AlertSeverity.WARNING.value,
+                'Raised by an older version',
+                deployment=dep,
+                site=dep.site,
+            )[0]
+            for alert_type in planning.RETIRED_PIPELINE_ALERT_TYPES
+        ]
+
+        self.assertEqual(planning.pipeline_alerts()['resolved'], 2)
+
+        for alert in retired:
+            alert.refresh_from_db()
+            self.assertEqual(alert.status, AlertStatus.RESOLVED.value)
+            self.assertEqual(alert.resolution, Alert.Resolution.AUTO)
+
     def test_unscheduled_alert_not_notified(self):
         """NO_DEPLOY_DATE is raised (INFO) but not notified."""
-        dep = pipeline.create_planned(self.device_type)
+        dep = plan_unit(self.make_device('AUR-0903'), self.device_type)
         Deployment.objects.filter(pk=dep.pk).update(
             creation_date=current_date() - timedelta(days=30)
         )
@@ -1499,7 +1538,7 @@ class DeviceStatePlanningTest(MaintenanceTestBase):
         self.assertEqual(self.state(dep), 'ACTIVE')
 
         # Pipeline deployments have no state
-        planned = pipeline.create_planned(self.device_type)
+        planned = plan_unit(self.make_device('AUR-0904'), self.device_type)
         self.assertIsNone(self.state(planned))
 
     def test_complete_clears_problem(self):
@@ -1585,16 +1624,20 @@ class DeviceStatePlanningTest(MaintenanceTestBase):
         StockItem.objects.filter(pk=dep.device.pk).update(customer=None)
         dep.device.refresh_from_db()
 
-        planned = pipeline.create_planned(self.device_type)
+        sync_stock_deployments()
+        self.assertFalse(
+            Deployment.objects.filter(
+                device=dep.device, status__in=DeploymentStatusGroups.PIPELINE
+            ).exists()
+        )
 
         with self.assertRaises(ValidationError):
-            pipeline.assign_existing_device(planned, dep.device)
+            pipeline.ensure_unit_deployment(dep.device, self.device_type)
 
     def test_decommission_pipeline_refused(self):
         """A device in a pipeline deployment cannot be decommissioned."""
         device = self.make_device('AUR-0806')
-        planned = pipeline.create_planned(self.device_type)
-        pipeline.assign_existing_device(planned, device)
+        planned = plan_unit(device, self.device_type)
 
         with self.assertRaises(ValidationError):
             device_state.set_state(planned, InternalState.DECOMMISSIONED)
@@ -1652,7 +1695,7 @@ class DeviceStateAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
         # Invalid input
         self.set_state(dep, 'IGNORE', expected_code=400)
 
-        planned = pipeline.create_planned(self.device_type)
+        planned = plan_unit(self.make_device('AUR-0905'), self.device_type)
         self.set_state(planned, 'DOCKED', expected_code=400)
 
         # The device link state is read-only (set through the action)

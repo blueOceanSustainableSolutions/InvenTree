@@ -24,7 +24,12 @@ from fleet.helpers import get_model_setting
 from fleet.models import Deployment, FieldTrip, MaintenanceTask, TripKitLine
 from fleet.services import deployment as deployment_service
 from fleet.services import maintenance
-from fleet.status_codes import TaskStatus, TaskStatusGroups, TripStatus
+from fleet.status_codes import (
+    DeploymentStatus,
+    TaskStatus,
+    TaskStatusGroups,
+    TripStatus,
+)
 from InvenTree.helpers import current_date
 from stock.models import StockItem, StockLocation
 from users.models import Owner
@@ -166,7 +171,8 @@ def create_trip(
 ) -> FieldTrip:
     """Create a field trip with its kit location and "Removed" child.
 
-    Tasks and (ready) deployments can be added at once (plan selection).
+    Tasks and deployments (ready, or deployed for maintenance) can be added at
+    once (plan selection).
     """
     if end_date is not None and end_date < start_date:
         raise ValidationError({'end_date': _('The end date is before the start date')})
@@ -193,7 +199,11 @@ def create_trip(
 
 @transaction.atomic
 def add_tasks(trip: FieldTrip, tasks=None, deployments=None) -> list[MaintenanceTask]:
-    """Add tasks, and ready deployments (as DEPLOYMENT / SWAP tasks), to a trip.
+    """Add tasks and deployments (rows of the plan list) to a trip.
+
+    - A ready deployment gets a DEPLOYMENT (or SWAP) task
+    - A deployed device (a maintenance row) brings its open maintenance tasks,
+      or a new PREVENTIVE task when it has none
 
     Returns:
         The tasks which are now on the trip
@@ -206,9 +216,22 @@ def add_tasks(trip: FieldTrip, tasks=None, deployments=None) -> list[Maintenance
     if not tasks and not deployments:
         raise ValidationError(_('Select tasks or deployments to add'))
 
-    scheduled = maintenance.schedule_tasks(trip, list(tasks or []))
+    tasks = list(tasks or [])
+    to_deploy = []
 
     for deployment in deployments or []:
+        if deployment.status == DeploymentStatus.DEPLOYED.value:
+            tasks += [
+                task
+                for task in maintenance.visit_tasks(deployment)
+                if task not in tasks
+            ]
+        else:
+            to_deploy.append(deployment)
+
+    scheduled = maintenance.schedule_tasks(trip, tasks)
+
+    for deployment in to_deploy:
         scheduled.append(deployment_service.schedule(deployment, trip=trip))
 
     return scheduled

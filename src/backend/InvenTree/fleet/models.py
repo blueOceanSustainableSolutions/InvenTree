@@ -1212,8 +1212,10 @@ class Alert(
         PM_DUE = 'PM_DUE', _('Maintenance due')
         PM_OVERDUE = 'PM_OVERDUE', _('Maintenance overdue')
         NOT_READY = 'NOT_READY', _('Not ready')
+        # Retired: kept so that old alerts still display (no longer raised)
         BUILD_LATE = 'BUILD_LATE', _('Build late')
         NO_DEPLOY_DATE = 'NO_DEPLOY_DATE', _('No deployment date')
+        # Retired: kept so that old alerts still display (no longer raised)
         PARTS_SHORT = 'PARTS_SHORT', _('Parts short')
 
     class Resolution(models.TextChoices):

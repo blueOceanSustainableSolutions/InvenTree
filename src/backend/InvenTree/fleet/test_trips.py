@@ -27,6 +27,7 @@ from fleet.models import (
     KitTemplateLine,
     MaintenanceAction,
     MaintenanceTask,
+    Site,
     TaskType,
     TripKitLine,
 )
@@ -40,6 +41,7 @@ from fleet.status_codes import (
 )
 from fleet.tasks import fleet_daily_planning
 from fleet.test_maintenance import MaintenanceDataMixin
+from fleet.test_support import plan_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeAPITestCase, InvenTreeTestCase
 from stock.models import StockItem, StockItemTracking, StockLocation
@@ -81,13 +83,7 @@ class TripDataMixin(MaintenanceDataMixin):
 
     def replacement(self, old, serial):
         """Plan a READY replacement of a deployed device, with a new unit."""
-        dep = pipeline.create_planned(
-            self.device_type,
-            site=old.site,
-            deployment_type=Deployment.DeploymentType.REPLACEMENT,
-            replaces=old,
-        )
-        pipeline.assign_existing_device(dep, self.make_device(serial))
+        dep = plan_unit(self.make_device(serial), self.device_type, site=old.site, deployment_type=Deployment.DeploymentType.REPLACEMENT, replaces=old)
         dep.refresh_from_db()
         return dep
 
@@ -323,7 +319,7 @@ class Scenario7SwapTest(TripTestBase):
     """Scenario 7: swap a deployed device for a new one, on a trip."""
 
     def test_scenario_7_swap(self):
-        """The old device is recovered into "Removed", the new one is deployed."""
+        """The old device goes back on a return order, the new one is deployed."""
         old = self.deploy('AUR-0161', site=self.site)
         old_device = old.device
         new = self.replacement(old, 'AUR-0200')
@@ -362,11 +358,12 @@ class Scenario7SwapTest(TripTestBase):
         old_device.refresh_from_db()
         new_device = new.device
         new_device.refresh_from_db()
-        removed = trips.get_removed_location(trip)
 
+        # The old device is on its way back: a return order to the office
         self.assertEqual(old.status, DeploymentStatus.RECOVERED.value)
-        self.assertIsNone(old_device.customer)
-        self.assertEqual(old_device.location, removed)
+        return_line = pipeline.get_return_line(old_device)
+        self.assertEqual(return_line.order.customer, self.customer)
+        self.assertEqual(old_device.customer, self.customer)
 
         self.assertEqual(new.status, DeploymentStatus.DEPLOYED.value)
         self.assertEqual(new_device.customer, self.customer)
@@ -375,6 +372,7 @@ class Scenario7SwapTest(TripTestBase):
         self.assertEqual(record.component_out, old_device)
         self.assertEqual(record.component_in, new_device)
         self.assertEqual(record.metadata['recovered'], old.reference)
+        self.assertEqual(record.metadata['return_order'], return_line.order.reference)
 
         # The site keeps both deployments in its history
         self.assertEqual(
@@ -385,12 +383,22 @@ class Scenario7SwapTest(TripTestBase):
         new.refresh_from_db()
         self.assertEqual(new.next_pm_date, current_date() + timedelta(days=180))
 
-        # Reconcile: the old device moves on to the workshop
+        # Reconcile closes the trip; the office receives the old device on
+        # its return order
         result = trips.reconcile(trip, user=self.user)
-        old_device.refresh_from_db()
-
         self.assertTrue(result['closed'])
+
+        return_line.order.receive_line_item(return_line, self.workshop, self.user)
+        old_device.refresh_from_db()
+        self.assertIsNone(old_device.customer)
         self.assertEqual(old_device.location, self.workshop)
+
+        # Back in the deployment list, ready for its next deployment
+        self.assertTrue(
+            Deployment.objects.filter(
+                device=old_device, status=DeploymentStatus.READY.value
+            ).exists()
+        )
 
 
 class TripRulesTest(TripTestBase):
@@ -399,8 +407,7 @@ class TripRulesTest(TripTestBase):
     def test_deploy_on_trip(self):
         """Scenario 3.1: a ready deployment on a trip, deployed by its task."""
         device = self.make_device('AUR-0170')
-        dep = pipeline.create_planned(self.device_type, site=self.site)
-        pipeline.assign_existing_device(dep, device)
+        dep = plan_unit(device, self.device_type, site=self.site)
 
         trip = self.new_trip()
         trips.add_tasks(trip, deployments=[dep])
@@ -501,10 +508,32 @@ class TripRulesTest(TripTestBase):
                 trip, tasks=[maintenance.create_task(dep.device, TaskType.INSPECTION)]
             )
 
+    def test_maintenance_row_on_trip(self):
+        """A deployed device (a maintenance row of the plan) added to a trip."""
+        dep = self.deploy('AUR-0195', site=self.site)
+
+        # No open task: a PREVENTIVE task is created for the visit
+        trip = self.new_trip(deployments=[dep])
+
+        task = MaintenanceTask.objects.get(deployment=dep)
+        self.assertEqual(task.task_type, TaskType.PREVENTIVE)
+        self.assertEqual(task.trip, trip)
+        self.assertEqual(task.status, TaskStatus.SCHEDULED.value)
+        self.assertEqual(task.due_date, dep.next_pm_date)
+
+        # With an open task, that task goes on the trip (no new one)
+        other = self.deploy('AUR-0196', site=Site.objects.create(name='Algarve #9'))
+        corrective = maintenance.create_task(other.device, TaskType.CORRECTIVE)
+
+        trips.add_tasks(trip, deployments=[other])
+        corrective.refresh_from_db()
+
+        self.assertEqual(corrective.trip, trip)
+        self.assertEqual(MaintenanceTask.objects.filter(deployment=other).count(), 1)
+
     def test_unschedule_deployment(self):
         """A deployment taken off a trip is READY again, without its kit line."""
-        dep = pipeline.create_planned(self.device_type)
-        pipeline.assign_existing_device(dep, self.make_device('AUR-0190'))
+        dep = plan_unit(self.make_device('AUR-0190'), self.device_type)
 
         trip = self.new_trip(deployments=[dep])
         task = MaintenanceTask.objects.get(deployment=dep)
@@ -521,19 +550,6 @@ class TripRulesTest(TripTestBase):
 
         self.assertEqual(task.trip, other)
         self.assertEqual(MaintenanceTask.objects.filter(deployment=dep).count(), 1)
-
-        # Another unit is assigned: the task and the kit line follow
-        unit = self.make_device('AUR-0191')
-        pipeline.assign_existing_device(dep, unit)
-        task.refresh_from_db()
-
-        self.assertEqual(task.device, unit)
-        self.assertEqual(
-            TripKitLine.objects.get(
-                trip=other, source=TripKitLine.Source.DEVICE
-            ).stock_item,
-            unit,
-        )
 
     def test_prepare_kit_rules(self):
         """Only stock which is in stock, and not already in the kit."""
@@ -795,8 +811,7 @@ class TripAPITest(TripDataMixin, InvenTreeAPITestCase):
         dep = self.deploy('AUR-0300')  # no site
         task = maintenance.create_task(dep.device, task_type=TaskType.PREVENTIVE)
 
-        ready = pipeline.create_planned(self.device_type)
-        pipeline.assign_existing_device(ready, self.make_device('AUR-0301'))
+        ready = plan_unit(self.make_device('AUR-0301'), self.device_type)
 
         start = current_date() + timedelta(days=2)
 

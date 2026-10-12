@@ -8,8 +8,8 @@ import { ModelType } from '@lib/enums/ModelType';
 import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
 import {
-  assignDeviceFields,
   deployFields,
+  newDeploymentFields,
   planDeploymentFields,
   recoverFields,
   setDeviceStateFields,
@@ -32,8 +32,7 @@ export type DeploymentState = {
   hasPosition: boolean;
   canEdit: boolean;
   canDelete: boolean;
-  canCreateBuild: boolean;
-  canAssignDevice: boolean;
+  isReturning: boolean;
   canDeploy: boolean;
   canSetPosition: boolean;
   canRecover: boolean;
@@ -52,7 +51,6 @@ export type DeploymentState = {
 export function useDeploymentState(deployment: any): DeploymentState {
   const user = useUserState();
   const deploymentStatus = useStatusCodes({ modelType: ModelType.deployment });
-  const buildStatus = useStatusCodes({ modelType: ModelType.build });
 
   return useMemo(() => {
     const status = deployment?.status;
@@ -71,14 +69,8 @@ export function useDeploymentState(deployment: any): DeploymentState {
 
     const canChange = user.hasChangeRole(UserRoles.fleet);
     const canMoveStock = canChange && user.hasChangeRole(UserRoles.stock);
-    // Build order still open: pending, in production or on hold
-    const buildOpen =
-      !!deployment?.build_detail &&
-      [
-        buildStatus.PENDING,
-        buildStatus.PRODUCTION,
-        buildStatus.ON_HOLD
-      ].includes(deployment.build_detail.status);
+    // On its way back to the office (an open return order)
+    const isReturning = !!deployment?.return_order;
 
     return {
       isPipeline,
@@ -86,22 +78,16 @@ export function useDeploymentState(deployment: any): DeploymentState {
       isClosed,
       hasPosition,
       canEdit: !!deployment?.pk && canChange,
+      // Only cancelled rows: the others follow a unit
       canDelete:
         !!deployment?.pk &&
         user.hasDeleteRole(UserRoles.fleet) &&
-        (status == deploymentStatus.PLANNED ||
-          status == deploymentStatus.CANCELLED),
-      canCreateBuild:
-        status == deploymentStatus.PLANNED &&
-        !deployment?.build &&
-        !deployment?.device &&
-        user.hasAddRole(UserRoles.fleet) &&
-        user.hasAddRole(UserRoles.build),
-      canAssignDevice:
-        isPipeline && !buildOpen && !deployment?.device && canChange,
+        status == deploymentStatus.CANCELLED,
+      isReturning,
       canDeploy:
         (status == deploymentStatus.READY ||
           status == deploymentStatus.SCHEDULED) &&
+        !isReturning &&
         canMoveStock,
       canSetPosition: !isClosed && !!deployment?.pk && canChange,
       canRecover: isDeployed && canMoveStock,
@@ -113,14 +99,47 @@ export function useDeploymentState(deployment: any): DeploymentState {
       canSetState:
         !!deployment?.pk && !!deployment?.device && !isPipeline && canChange
     };
-  }, [deployment, user, deploymentStatus, buildStatus]);
+  }, [deployment, user, deploymentStatus]);
+}
+
+/**
+ * "New Deployment": choose a device which is not deployed (built, in
+ * production, or on its way back) and plan where and when it goes. The fleet
+ * never creates a deployment out of nothing: every undeployed unit already
+ * has its row.
+ */
+export function useNewDeploymentForm({
+  deployment,
+  site,
+  onSuccess
+}: {
+  deployment?: number;
+  site?: number;
+  onSuccess?: () => void;
+} = {}) {
+  const fields = useMemo(
+    () => newDeploymentFields({ deployment, site }),
+    [deployment, site]
+  );
+
+  return useCreateApiFormModal({
+    url: ApiEndpoints.fleet_deployment_new,
+    title: t`New Deployment`,
+    fields: fields,
+    preFormContent: (
+      <Alert color='blue' icon={<IconInfoCircle />}>
+        {t`Choose a device which is not deployed (built, in production, or on its way back), then where and when it goes. The site and date can be left empty and set later.`}
+      </Alert>
+    ),
+    successMessage: t`Deployment planned`,
+    onFormSuccess: () => onSuccess?.()
+  });
 }
 
 /**
  * The action forms of a deployment, shared by the deployment page of the main
  * UI, the Fleet Portal and the pipeline table: edit, plan (site and date),
- * delete, create build order, assign device, deploy, set position, recover,
- * set device state.
+ * delete, deploy, set position, recover, set device state.
  *
  * Render `modals` once; call the `open*` functions from buttons.
  */
@@ -163,22 +182,6 @@ export function useDeploymentActions({
     pk: deployment?.pk,
     title: t`Delete Deployment`,
     onFormSuccess: () => onDeleted?.()
-  });
-
-  const createBuild = useCreateApiFormModal({
-    url: apiUrl(ApiEndpoints.fleet_deployment_create_build, deployment?.pk),
-    title: t`Create Build Order`,
-    preFormWarning: t`Create a build order (quantity 1) for this deployment. Issue the build order to start production.`,
-    successMessage: t`Build order created`,
-    onFormSuccess: onUpdate
-  });
-
-  const assignDevice = useCreateApiFormModal({
-    url: apiUrl(ApiEndpoints.fleet_deployment_assign_device, deployment?.pk),
-    title: t`Assign Existing Device`,
-    fields: assignDeviceFields(deployment ?? {}),
-    successMessage: t`Device assigned`,
-    onFormSuccess: onUpdate
   });
 
   const deploy = useCreateApiFormModal({
@@ -248,7 +251,7 @@ export function useDeploymentActions({
     url: apiUrl(ApiEndpoints.fleet_deployment_recover, deployment?.pk),
     title: t`Recover Device`,
     fields: recoverFields(),
-    preFormWarning: t`The device is returned from the customer into the selected location (default: the fleet workshop).`,
+    preFormWarning: t`A return order brings the device back to the office, where it is received into stock. The device can be planned for its next deployment straight away, and deployed once it has been received.`,
     successMessage: t`Device recovered`,
     onFormSuccess: onUpdate
   });
@@ -258,8 +261,6 @@ export function useDeploymentActions({
       {editDeployment.modal}
       {planDeployment.modal}
       {deleteDeployment.modal}
-      {createBuild.modal}
-      {assignDevice.modal}
       {deploy.modal}
       {setPosition.modal}
       {recover.modal}
@@ -273,8 +274,6 @@ export function useDeploymentActions({
     openEdit: editDeployment.open,
     openPlan: planDeployment.open,
     openDelete: deleteDeployment.open,
-    openCreateBuild: createBuild.open,
-    openAssignDevice: assignDevice.open,
     openDeploy: deploy.open,
     openSetPosition: setPosition.open,
     openRecover: recover.open,

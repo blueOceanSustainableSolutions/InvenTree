@@ -3,6 +3,8 @@ import { Text } from '@mantine/core';
 
 import { ModelType } from '@lib/enums/ModelType';
 import type { DetailsField } from '../../components/details/Details';
+import { StatusRenderer } from '../../components/render/StatusRenderer';
+import { formatDate } from '../../defaults/formatters';
 import {
   CoverageBadge,
   FleetStatus,
@@ -116,6 +118,37 @@ export function deploymentDetailFields(
       icon: 'build',
       model: ModelType.build,
       hidden: !deployment.build
+    },
+    // Outside view of the build order (read only): is it done, and when is
+    // it due. The fleet does not create or change build orders.
+    {
+      type: 'string',
+      name: 'build_status',
+      label: t`Build Status`,
+      icon: 'status',
+      hidden: !deployment.build_detail,
+      value_formatter: () => (
+        <StatusRenderer
+          status={
+            deployment.build_detail?.status_custom_key ||
+            deployment.build_detail?.status
+          }
+          type={ModelType.build}
+        />
+      )
+    },
+    {
+      type: 'string',
+      name: 'build_target_date',
+      label: t`Build Target Date`,
+      icon: 'calendar',
+      hidden: !deployment.build_detail,
+      value_formatter: () =>
+        deployment.build_detail?.target_date ? (
+          formatDate(deployment.build_detail.target_date)
+        ) : (
+          <Text size='sm' c='dimmed'>{t`Not set`}</Text>
+        )
     },
     {
       type: 'link',

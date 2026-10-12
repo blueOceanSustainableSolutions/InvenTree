@@ -27,13 +27,16 @@ from fleet.models import (
 )
 from fleet.services import deployment as deployment_service
 from fleet.services import pipeline, planning
+from fleet.services.stock_sync import sync_stock_deployments
 from fleet.status_codes import AlertSeverity, AlertStatus, DeploymentStatus, TaskStatus
 from fleet.tasks import fleet_sync_pipeline
+from fleet.test_support import plan_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeTestCase
+from order.status_codes import ReturnOrderStatus
 from part.models import BomItem, Part
 from stock.models import StockItem, StockItemTracking, StockLocation
-from stock.status_codes import StockHistoryCode
+from stock.status_codes import StockHistoryCode, StockStatus
 
 
 class FleetServiceTestBase(InvenTreeTestCase):
@@ -101,8 +104,7 @@ class FleetServiceTestBase(InvenTreeTestCase):
 
     def ready_deployment(self, serial='AUR-0200', site=None):
         """Return a READY deployment with an existing unit assigned."""
-        dep = pipeline.create_planned(self.device_type, site=site or self.site)
-        pipeline.assign_existing_device(dep, self.make_device(serial))
+        dep = plan_unit(self.make_device(serial), self.device_type, site=site or self.site)
         return dep
 
     def tracking_codes(self, item):
@@ -147,16 +149,22 @@ class PipelineTest(FleetServiceTestBase):
         dep.target_date = current_date() + timedelta(days=60)
         dep.save()
 
-        # A build target date after the deployment date is a risk
+        # The fleet does not judge the build schedule: a build target date
+        # after the deployment date is not a risk by itself
         build.target_date = dep.target_date + timedelta(days=5)
         build.save()
         dep.refresh_from_db()
 
-        codes = [risk['code'] for risk in pipeline.readiness_risks(dep)]
-        self.assertIn('BUILD_LATE', codes)
-        self.assertNotIn('NOT_READY', codes)
+        self.assertEqual(pipeline.readiness_risks(dep), [])
 
-        # The daily planning raises a BUILD_LATE alert, and notifies Teams once
+        # Close to the deployment date and the device is not ready yet
+        dep.target_date = current_date() + timedelta(days=3)
+        dep.save()
+
+        codes = [risk['code'] for risk in pipeline.readiness_risks(dep)]
+        self.assertEqual(codes, ['NOT_READY'])
+
+        # The daily planning raises a NOT_READY alert, and notifies Teams once
         set_global_setting(
             'FLEET_TEAMS_WEBHOOK_URL', 'https://example.webhook.office.com/fleet'
         )
@@ -168,12 +176,12 @@ class PipelineTest(FleetServiceTestBase):
             planning.pipeline_alerts()
             planning.pipeline_alerts()
 
-        alert = Alert.objects.get(deployment=dep, alert_type=Alert.AlertType.BUILD_LATE)
+        alert = Alert.objects.get(deployment=dep, alert_type=Alert.AlertType.NOT_READY)
         self.assertEqual(alert.status, AlertStatus.OPEN.value)
         self.assertEqual(teams.call_count, 1)
 
         card = teams.call_args.kwargs['json']['attachments'][0]['content']
-        self.assertIn('Build late', card['body'][0]['text'])
+        self.assertIn('Not ready', card['body'][0]['text'])
         self.assertIn('Algarve #1', card['body'][0]['text'])
 
         # The output is created with a serial; the sync links the device
@@ -196,10 +204,13 @@ class PipelineTest(FleetServiceTestBase):
         dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.READY.value)
 
-        # No more pipeline risks from the (closed) build order
-        self.assertNotIn(
-            'BUILD_LATE', [risk['code'] for risk in pipeline.readiness_risks(dep)]
-        )
+        # The device is ready: no more risks, and the alert is resolved
+        self.assertEqual(pipeline.readiness_risks(dep), [])
+
+        planning.pipeline_alerts()
+
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, AlertStatus.RESOLVED.value)
 
     def test_scenario_2_cancel_bo(self):
         """Cancelling the BO cancels the deployment."""
@@ -212,10 +223,15 @@ class PipelineTest(FleetServiceTestBase):
         dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.CANCELLED.value)
 
-        # A planned deployment whose (pending) BO is cancelled is cancelled too
-        planned = pipeline.create_planned(self.device_type, site=self.site)
-        other = pipeline.create_build_for(planned)
-        other.cancel_build(None)
+        # A sold device's PLANNED deployment is cancelled with its pending BO
+        from order.models import SalesOrder
+
+        order = SalesOrder.objects.create(customer=self.client_company)
+        sold = self.make_build(sales_order=order)
+        planned = Deployment.objects.get(build=sold)
+        self.assertEqual(planned.status, DeploymentStatus.PLANNED.value)
+
+        sold.cancel_build(None)
 
         planned.refresh_from_db()
         self.assertEqual(planned.status, DeploymentStatus.CANCELLED.value)
@@ -307,85 +323,91 @@ class PipelineTest(FleetServiceTestBase):
         dep = Deployment.objects.get(build=build)
         self.assertIn('quantity', dep.metadata['warning'])
 
-    def test_planned_then_build(self):
-        """A planned deployment gets a build order; issuing it starts production."""
-        target = current_date() + timedelta(days=90)
-        dep = pipeline.create_planned(
-            self.device_type, site=self.site, target_date=target
-        )
-
-        self.assertEqual(dep.status, DeploymentStatus.PLANNED.value)
-        self.assertEqual(dep.coverage, self.site.coverage)
-
-        build = pipeline.create_build_for(dep, user=self.user)
-
-        self.assertEqual(build.status, BuildStatus.PENDING.value)
-        self.assertEqual(build.quantity, 1)
-        self.assertEqual(build.part, self.part)
-        self.assertEqual(build.target_date, target - timedelta(days=7))
-
-        dep.refresh_from_db()
-        self.assertEqual(dep.build, build)
-        self.assertEqual(dep.status, DeploymentStatus.PLANNED.value)
-
-        # A second build order cannot be created
-        with self.assertRaises(ValidationError):
-            pipeline.create_build_for(dep)
-
-        build.issue_build()
-
-        dep.refresh_from_db()
-        self.assertEqual(dep.status, DeploymentStatus.IN_PRODUCTION.value)
-        self.assertEqual(Deployment.objects.count(), 1)
-
-    def test_assign_existing_device(self):
-        """A refurbished unit in stock can be assigned to a pipeline deployment."""
-        dep = pipeline.create_planned(self.device_type, site=self.site)
+    def test_unit_rows(self):
+        """Every undeployed unit has its row; "new deployment" plans one."""
         unit = self.make_device('AUR-0099')
 
-        # Wrong part
-        printer = StockItem.objects.create(
-            part=self.other_part, quantity=1, serial='P1'
+        # Not fleet units: another part, a bulk item, a unit already sold
+        StockItem.objects.create(part=self.other_part, quantity=1, serial='P1')
+        StockItem.objects.create(part=self.part, quantity=3, location=self.store)
+        StockItem.objects.create(
+            part=self.part, quantity=1, serial='GONE-1', status=StockStatus.LOST.value
         )
 
-        with self.assertRaises(ValidationError):
-            pipeline.assign_existing_device(dep, printer)
+        summary = sync_stock_deployments()
+        self.assertEqual(len(summary['available']), 1)
 
-        # Not serialized
-        bulk = StockItem.objects.create(part=self.part, quantity=3)
+        dep = Deployment.objects.get(device=unit)
+        self.assertEqual(dep.status, DeploymentStatus.READY.value)
+        self.assertIsNone(dep.target_date)
+        self.assertIsNone(dep.site)
+        self.assertTrue(DeviceLink.objects.filter(stock_item=unit).exists())
+        self.assertEqual(Deployment.objects.count(), 1)
 
-        with self.assertRaises(ValidationError):
-            pipeline.assign_existing_device(dep, bulk)
+        # Idempotent
+        self.assertEqual(sync_stock_deployments()['available'], [])
+        self.assertEqual(pipeline.ensure_unit_deployment(unit), dep)
 
-        pipeline.assign_existing_device(dep, unit)
+        # New deployment: site, date and coverage from the site
+        target = current_date() + timedelta(days=90)
+        pipeline.new_deployment(dep, site=self.site, target_date=target)
 
         dep.refresh_from_db()
-        self.assertEqual(dep.status, DeploymentStatus.READY.value)
-        self.assertEqual(dep.device, unit)
-        self.assertTrue(DeviceLink.objects.filter(stock_item=unit).exists())
+        self.assertEqual(dep.target_date, target)
+        self.assertEqual(dep.coverage, self.site.coverage)
 
-        # The same unit cannot be part of another open deployment
-        other = pipeline.create_planned(self.device_type)
-
-        with self.assertRaises(ValidationError):
-            pipeline.assign_existing_device(other, unit)
-
-        # A deployment with an open build order gets its device from the build
-        build = self.make_build()
-        build.issue_build()
+        # The fleet never creates deployments (or build orders) out of nothing
+        self.assertFalse(hasattr(pipeline, 'create_planned'))
+        self.assertFalse(hasattr(pipeline, 'create_build_for'))
+        self.assertFalse(Build.objects.exists())
 
         with self.assertRaises(ValidationError):
-            pipeline.assign_existing_device(
-                build.fleet_deployment, self.make_device('AUR-0098')
+            pipeline.ensure_unit_deployment(
+                StockItem.objects.get(serial='P1'), device_type=None
             )
 
+        # A unit which leaves the fleet (e.g. lost) loses its row
+        StockItem.objects.filter(pk=unit.pk).update(status=StockStatus.LOST.value)
+
+        summary = sync_stock_deployments()
+        self.assertEqual(len(summary['cancelled']), 1)
+
+        dep.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.CANCELLED.value)
+
+        # A deployed device cannot be planned
+        deployed = self.ready_deployment(serial='AUR-0097')
+        deployment_service.deploy(deployed)
+
+        with self.assertRaises(ValidationError):
+            pipeline.new_deployment(deployed, site=self.site)
+
+        # A build output is linked by its build order, not given a second row
+        build = self.make_build()
+        build.issue_build()
+        output = build.create_build_output(1, serials=['AUR-0096']).first()
+        build.complete_build_output(output, None)
+
+        sync_stock_deployments()
+        self.assertEqual(Deployment.objects.filter(device=output).count(), 0)
+
+        fleet_sync_pipeline()
+        self.assertEqual(Deployment.objects.filter(device=output).count(), 1)
+        self.assertEqual(
+            Deployment.objects.get(device=output).status, DeploymentStatus.READY.value
+        )
+
     def test_readiness_risks(self):
-        """NOT_READY, NO_DEPLOY_DATE and PARTS_SHORT risks."""
+        """NOT_READY and NO_DEPLOY_DATE risks; nothing from inside the build order."""
         today = current_date()
 
-        # Close to the target date, and not READY
-        dep = pipeline.create_planned(
-            self.device_type, site=self.site, target_date=today + timedelta(days=3)
+        # Close to the target date, and not READY (still in production)
+        build = self.make_build()
+        build.issue_build()
+        dep = pipeline.new_deployment(
+            build.fleet_deployment,
+            site=self.site,
+            target_date=today + timedelta(days=3),
         )
         risks = {risk['code']: risk for risk in pipeline.readiness_risks(dep)}
         self.assertEqual(risks['NOT_READY']['severity'], AlertSeverity.WARNING.value)
@@ -408,7 +430,8 @@ class PipelineTest(FleetServiceTestBase):
             [risk['code'] for risk in pipeline.readiness_risks(dep)], ['NO_DEPLOY_DATE']
         )
 
-        # Not enough component stock for the build order
+        # Not enough component stock for the build order: manufacturing's
+        # business, not a fleet risk
         assembly = Part.objects.create(
             name='Aurora multichannel', assembly=True, trackable=True
         )
@@ -423,11 +446,7 @@ class PipelineTest(FleetServiceTestBase):
         dep.target_date = today + timedelta(days=60)
         dep.save()
 
-        risks = {risk['code']: risk for risk in pipeline.readiness_risks(dep)}
-        self.assertIn('Hydrophone cable', risks['PARTS_SHORT']['message'])
         self.assertEqual(dep.device_type, device_type)
-
-        StockItem.objects.create(part=cable, quantity=5, location=self.store)
         self.assertEqual(pipeline.readiness_risks(dep), [])
 
         # Deployed devices have no pipeline risks
@@ -513,10 +532,12 @@ class DeploymentServiceTest(FleetServiceTestBase):
 
     def test_deploy_validation(self):
         """Deployments must be ready, have a device and a customer."""
-        dep = pipeline.create_planned(self.device_type, site=self.site)
+        # Still in production
+        build = self.make_build()
+        build.issue_build()
 
         with self.assertRaises(ValidationError):
-            deployment_service.deploy(dep)
+            deployment_service.deploy(build.fleet_deployment)
 
         dep = self.ready_deployment(serial='AUR-0300')
 
@@ -539,8 +560,7 @@ class DeploymentServiceTest(FleetServiceTestBase):
 
     def test_deploy_without_site(self):
         """A site is optional: the position comes from the arguments, or stays empty."""
-        dep = pipeline.create_planned(self.device_type)
-        pipeline.assign_existing_device(dep, self.make_device('AUR-0400'))
+        dep = plan_unit(self.make_device('AUR-0400'), self.device_type)
         deployment_service.deploy(dep, user=self.user)
 
         dep.refresh_from_db()
@@ -558,8 +578,7 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertEqual(entry.deltas, {'deployment': dep.pk, 'site': None})
 
         # With a position given, it is used
-        other = pipeline.create_planned(self.device_type, client=self.client_company)
-        pipeline.assign_existing_device(other, self.make_device('AUR-0401'))
+        other = plan_unit(self.make_device('AUR-0401'), self.device_type, client=self.client_company)
         deployment_service.deploy(
             other, latitude='38.500000', longitude='-9.100000', depth_m=12
         )
@@ -579,8 +598,7 @@ class DeploymentServiceTest(FleetServiceTestBase):
 
     def test_set_position(self):
         """Set the position of a deployed device; closed deployments are refused."""
-        dep = pipeline.create_planned(self.device_type)
-        pipeline.assign_existing_device(dep, self.make_device('AUR-0410'))
+        dep = plan_unit(self.make_device('AUR-0410'), self.device_type)
         deployment_service.deploy(dep)
 
         deployment_service.set_position(
@@ -660,7 +678,11 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertEqual(Deployment.objects.filter(build=build).count(), 1)
 
     def test_recover(self):
-        """Recovering returns the device to the workshop and resolves open alerts."""
+        """Recovering creates a return order to the office and resolves open alerts.
+
+        The device is no longer deployed: it gets its next (READY) row straight
+        away, and can be deployed once the office has received it.
+        """
         dep = self.ready_deployment()
         deployment_service.deploy(dep, user=self.user)
 
@@ -677,47 +699,60 @@ class DeploymentServiceTest(FleetServiceTestBase):
 
         self.assertEqual(dep.status, DeploymentStatus.RECOVERED.value)
         self.assertIsNotNone(dep.recovered_at)
-        self.assertIsNone(device.customer)
-        self.assertEqual(device.location, self.workshop)
-        self.assertTrue(device.in_stock)
 
-        codes = self.tracking_codes(device)
-        self.assertIn(StockHistoryCode.RETURNED_FROM_CUSTOMER.value, codes)
-        self.assertEqual(codes[-1], StockHistoryCode.FLEET_RECOVERED.value)
+        # On its way back: still with the customer, on an issued return order
+        self.assertEqual(device.customer, self.customer)
+
+        line = pipeline.get_return_line(device)
+        self.assertEqual(line.order.customer, self.customer)
+        self.assertEqual(line.order.status, ReturnOrderStatus.IN_PROGRESS.value)
+        self.assertIn(dep.reference, line.order.description)
+        self.assertEqual(self.tracking_codes(device)[-1], StockHistoryCode.FLEET_RECOVERED.value)
 
         self.assertEqual(alert.status, AlertStatus.RESOLVED.value)
         self.assertEqual(alert.resolution, Alert.Resolution.AUTO)
 
+        # The next row of the device, which the stock sync keeps (not reopened)
+        nxt = Deployment.objects.get(device=device, status=DeploymentStatus.READY.value)
+        self.assertIsNone(nxt.target_date)
+
+        summary = sync_stock_deployments()
+        self.assertEqual(summary['opened'], [])
+        self.assertEqual(summary['cancelled'], [])
+
+        # It can be planned now, but only deployed once it has been received
+        pipeline.new_deployment(nxt, site=self.site, target_date=current_date())
+
+        with self.assertRaises(ValidationError):
+            deployment_service.deploy(nxt)
+
+        line.order.receive_line_item(
+            line, self.workshop, self.user, status=StockStatus.OK.value
+        )
+        device.refresh_from_db()
+
+        self.assertIsNone(device.customer)
+        self.assertEqual(device.location, self.workshop)
+        self.assertIsNone(pipeline.get_return_line(device))
+
+        sync_stock_deployments()
+        nxt.refresh_from_db()
+        self.assertEqual(nxt.status, DeploymentStatus.READY.value)
+
+        deployment_service.deploy(nxt)
+        nxt.refresh_from_db()
+        self.assertEqual(nxt.status, DeploymentStatus.DEPLOYED.value)
+
         # Only deployed devices can be recovered
         with self.assertRaises(ValidationError):
             deployment_service.recover(dep)
-
-    def test_recover_needs_location(self):
-        """Without a workshop setting, a location must be given."""
-        dep = self.ready_deployment()
-        deployment_service.deploy(dep)
-
-        set_global_setting('FLEET_WORKSHOP_LOCATION', '')
-
-        with self.assertRaises(ValidationError):
-            deployment_service.recover(dep)
-
-        deployment_service.recover(dep, location=self.store)
-        dep.device.refresh_from_db()
-        self.assertEqual(dep.device.location, self.store)
 
     def test_replacement(self):
         """Deploying a replacement recovers the device it replaces."""
         old = self.ready_deployment(serial='AUR-0400')
         deployment_service.deploy(old)
 
-        new = pipeline.create_planned(
-            self.device_type,
-            site=self.site,
-            deployment_type=Deployment.DeploymentType.REPLACEMENT,
-            replaces=old,
-        )
-        pipeline.assign_existing_device(new, self.make_device('AUR-0401'))
+        new = plan_unit(self.make_device('AUR-0401'), self.device_type, site=self.site, deployment_type=Deployment.DeploymentType.REPLACEMENT, replaces=old)
 
         deployment_service.deploy(new)
 
@@ -728,9 +763,13 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertEqual(new.status, DeploymentStatus.DEPLOYED.value)
         self.assertEqual(self.site.deployments.count(), 2)
 
-        old.device.refresh_from_db()
-        self.assertIsNone(old.device.customer)
-        self.assertEqual(old.device.location, self.workshop)
+        # The replaced device goes back to the office on a return order
+        self.assertIsNotNone(pipeline.get_return_line(old.device))
+        self.assertTrue(
+            Deployment.objects.filter(
+                device=old.device, status=DeploymentStatus.READY.value
+            ).exists()
+        )
 
     def test_compute_next_pm(self):
         """Site override, last completed PM task, manual date and NO_SERVICE."""

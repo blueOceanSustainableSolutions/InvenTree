@@ -3,13 +3,14 @@
 from datetime import timedelta
 from unittest import mock
 
-from django.urls import include, path, reverse
+from django.urls import NoReverseMatch, include, path, reverse
 from django.utils import timezone
 
 from drf_spectacular.generators import SchemaGenerator
 from drf_spectacular.validation import validate_schema
 
 from build.models import Build
+from build.status_codes import BuildStatus
 from common.settings import set_global_setting
 from company.models import Company
 from fleet.api import fleet_api_urls
@@ -27,6 +28,7 @@ from fleet.models import (
 )
 from fleet.services import deployment as deployment_service
 from fleet.services import monitoring, pipeline
+from fleet.services.stock_sync import sync_stock_deployments
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -35,10 +37,14 @@ from fleet.status_codes import (
     HealthStatus,
     TaskStatus,
 )
+from fleet.test_support import plan_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeAPITestCase
+from order.models import ReturnOrderLineItem, SalesOrder
+from order.status_codes import ReturnOrderStatus
 from part.models import Part
 from stock.models import StockItem, StockLocation
+from stock.status_codes import StockStatus
 
 
 class FleetAPITestBase(InvenTreeAPITestCase):
@@ -97,7 +103,7 @@ class FleetPermissionTest(FleetAPITestBase):
         ]:
             self.get(reverse(name), expected_code=403)
 
-        dep = pipeline.create_planned(self.device_type, site=self.site)
+        dep = plan_unit(self.make_device('AUR-0'), self.device_type, site=self.site)
         self.post(self.action_url(dep, 'deploy'), {}, expected_code=403)
 
     def test_view_role(self):
@@ -113,8 +119,7 @@ class FleetPermissionTest(FleetAPITestBase):
         self.patch(url, {'name': 'Y'}, expected_code=403)
         self.delete(url, expected_code=403)
 
-        dep = pipeline.create_planned(self.device_type, site=self.site)
-        pipeline.assign_existing_device(dep, self.make_device('AUR-1'))
+        dep = plan_unit(self.make_device('AUR-1'), self.device_type, site=self.site)
         self.post(self.action_url(dep, 'deploy'), {}, expected_code=403)
         self.post(
             self.action_url(dep, 'set-position'),
@@ -127,8 +132,7 @@ class FleetPermissionTest(FleetAPITestBase):
         self.assignRole('fleet.view')
         self.assignRole('fleet.change')
 
-        dep = pipeline.create_planned(self.device_type, site=self.site)
-        pipeline.assign_existing_device(dep, self.make_device('AUR-2'))
+        dep = plan_unit(self.make_device('AUR-2'), self.device_type, site=self.site)
 
         # Deploying moves stock, so the stock change role is needed too
         response = self.post(self.action_url(dep, 'deploy'), {}, expected_code=403)
@@ -141,10 +145,6 @@ class FleetPermissionTest(FleetAPITestBase):
         url = reverse('api-fleet-site-detail', kwargs={'pk': self.site.pk})
         self.patch(url, {'name': 'Algarve #1b'})
         self.delete(url, expected_code=403)
-
-        # Creating a build order needs fleet add and build add
-        planned = pipeline.create_planned(self.device_type)
-        self.post(self.action_url(planned, 'create-build'), {}, expected_code=403)
 
 
 class SiteAPITest(FleetAPITestBase):
@@ -176,8 +176,7 @@ class SiteAPITest(FleetAPITestBase):
             url, {'name': 'Bad', 'geofence_polygon': [[37.0, -7.9]]}, expected_code=400
         )
 
-        dep = pipeline.create_planned(self.device_type, site=self.site)
-        pipeline.assign_existing_device(dep, self.make_device('AUR-3'))
+        dep = plan_unit(self.make_device('AUR-3'), self.device_type, site=self.site)
         deployment_service.deploy(dep)
 
         response = self.get(url, {'has_active_deployment': True})
@@ -192,7 +191,7 @@ class SiteAPITest(FleetAPITestBase):
 
     def test_delete(self):
         """Sites with deployments cannot be deleted."""
-        pipeline.create_planned(self.device_type, site=self.site)
+        plan_unit(self.make_device('AUR-4'), self.device_type, site=self.site)
 
         url = reverse('api-fleet-site-detail', kwargs={'pk': self.site.pk})
         self.delete(url, expected_code=400)
@@ -243,7 +242,7 @@ class DeviceTypeAPITest(FleetAPITestBase):
         self.assertEqual(response.data[0]['stream_count'], 1)
 
         # Device types with deployments cannot be deleted
-        pipeline.create_planned(self.device_type)
+        plan_unit(self.make_device('AUR-5'), self.device_type)
         self.delete(
             reverse('api-fleet-device-type-detail', kwargs={'pk': self.device_type.pk}),
             expected_code=400,
@@ -263,28 +262,43 @@ class DeploymentAPITest(FleetAPITestBase):
     ]
 
     def test_plan_and_filter(self):
-        """Plan a deployment; the pipeline filters find it."""
+        """New deployment: choose an undeployed unit and plan it; the filters find it."""
         url = reverse('api-fleet-deployment-list')
 
         self.site.coverage = 'THIRD_PARTY'
         self.site.save()
 
+        # The fleet never creates a deployment out of nothing
+        self.post(url, {'device_type': self.device_type.pk}, expected_code=405)
+
+        # A unit in stock gets its row in the deployment list (stock sync)
+        unit = self.make_device('AUR-0900')
+        sync_stock_deployments()
+
+        row = Deployment.objects.get(device=unit)
+        self.assertEqual(row.status, DeploymentStatus.READY.value)
+        self.assertIsNone(row.target_date)
+
+        # New deployment: choose the unit, plan its site
         response = self.post(
-            url, {'device_type': self.device_type.pk, 'site': self.site.pk}
+            reverse('api-fleet-deployment-new'),
+            {'deployment': row.pk, 'site': self.site.pk},
+            expected_code=200,
         )
 
-        self.assertEqual(response.data['status'], DeploymentStatus.PLANNED.value)
+        self.assertEqual(response.data['pk'], row.pk)
+        self.assertEqual(response.data['status'], DeploymentStatus.READY.value)
         self.assertEqual(response.data['coverage'], 'THIRD_PARTY')
         self.assertEqual(response.data['site_detail']['name'], 'Algarve #1')
+        self.assertIsNone(response.data['return_order'])
+
+        self.post(reverse('api-fleet-deployment-new'), {}, expected_code=400)
 
         # Status is read-only
-        detail = reverse(
-            'api-fleet-deployment-detail', kwargs={'pk': response.data['pk']}
-        )
+        detail = reverse('api-fleet-deployment-detail', kwargs={'pk': row.pk})
         self.patch(detail, {'status': DeploymentStatus.DEPLOYED.value})
         self.assertEqual(
-            Deployment.objects.get(pk=response.data['pk']).status,
-            DeploymentStatus.PLANNED.value,
+            Deployment.objects.get(pk=row.pk).status, DeploymentStatus.READY.value
         )
 
         # A BO issued for the device type enters the pipeline unscheduled
@@ -304,9 +318,10 @@ class DeploymentAPITest(FleetAPITestBase):
         # Setting a target date schedules it
         dep = build.fleet_deployment
         target = current_date() + timedelta(days=3)
-        self.patch(
-            reverse('api-fleet-deployment-detail', kwargs={'pk': dep.pk}),
-            {'target_date': target.isoformat(), 'site': self.site.pk},
+        self.post(
+            reverse('api-fleet-deployment-new'),
+            {'deployment': dep.pk, 'target_date': target.isoformat()},
+            expected_code=200,
         )
 
         response = self.get(url, {'unscheduled': True})
@@ -320,46 +335,54 @@ class DeploymentAPITest(FleetAPITestBase):
 
         # Replaces only for replacements
         self.post(
-            url,
-            {'device_type': self.device_type.pk, 'replaces': dep.pk},
+            reverse('api-fleet-deployment-new'),
+            {'deployment': row.pk, 'replaces': dep.pk},
             expected_code=400,
         )
 
     def test_actions(self):
-        """create-build, assign-device, deploy and recover."""
-        dep = pipeline.create_planned(
-            self.device_type,
-            site=self.site,
-            target_date=current_date() + timedelta(days=30),
-        )
+        """new, deploy and recover (a return order); the build order is read only."""
+        # The fleet cannot create build orders
+        with self.assertRaises(NoReverseMatch):
+            reverse('api-fleet-deployment-create-build', kwargs={'pk': 1})
 
-        response = self.post(
-            self.action_url(dep, 'create-build'), {}, expected_code=200
+        # Manufacturing issues the build order; the fleet sees its status and
+        # target date (an outside view)
+        build = Build.objects.create(
+            part=self.part,
+            quantity=1,
+            title='Aurora',
+            target_date=current_date() + timedelta(days=20),
         )
-        build = Build.objects.get(pk=response.data['build'])
-        self.assertEqual(build.quantity, 1)
-        self.assertEqual(response.data['build_detail']['reference'], build.reference)
+        build.issue_build()
+        dep = build.fleet_deployment
 
-        # The open build order will produce the device
-        unit = self.make_device('AUR-0500')
-        self.post(
-            self.action_url(dep, 'assign-device'),
-            {'stock_item': unit.pk},
-            expected_code=400,
-        )
+        url = reverse('api-fleet-deployment-detail', kwargs={'pk': dep.pk})
+        response = self.get(url)
+        detail = response.data['build_detail']
+        self.assertEqual(detail['reference'], build.reference)
+        self.assertEqual(detail['status'], BuildStatus.PRODUCTION.value)
+        self.assertEqual(detail['target_date'], build.target_date.isoformat())
 
+        # The build order cannot be changed through the deployment
+        self.patch(url, {'build': None})
+        dep.refresh_from_db()
+        self.assertEqual(dep.build, build)
+
+        # Its row is the build order's; a finished unit gets one of its own
         build.cancel_build(None)
         dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.CANCELLED.value)
 
-        dep = pipeline.create_planned(self.device_type, site=self.site)
+        unit = self.make_device('AUR-0500')
+        sync_stock_deployments()
 
+        dep = Deployment.objects.get(device=unit, status=DeploymentStatus.READY.value)
         response = self.post(
-            self.action_url(dep, 'assign-device'),
-            {'stock_item': unit.pk},
+            reverse('api-fleet-deployment-new'),
+            {'deployment': dep.pk, 'site': self.site.pk},
             expected_code=200,
         )
-        self.assertEqual(response.data['status'], DeploymentStatus.READY.value)
         self.assertEqual(response.data['device_detail']['serial'], 'AUR-0500')
         self.assertEqual(response.data['platform_id'], '')
 
@@ -377,44 +400,65 @@ class DeploymentAPITest(FleetAPITestBase):
         # Invalid input
         self.post(self.action_url(dep, 'deploy'), {}, expected_code=400)
 
-        structural = StockLocation.objects.create(name='Field kits', structural=True)
-        self.post(
-            self.action_url(dep, 'recover'),
-            {'location': structural.pk},
-            expected_code=400,
-        )
-
+        # Recover: a return order brings the device to the office
         response = self.post(
-            self.action_url(dep, 'recover'),
-            {'notes': 'Campaign over'},
-            expected_code=200,
+            self.action_url(dep, 'recover'), {'notes': 'Campaign over'}, expected_code=200
         )
         self.assertEqual(response.data['status'], DeploymentStatus.RECOVERED.value)
 
         unit.refresh_from_db()
-        self.assertEqual(unit.location, self.workshop)
+        self.assertEqual(unit.customer, self.customer)
 
-        # Only planned or cancelled deployments can be deleted
+        line = ReturnOrderLineItem.objects.get(item=unit)
+        self.assertEqual(line.order.customer, self.customer)
+        self.assertEqual(line.order.status, ReturnOrderStatus.IN_PROGRESS.value)
+
+        # Its next row is in the deployment list straight away (returning)
+        nxt = Deployment.objects.get(device=unit, status=DeploymentStatus.READY.value)
+        detail = reverse('api-fleet-deployment-detail', kwargs={'pk': nxt.pk})
+        response = self.get(detail)
+        self.assertEqual(response.data['return_order'], line.order.pk)
+        self.assertEqual(response.data['return_order_reference'], line.order.reference)
+
+        # It can be planned, but not deployed before the office receives it
+        self.post(
+            reverse('api-fleet-deployment-new'),
+            {'deployment': nxt.pk, 'target_date': current_date().isoformat()},
+            expected_code=200,
+        )
+        response = self.post(self.action_url(nxt, 'deploy'), {}, expected_code=400)
+        self.assertIn(line.order.reference, str(response.data))
+
+        line.order.receive_line_item(
+            line, self.workshop, None, status=StockStatus.OK.value
+        )
+        unit.refresh_from_db()
+        self.assertIsNone(unit.customer)
+        self.assertEqual(unit.location, self.workshop)
+        self.assertIsNone(self.get(detail).data['return_order'])
+
+        # Only cancelled deployments can be deleted
         self.delete(
             reverse('api-fleet-deployment-detail', kwargs={'pk': dep.pk}),
             expected_code=400,
         )
+        self.delete(detail, expected_code=400)
 
     def test_calendar_and_overview(self):
         """Calendar events and pipeline KPI counts."""
         today = current_date()
 
-        pipeline.create_planned(
-            self.device_type, site=self.site, target_date=today + timedelta(days=10)
+        # Sold devices whose build order is pending (PLANNED)
+        order = SalesOrder.objects.create(customer=self.customer)
+        sold = Build.objects.create(
+            part=self.part, quantity=1, title='Sold', sales_order=order
         )
-        pipeline.create_planned(self.device_type)
+        Build.objects.create(part=self.part, quantity=1, title='Sold', sales_order=order)
+        pipeline.new_deployment(
+            sold.fleet_deployment, site=self.site, target_date=today + timedelta(days=10)
+        )
 
-        ready = pipeline.create_planned(
-            self.device_type,
-            site=Site.objects.create(name='Algarve #2'),
-            target_date=today + timedelta(days=100),
-        )
-        pipeline.assign_existing_device(ready, self.make_device('AUR-0600'))
+        ready = plan_unit(self.make_device('AUR-0600'), self.device_type, site=Site.objects.create(name='Algarve #2'), target_date=today + timedelta(days=100))
 
         MaintenanceTask.objects.create(
             device=ready.device,
@@ -443,6 +487,65 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(response.data['unscheduled'], 1)
         self.assertEqual(response.data['deployed'], 0)
 
+    def test_plan_list(self):
+        """One list of deployments and maintenance, in plan order."""
+        today = current_date()
+        set_global_setting('FLEET_PLAN_HORIZON_DAYS', 45)
+
+        def planned(serial, days=None, site=None):
+            target = today + timedelta(days=days) if days is not None else None
+            return plan_unit(
+                self.make_device(serial), self.device_type, site=site, target_date=target
+            )
+
+        later = planned('AUR-1001', days=100)
+        undated = planned('AUR-1002')
+        soon = planned('AUR-1003', days=10, site=self.site)
+
+        # A deployed device, maintenance due in 5 days
+        deployed = planned('AUR-1004')
+        deployment_service.deploy(deployed)
+        Deployment.objects.filter(pk=deployed.pk).update(
+            next_pm_date=today + timedelta(days=5)
+        )
+
+        # A deployed device which the fleet team does not service
+        other = planned('AUR-1005')
+        deployment_service.deploy(other)
+        Deployment.objects.filter(pk=other.pk).update(coverage='NO_SERVICE')
+
+        url = reverse('api-fleet-plan')
+        rows = self.get(url).data
+
+        self.assertEqual(
+            [(row['kind'], row['pk'], row['group']) for row in rows],
+            [
+                ('maintenance', deployed.pk, 'soon'),
+                ('deployment', soon.pk, 'soon'),
+                ('deployment', undated.pk, 'undated'),
+                ('deployment', later.pk, 'later'),
+            ],
+        )
+        self.assertEqual(rows[0]['serial'], 'AUR-1004')
+        self.assertEqual(rows[1]['site_name'], 'Algarve #1')
+
+        # Filters and pages
+        self.assertEqual(len(self.get(url, {'kind': 'maintenance'}).data), 1)
+        self.assertEqual(len(self.get(url, {'kind': 'deployment'}).data), 3)
+        self.assertEqual(len(self.get(url, {'site': self.site.pk}).data), 1)
+        self.assertEqual(self.get(url, {'search': 'AUR-1002'}).data[0]['pk'], undated.pk)
+
+        page = self.get(url, {'limit': 2, 'offset': 1}).data
+        self.assertEqual(page['count'], 4)
+        self.assertEqual([row['pk'] for row in page['results']], [soon.pk, undated.pk])
+
+        # A shorter horizon moves the deployment in 10 days to the later group
+        set_global_setting('FLEET_PLAN_HORIZON_DAYS', 7)
+        rows = self.get(url).data
+        self.assertEqual(
+            [row['pk'] for row in rows], [deployed.pk, undated.pk, soon.pk, later.pk]
+        )
+
     def test_schema(self):
         """The fleet endpoints publish a valid OpenAPI schema."""
         schema = SchemaGenerator(
@@ -453,6 +556,8 @@ class DeploymentAPITest(FleetAPITestBase):
 
         self.assertIn('post', schema['paths']['/api/fleet/deployment/{id}/deploy/'])
         self.assertIn('get', schema['paths']['/api/fleet/calendar/'])
+        self.assertIn('get', schema['paths']['/api/fleet/plan/'])
+        self.assertIn('post', schema['paths']['/api/fleet/deployment/new/'])
         self.assertIn('post', schema['paths']['/api/fleet/alert/{id}/resolve/'])
         self.assertIn('get', schema['paths']['/api/fleet/deployment/map/'])
         self.assertIn('post', schema['paths']['/api/fleet/deployment/{id}/verify/'])
@@ -485,8 +590,7 @@ class MonitoringAPITest(FleetAPITestBase):
         )
 
         self.now = timezone.now()
-        self.dep = pipeline.create_planned(self.device_type, site=self.site)
-        pipeline.assign_existing_device(self.dep, self.make_device('AUR-0161'))
+        self.dep = plan_unit(self.make_device('AUR-0161'), self.device_type, site=self.site)
         deployment_service.deploy(self.dep, deployed_at=self.now - timedelta(days=1))
         DeviceLink.objects.update(platform_id='AUR-0161')
         self.dep.refresh_from_db()
@@ -675,7 +779,7 @@ class MonitoringAPITest(FleetAPITestBase):
         self.post(url, {}, expected_code=400)
 
         # Only deployed devices
-        planned = pipeline.create_planned(self.device_type)
+        planned = plan_unit(self.make_device('AUR-0162'), self.device_type)
         self.post(self.action_url(planned, 'verify'), {}, expected_code=400)
 
     def test_overview(self):
@@ -714,16 +818,14 @@ class StockDrivenAPITest(FleetAPITestBase):
 
     def deployed_without_site(self, serial):
         """Return a DEPLOYED deployment without a site or a position."""
-        dep = pipeline.create_planned(self.device_type)
-        pipeline.assign_existing_device(dep, self.make_device(serial))
+        dep = plan_unit(self.make_device(serial), self.device_type)
         deployment_service.deploy(dep)
         dep.refresh_from_db()
         return dep
 
     def test_deploy_without_site(self):
         """The deploy action works without a site; the position may stay empty."""
-        dep = pipeline.create_planned(self.device_type)
-        pipeline.assign_existing_device(dep, self.make_device('AUR-0800'))
+        dep = plan_unit(self.make_device('AUR-0800'), self.device_type)
 
         data = self.post(self.action_url(dep, 'deploy'), {}, expected_code=200).data
         self.assertEqual(data['status'], DeploymentStatus.DEPLOYED.value)

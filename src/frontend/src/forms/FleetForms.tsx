@@ -81,7 +81,8 @@ export function streamTemplateFields(deviceTypeId?: number): ApiFormFieldSet {
 }
 
 /**
- * Fields for planning or editing a deployment
+ * Fields for editing a deployment (a deployment is never created by hand:
+ * see newDeploymentFields)
  */
 export function useDeploymentFields({
   create
@@ -189,32 +190,46 @@ export function setDeviceStateFields(deployed: boolean): ApiFormFieldSet {
 }
 
 /**
- * Fields for recovering a deployed device
+ * Fields for recovering a deployed device (the office chooses the location
+ * when it receives the return order)
  */
 export function recoverFields(): ApiFormFieldSet {
   return {
-    location: {
-      filters: { structural: false }
-    },
     notes: {}
   };
 }
 
 /**
- * Fields for assigning an existing unit to a deployment
+ * Fields for a new deployment: choose a device which is not deployed (built,
+ * in production or on its way back), then where and when it goes
  */
-export function assignDeviceFields(deployment: any): ApiFormFieldSet {
+export function newDeploymentFields({
+  deployment,
+  site
+}: {
+  deployment?: number;
+  site?: number;
+} = {}): ApiFormFieldSet {
   return {
-    stock_item: {
+    deployment: {
+      value: deployment,
       filters: {
-        part: deployment?.device_type_detail?.part,
-        include_variants: true,
-        in_stock: true,
-        serialized: true,
-        part_detail: true,
-        location_detail: true
+        pipeline: true,
+        device_detail: true,
+        site_detail: true
       }
-    }
+    },
+    site: {
+      value: site,
+      filters: { active: true }
+    },
+    target_date: {},
+    deployment_type: {},
+    replaces: {
+      filters: { active: true },
+      description: t`For a replacement: the deployed device which it replaces`
+    },
+    coverage: {}
   };
 }
 

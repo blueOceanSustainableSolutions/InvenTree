@@ -14,6 +14,7 @@ from fleet.models import (
     Alert,
     ChecklistResult,
     ChecklistTemplateItem,
+    Coverage,
     DataStream,
     Deployment,
     DeviceLink,
@@ -52,6 +53,8 @@ from InvenTree.serializers import (
     NotesFieldMixin,
     OptionalField,
 )
+from order.models import ReturnOrderLineItem
+from order.status_codes import ReturnOrderStatusGroups
 from stock.components import ComponentActionSerializer
 from stock.models import StockItem, StockLocation
 from users.serializers import OwnerSerializer, UserSerializer
@@ -417,6 +420,8 @@ class DeploymentSerializer(
             'barcode_hash',
             'notes',
             'metadata_warning',
+            'return_order',
+            'return_order_reference',
             'risks',
         ]
         read_only_fields = [
@@ -566,9 +571,20 @@ class DeploymentSerializer(
 
     metadata_warning = serializers.SerializerMethodField(label=_('Warning'))
 
+    return_order = serializers.IntegerField(
+        read_only=True,
+        allow_null=True,
+        label=_('Return Order'),
+        help_text=_('Open return order of a device on its way back to the office'),
+    )
+
+    return_order_reference = serializers.CharField(
+        read_only=True, allow_null=True, label=_('Return Order')
+    )
+
     @staticmethod
     def annotate_queryset(queryset):
-        """Annotate the number of open alerts and the device state."""
+        """Annotate the open alerts, the device state and the open return order."""
         queryset = queryset.select_related(
             'replaces', 'device__fleet_link', 'device__fleet_link__state_changed_by'
         )
@@ -579,6 +595,20 @@ class DeploymentSerializer(
                 filter=Q(alerts__status__in=AlertStatusGroups.OPEN),
                 distinct=True,
             )
+        )
+
+        # A device on its way back: an open return order line, not received
+        return_lines = ReturnOrderLineItem.objects.filter(
+            item=OuterRef('device'),
+            received_date__isnull=True,
+            order__status__in=ReturnOrderStatusGroups.OPEN,
+        ).order_by('-pk')
+
+        queryset = queryset.annotate(
+            return_order=Subquery(return_lines.values('order')[:1]),
+            return_order_reference=Subquery(
+                return_lines.values('order__reference')[:1]
+            ),
         )
 
         return annotate_device_state(queryset)
@@ -622,21 +652,6 @@ class DeploymentSerializer(
         """The reference must match the reference pattern setting."""
         Deployment.validate_reference_field(reference)
         return reference
-
-    def create(self, validated_data):
-        """Copy the coverage from the site unless it was given."""
-        site = validated_data.get('site')
-
-        # initial_data is pre-filled with model defaults, so check the raw request
-        request = self.context.get('request')
-        given = getattr(request, 'data', None) or {}
-
-        if site is not None and 'coverage' not in given:
-            validated_data['coverage'] = site.coverage
-
-        validated_data['status'] = DeploymentStatus.PLANNED.value
-
-        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         """Setting a site on a deployed device fills an empty position from it.
@@ -715,31 +730,61 @@ class TripActionSerializer(FleetActionSerializer):
     CONTEXT_KEY = 'trip'
 
 
-class DeploymentCreateBuildSerializer(DeploymentActionSerializer):
-    """Create the build order for a planned deployment (no input)."""
+class DeploymentNewSerializer(DeploymentActionSerializer):
+    """Plan the next deployment of an undeployed unit (site, date and type).
 
-    def save(self):
-        """Create the build order."""
-        from fleet.services import pipeline
+    The fleet never creates a deployment out of nothing: the unit (built, in
+    production or on its way back) already has its row in the deployment list.
+    """
 
-        pipeline.create_build_for(self.target, user=self.user)
-
-
-class DeploymentAssignDeviceSerializer(DeploymentActionSerializer):
-    """Assign an existing serialized unit to a deployment."""
-
-    stock_item = serializers.PrimaryKeyRelatedField(
-        queryset=StockItem.objects.all(),
+    deployment = serializers.PrimaryKeyRelatedField(
+        queryset=Deployment.objects.filter(status__in=DeploymentStatusGroups.PIPELINE),
         label=_('Device'),
-        help_text=_('Serialized unit in stock'),
+        help_text=_('A device which is not deployed'),
+    )
+
+    site = serializers.PrimaryKeyRelatedField(
+        queryset=Site.objects.all(), required=False, allow_null=True, label=_('Site')
+    )
+
+    target_date = serializers.DateField(
+        required=False, allow_null=True, label=_('Deployment Date')
+    )
+
+    deployment_type = serializers.ChoiceField(
+        choices=Deployment.DeploymentType.choices,
+        required=False,
+        label=_('Deployment Type'),
+    )
+
+    replaces = serializers.PrimaryKeyRelatedField(
+        queryset=Deployment.objects.filter(status=DeploymentStatus.DEPLOYED.value),
+        required=False,
+        allow_null=True,
+        label=_('Replaces'),
+        help_text=_('Deployed device which this one replaces'),
+    )
+
+    coverage = serializers.ChoiceField(
+        choices=Coverage.choices,
+        required=False,
+        label=_('Coverage'),
+        help_text=_('Defaults to the coverage of the site'),
     )
 
     def save(self):
-        """Assign the device."""
+        """Plan the deployment."""
         from fleet.services import pipeline
 
-        pipeline.assign_existing_device(
-            self.target, self.validated_data['stock_item'], user=self.user
+        data = self.validated_data
+
+        pipeline.new_deployment(
+            data['deployment'],
+            site=data.get('site'),
+            target_date=data.get('target_date'),
+            deployment_type=data.get('deployment_type'),
+            replaces=data.get('replaces'),
+            coverage=data.get('coverage'),
         )
 
 
@@ -878,15 +923,7 @@ class DeploymentSetStateSerializer(DeploymentActionSerializer):
 
 
 class DeploymentRecoverSerializer(DeploymentActionSerializer):
-    """Recover a deployed device into stock."""
-
-    location = serializers.PrimaryKeyRelatedField(
-        queryset=StockLocation.objects.filter(structural=False),
-        required=False,
-        allow_null=True,
-        label=_('Location'),
-        help_text=_('Defaults to the fleet workshop location'),
-    )
+    """Recover a deployed device: a return order brings it to the office."""
 
     notes = serializers.CharField(
         required=False, allow_blank=True, max_length=250, label=_('Notes')
@@ -894,11 +931,7 @@ class DeploymentRecoverSerializer(DeploymentActionSerializer):
 
     def save(self):
         """Recover the device."""
-        self.target.recover(
-            user=self.user,
-            location=self.validated_data.get('location'),
-            notes=self.validated_data.get('notes', ''),
-        )
+        self.target.recover(user=self.user, notes=self.validated_data.get('notes', ''))
 
 
 class CalendarEventSerializer(serializers.Serializer):
@@ -912,6 +945,46 @@ class CalendarEventSerializer(serializers.Serializer):
     status = serializers.IntegerField(read_only=True)
     status_text = serializers.CharField(read_only=True)
     url = serializers.CharField(read_only=True)
+
+
+class PlanRowSerializer(serializers.Serializer):
+    """A row of the fleet plan: a deployment to do, or a deployed device to maintain."""
+
+    kind = serializers.ChoiceField(
+        choices=['deployment', 'maintenance'], read_only=True, label=_('Kind')
+    )
+    group = serializers.ChoiceField(
+        choices=['soon', 'undated', 'later'],
+        read_only=True,
+        help_text='soon = within the planning horizon (or overdue)',
+    )
+    date = serializers.DateField(
+        read_only=True,
+        allow_null=True,
+        help_text='Deployment date, or the next maintenance (task or PM) date',
+    )
+    pk = serializers.IntegerField(read_only=True, help_text='The deployment')
+    deployment = serializers.IntegerField(read_only=True)
+    reference = serializers.CharField(read_only=True)
+    status = serializers.IntegerField(read_only=True)
+    device = serializers.IntegerField(read_only=True, allow_null=True)
+    serial = serializers.CharField(read_only=True, allow_null=True)
+    part_name = serializers.CharField(read_only=True)
+    site = serializers.IntegerField(read_only=True, allow_null=True)
+    site_name = serializers.CharField(read_only=True, allow_null=True)
+    client_name = serializers.CharField(read_only=True, allow_null=True)
+    build = serializers.IntegerField(read_only=True, allow_null=True)
+    build_reference = serializers.CharField(read_only=True, allow_null=True)
+    build_status = serializers.IntegerField(read_only=True, allow_null=True)
+    build_target_date = serializers.DateField(read_only=True, allow_null=True)
+    return_order = serializers.IntegerField(read_only=True, allow_null=True)
+    return_order_reference = serializers.CharField(read_only=True, allow_null=True)
+    task_count = serializers.IntegerField(read_only=True)
+    trip = serializers.IntegerField(read_only=True, allow_null=True)
+    trip_reference = serializers.CharField(read_only=True, allow_null=True)
+    health = serializers.IntegerField(read_only=True, allow_null=True)
+    next_pm_date = serializers.DateField(read_only=True, allow_null=True)
+    risks = ReadinessRiskSerializer(many=True, read_only=True)
 
 
 class FleetOverviewSerializer(serializers.Serializer):
@@ -2168,12 +2241,15 @@ class FieldTripSerializer(
     deployments = serializers.PrimaryKeyRelatedField(
         queryset=Deployment.objects.filter(
             status__in=DeploymentStatusGroups.DEPLOYABLE
+            + DeploymentStatusGroups.ACTIVE
         ),
         many=True,
         required=False,
         write_only=True,
         label=_('Deployments'),
-        help_text=_('Ready deployments to deploy on the new trip'),
+        help_text=_(
+            'Ready deployments to deploy, and deployed devices to maintain, on the new trip'
+        ),
     )
 
     @staticmethod
@@ -2404,7 +2480,9 @@ class TripAddTasksSerializer(TripActionSerializer):
         many=True,
         required=False,
         label=_('Deployments'),
-        help_text=_('Ready deployments: each gets a deployment (or swap) task'),
+        help_text=_(
+            'Ready deployments (a deployment or swap task each), and deployed devices (their maintenance tasks)'
+        ),
     )
 
     def validate(self, data):

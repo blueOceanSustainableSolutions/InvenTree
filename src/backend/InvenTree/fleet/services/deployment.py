@@ -1,8 +1,10 @@
 """Deploying and recovering devices.
 
 A device is "deployed" when its stock item is assigned to a customer (the
-legacy "deployed = has customer" convention), and recovering it returns the
-item from the customer into a stock location.
+legacy "deployed = has customer" convention). Recovering it creates a return
+order to the office: the device stays with the customer until the office
+receives it, but it is no longer deployed, and it can be planned for its
+next deployment straight away.
 """
 
 from datetime import timedelta
@@ -22,8 +24,12 @@ from fleet.models import (
     MaintenanceTask,
     TripKitLine,
 )
-from fleet.services.device_state import check_not_decommissioned, clear_on_close
-from fleet.services.pipeline import ensure_device_link
+from fleet.services.device_state import (
+    check_not_decommissioned,
+    clear_on_close,
+    is_decommissioned,
+)
+from fleet.services.pipeline import ensure_device_link, get_return_line
 from fleet.status_codes import (
     AlertStatus,
     AlertStatusGroups,
@@ -82,7 +88,6 @@ def deploy(
     longitude=None,
     depth_m=None,
     deployed_at=None,
-    recover_location=None,
 ) -> Deployment:
     """Deploy the device of a READY (or SCHEDULED) deployment.
 
@@ -93,8 +98,8 @@ def deploy(
     - Copies the stream templates into data streams
     - Assigns the stock item to a customer (tracking code 100) and adds a
       FLEET_DEPLOYED tracking entry
-    - Recovers the deployment it replaces, if any (into recover_location,
-      e.g. the trip "Removed" location; default the workshop)
+    - Recovers the deployment it replaces, if any (a return order brings
+      that device to the office)
     - Computes the next preventive maintenance date
     """
     # Lock the row, and work on the caller's instance so that it stays current
@@ -109,6 +114,13 @@ def deploy(
 
     if device is None:
         raise ValidationError(_('No device has been assigned to this deployment'))
+
+    if return_line := get_return_line(device):
+        raise ValidationError(
+            _('The device is still on its way back. Receive it on return order')
+            + f' {return_line.order.reference} '
+            + _('first')
+        )
 
     if device.customer is not None or device.is_building or not device.in_stock:
         raise ValidationError(_('The device must be in stock to be deployed'))
@@ -129,10 +141,7 @@ def deploy(
 
     if replaced is not None and replaced.status == DeploymentStatus.DEPLOYED.value:
         recover(
-            replaced,
-            user=user,
-            location=recover_location,
-            notes=str(_('Replaced by')) + f' {deployment.reference}',
+            replaced, user=user, notes=str(_('Replaced by')) + f' {deployment.reference}'
         )
 
     if site is not None:
@@ -201,30 +210,50 @@ def deploy(
     return deployment
 
 
-@transaction.atomic
-def recover(deployment: Deployment, user=None, location=None, notes: str = ''):
-    """Recover a deployed device into a stock location.
+def create_return_order(deployment: Deployment, device, user=None, notes: str = ''):
+    """Create (and issue) the return order which brings a recovered device to the office.
 
-    The location defaults to FLEET_WORKSHOP_LOCATION. Open alerts of the
-    deployment are resolved automatically.
+    The office receives the line on the return order, which takes the device
+    back from the customer into a stock location.
     """
+    from order.models import ReturnOrder, ReturnOrderLineItem
+
+    description = str(_('Fleet recovery')) + f' {deployment.reference}'
+
+    if deployment.site:
+        description += f' ({deployment.site.name})'
+
+    order = ReturnOrder.objects.create(
+        reference=ReturnOrder.generate_reference(),
+        customer=device.customer,
+        description=description[:250],
+        created_by=user if user is not None and user.is_authenticated else None,
+    )
+
+    ReturnOrderLineItem.objects.create(
+        order=order, item=device, quantity=1, notes=notes[:500]
+    )
+
+    order.issue_order()
+
+    return order
+
+
+@transaction.atomic
+def recover(deployment: Deployment, user=None, notes: str = ''):
+    """Recover a deployed device: it goes back to the office on a return order.
+
+    - The deployment is RECOVERED and its open alerts are resolved
+    - A return order (issued) brings the device to the office; the office
+      receives it into a stock location
+    - The device gets its next (READY) deployment row straight away, so it
+      can be planned while it is on its way back (it can only be deployed
+      once it has been received)
+    """
+    from fleet.services.pipeline import ensure_unit_deployment
+
     if not deployment.can_recover:
         raise ValidationError(_('Only a deployed device can be recovered'))
-
-    if location is None:
-        location = get_model_setting('FLEET_WORKSHOP_LOCATION')
-
-    if location is None:
-        raise ValidationError({
-            'location': _(
-                'Select a location, or set the fleet workshop location setting'
-            )
-        })
-
-    if location.structural:
-        raise ValidationError({
-            'location': _('Stock items cannot be located in structural locations')
-        })
 
     now = timezone.now()
 
@@ -241,9 +270,10 @@ def recover(deployment: Deployment, user=None, location=None, notes: str = ''):
         text += f': {notes}'
 
     if device := deployment.device:
+        return_order = None
+
         if device.customer is not None:
-            device.return_from_customer(location, user, notes=text)
-            device.refresh_from_db()
+            return_order = create_return_order(deployment, device, user, notes=text)
 
         device.add_tracking_entry(
             StockHistoryCode.FLEET_RECOVERED,
@@ -251,7 +281,7 @@ def recover(deployment: Deployment, user=None, location=None, notes: str = ''):
             deltas={
                 'deployment': deployment.pk,
                 'site': deployment.site.pk if deployment.site else None,
-                'location': location.pk,
+                'returnorder': return_order.pk if return_order else None,
             },
             notes=text,
         )
@@ -260,6 +290,9 @@ def recover(deployment: Deployment, user=None, location=None, notes: str = ''):
     clear_on_close(deployment.device, user=user)
 
     trigger_status_event(deployment)
+
+    if deployment.device is not None and not is_decommissioned(deployment.device):
+        ensure_unit_deployment(deployment.device, deployment.device_type)
 
     return deployment
 

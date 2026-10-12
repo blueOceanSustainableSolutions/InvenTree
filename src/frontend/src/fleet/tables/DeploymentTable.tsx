@@ -1,10 +1,6 @@
 import { t } from '@lingui/core/macro';
-import { Badge, Stack, Text } from '@mantine/core';
-import {
-  IconCalendarEvent,
-  IconHammer,
-  IconPackageImport
-} from '@tabler/icons-react';
+import { Badge, Group, Stack, Text } from '@mantine/core';
+import { IconCalendarEvent } from '@tabler/icons-react';
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -19,8 +15,7 @@ import useTable from '@lib/hooks/UseTable';
 import type { TableFilter } from '@lib/types/Filters';
 import type { TableColumn, TableState } from '@lib/types/Tables';
 import { RenderInlineModel } from '../../components/render/Instance';
-import { useDeploymentFields } from '../../forms/FleetForms';
-import { useCreateApiFormModal } from '../../hooks/UseForm';
+import { StatusRenderer } from '../../components/render/StatusRenderer';
 import useStatusCodes from '../../hooks/UseStatusCodes';
 import { useUserState } from '../../states/UserState';
 import {
@@ -42,7 +37,10 @@ import {
 } from '../components/FleetBadges';
 import { formatAge } from '../components/StreamStatusList';
 import { useTripSelectionActions } from '../components/TripSelection';
-import { useDeploymentActions } from '../hooks/DeploymentActions';
+import {
+  useDeploymentActions,
+  useNewDeploymentForm
+} from '../hooks/DeploymentActions';
 
 export type DeploymentTableMode = 'pipeline' | 'active' | 'all';
 
@@ -97,7 +95,6 @@ export function DeploymentTable({
   const navigate = useNavigate();
 
   const deploymentStatus = useStatusCodes({ modelType: ModelType.deployment });
-  const buildStatus = useStatusCodes({ modelType: ModelType.build });
 
   // A deployment which can be put on a field trip: ready (built)
   const canPlanDeployment = useCallback(
@@ -111,7 +108,7 @@ export function DeploymentTable({
     enabled: selection == 'trip'
   });
 
-  // Pipeline row actions: plan (site and date), create build order, assign a unit
+  // Pipeline row action: plan (site and date)
   const [selected, setSelected] = useState<any>({});
 
   const rowDeploymentActions = useDeploymentActions({
@@ -138,53 +135,15 @@ export function DeploymentTable({
           color: 'blue',
           hidden: !user.hasChangeRole(UserRoles.fleet),
           onClick: () => run(rowDeploymentActions.openPlan)
-        },
-        {
-          title: t`Create Build Order`,
-          icon: <IconHammer />,
-          color: 'blue',
-          hidden:
-            record.status != deploymentStatus.PLANNED ||
-            !!record.build ||
-            !!record.device ||
-            !user.hasAddRole(UserRoles.fleet) ||
-            !user.hasAddRole(UserRoles.build),
-          onClick: () => run(rowDeploymentActions.openCreateBuild)
-        },
-        {
-          title: t`Assign Device`,
-          tooltip: t`Use an existing unit from stock`,
-          icon: <IconPackageImport />,
-          color: 'cyan',
-          hidden:
-            !!record.device ||
-            // Build order still open: pending, in production or on hold
-            [
-              buildStatus.PENDING,
-              buildStatus.PRODUCTION,
-              buildStatus.ON_HOLD
-            ].includes(record.build_detail?.status) ||
-            !user.hasChangeRole(UserRoles.fleet),
-          onClick: () => run(rowDeploymentActions.openAssignDevice)
         }
       ];
     },
-    [mode, selection, user, rowDeploymentActions, deploymentStatus, buildStatus]
+    [mode, selection, user, rowDeploymentActions]
   );
 
-  const createFields = useDeploymentFields({ create: true });
-
-  const planDeployment = useCreateApiFormModal({
-    url: ApiEndpoints.fleet_deployment_list,
-    title: t`Plan Deployment`,
-    fields: createFields,
-    initialData: {
-      site: params.site,
-      device_type: params.device_type
-    },
-    follow: true,
-    modelType: ModelType.deployment,
-    table: table
+  const newDeployment = useNewDeploymentForm({
+    site: params.site,
+    onSuccess: () => table.refreshTable()
   });
 
   const columns: TableColumn[] = useMemo(
@@ -264,13 +223,25 @@ export function DeploymentTable({
         title: t`Build Order`,
         sortable: true,
         hidden: mode == 'active',
+        // Outside view of the build order: reference and status (read only)
         render: (record: any) =>
           record.build ? (
-            <RenderInlineModel
-              primary={record.build_detail?.reference ?? `#${record.build}`}
-              url={getDetailUrl(ModelType.build, record.build)}
-              navigate={navigate}
-            />
+            <Group gap='xs' wrap='nowrap'>
+              <RenderInlineModel
+                primary={record.build_detail?.reference ?? `#${record.build}`}
+                url={getDetailUrl(ModelType.build, record.build)}
+                navigate={navigate}
+              />
+              {record.build_detail && (
+                <StatusRenderer
+                  status={
+                    record.build_detail.status_custom_key ||
+                    record.build_detail.status
+                  }
+                  type={ModelType.build}
+                />
+              )}
+            </Group>
           ) : (
             '-'
           )
@@ -451,18 +422,18 @@ export function DeploymentTable({
     () => [
       ...tripSelection.actions,
       <AddItemButton
-        key='plan-deployment'
+        key='new-deployment'
         hidden={
           mode == 'active' ||
           selection == 'picker' ||
           !user.hasAddRole(UserRoles.fleet)
         }
-        tooltip={t`Plan a deployment`}
-        text={t`Plan Deployment`}
-        onClick={() => planDeployment.open()}
+        tooltip={t`Choose a device which is not deployed, and plan where and when it goes`}
+        text={t`New Deployment`}
+        onClick={() => newDeployment.open()}
       />
     ],
-    [mode, user, planDeployment, selection, tripSelection.actions]
+    [mode, user, newDeployment, selection, tripSelection.actions]
   );
 
   const queryParams = useMemo(() => {
@@ -485,7 +456,7 @@ export function DeploymentTable({
 
   return (
     <>
-      {planDeployment.modal}
+      {newDeployment.modal}
       {tripSelection.modals}
       {rowDeploymentActions.modals}
       <InvenTreeTable

@@ -22,9 +22,7 @@ import {
   IconCurrentLocation,
   IconDots,
   IconFlag,
-  IconHammer,
   IconHistory,
-  IconPackageImport,
   IconPencil,
   IconPlus,
   IconTimeline,
@@ -57,6 +55,7 @@ import {
   fleetStatusColor
 } from '../../fleet/components/FleetBadges';
 import { FleetMapView } from '../../fleet/components/FleetMap';
+import { ReturningAlert } from '../../fleet/components/ReturningAlert';
 import {
   StreamStatusList,
   formatAge
@@ -182,8 +181,8 @@ function StartMaintenanceModal({
  * Device card of a deployment (manager and technician): site, serial, live
  * streams, a map snippet, the installed components (read only), alerts, the
  * history timeline and maintenance, with the actions Start Maintenance,
- * Deploy, Recover and Set Position (and, in the pipeline, Create Build
- * Order, Assign Device, Set Site and Date). Site and position are optional.
+ * Deploy, Recover and Set Position (and, in the pipeline, Set Site and
+ * Date). Site and position are optional.
  */
 export default function DeploymentDetail(): ReactNode {
   const { id } = useParams();
@@ -209,7 +208,7 @@ export default function DeploymentDetail(): ReactNode {
   const deploymentActions = useDeploymentActions({
     deployment: deployment,
     onUpdate: refreshInstance,
-    onDeleted: () => navigate('/pipeline')
+    onDeleted: () => navigate('/plan')
   });
 
   const state = deploymentActions.state;
@@ -331,7 +330,9 @@ export default function DeploymentDetail(): ReactNode {
                       {deployment.build_detail?.reference ?? deployment.build}
                     </Anchor>
                   ) : undefined
-              }
+              },
+              fields.build_status,
+              fields.build_target_date
             ]}
           />
         </SimpleGrid>
@@ -511,27 +512,6 @@ export default function DeploymentDetail(): ReactNode {
         {t`Set State`}
       </Button>
     ) : null,
-    state.canCreateBuild ? (
-      <Button
-        key='create-build'
-        variant='outline'
-        leftSection={<IconHammer size={18} />}
-        onClick={deploymentActions.openCreateBuild}
-      >
-        {t`Create Build Order`}
-      </Button>
-    ) : null,
-    state.canAssignDevice ? (
-      <Button
-        key='assign-device'
-        variant='outline'
-        color='cyan'
-        leftSection={<IconPackageImport size={18} />}
-        onClick={deploymentActions.openAssignDevice}
-      >
-        {t`Assign Device`}
-      </Button>
-    ) : null,
     state.canEdit || state.canDelete ? (
       <Menu key='options' position='bottom-end'>
         <Menu.Target>
@@ -597,7 +577,7 @@ export default function DeploymentDetail(): ReactNode {
         <PortalPage
           title={`${t`Deployment`} ${deployment.reference ?? ''}`}
           subtitle={subtitle}
-          back={state.isPipeline ? '/pipeline' : '/'}
+          back={state.isPipeline ? '/plan' : '/'}
           badges={[
             <StatusRenderer
               key='status'
@@ -623,6 +603,12 @@ export default function DeploymentDetail(): ReactNode {
           ]}
           actions={actions}
         >
+          <ReturningAlert
+            deployment={deployment}
+            href={mainUiUrl(
+              getDetailUrl(ModelType.returnorder, deployment.return_order)
+            )}
+          />
           {deployment.metadata_warning && (
             <Alert color='orange' icon={<IconAlertTriangle />}>
               {deployment.metadata_warning}
