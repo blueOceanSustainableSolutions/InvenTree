@@ -83,8 +83,11 @@ htmlcov/
 # Temporary javascript files (used for testing)
 js_tmp/
 
-# Development files
-dev/
+# Development files (except the shared test tooling, see CLAUDE.md)
+dev/*
+!dev/ci-test.sh
+!dev/local-inventree.ps1
+!dev/test-image/
 dev-db/
 data/
 env/
