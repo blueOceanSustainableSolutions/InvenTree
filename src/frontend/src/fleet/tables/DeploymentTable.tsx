@@ -115,7 +115,7 @@ export function DeploymentTable({
     enabled: selection == 'trip'
   });
 
-  // Pipeline row action: plan (site and date)
+  // Row actions: plan pipeline deployments or adjust active maintenance dates
   const [selected, setSelected] = useState<any>({});
 
   const rowDeploymentActions = useDeploymentActions({
@@ -125,7 +125,7 @@ export function DeploymentTable({
 
   const rowActions = useCallback(
     (record: any): RowAction[] => {
-      if (mode != 'pipeline' || selection == 'picker') {
+      if (selection == 'picker') {
         return [];
       }
 
@@ -134,16 +134,35 @@ export function DeploymentTable({
         action();
       };
 
-      return [
-        {
-          title: t`Set Site and Date`,
-          tooltip: t`Where and when the device is deployed`,
-          icon: <IconCalendarEvent />,
-          color: 'blue',
-          hidden: !user.hasChangeRole(UserRoles.fleet),
-          onClick: () => run(rowDeploymentActions.openPlan)
-        }
-      ];
+      if (mode == 'pipeline') {
+        return [
+          {
+            title: t`Set Site and Date`,
+            tooltip: t`Where and when the device is deployed`,
+            icon: <IconCalendarEvent />,
+            color: 'blue',
+            hidden: !user.hasChangeRole(UserRoles.fleet),
+            onClick: () => run(rowDeploymentActions.openPlan)
+          }
+        ];
+      }
+
+      if (mode == 'active') {
+        return [
+          {
+            title: t`Change Maintenance Date`,
+            tooltip: t`Override or recalculate the next preventive-maintenance date`,
+            icon: <IconCalendarEvent />,
+            color: 'teal',
+            hidden:
+              record.coverage != 'FULL' ||
+              !user.hasChangeRole(UserRoles.fleet),
+            onClick: () => run(rowDeploymentActions.openChangeMaintenanceDate)
+          }
+        ];
+      }
+
+      return [];
     },
     [mode, selection, user, rowDeploymentActions]
   );

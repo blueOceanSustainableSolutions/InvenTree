@@ -113,8 +113,6 @@ export function useDeploymentFields({
     };
 
     if (!create) {
-      fields.next_pm_date = {};
-      fields.next_pm_manual = {};
       fields.latitude = {};
       fields.longitude = {};
       fields.depth_m = {};
@@ -123,6 +121,16 @@ export function useDeploymentFields({
 
     return fields;
   }, [create]);
+}
+
+/** Fields for changing the next preventive-maintenance date */
+export function maintenanceDateFields(): ApiFormFieldSet {
+  return {
+    next_pm_date: {},
+    automatic: {
+      description: t`Calculate the date from the deployment or the last completed maintenance`
+    }
+  };
 }
 
 /**

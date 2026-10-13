@@ -106,6 +106,19 @@ export function PlanTable({
           setSelected({ pk: record.deployment, site: record.site });
           rowDeploymentActions.openPlan();
         }
+      },
+      {
+        title: t`Change Maintenance Date`,
+        tooltip: t`Change the next preventive-maintenance date`,
+        icon: <IconCalendarEvent />,
+        color: 'teal',
+        hidden:
+          record.kind != 'maintenance' ||
+          !user.hasChangeRole(UserRoles.fleet),
+        onClick: () => {
+          setSelected(record);
+          rowDeploymentActions.openChangeMaintenanceDate();
+        }
       }
     ],
     [user, rowDeploymentActions]
@@ -129,18 +142,23 @@ export function PlanTable({
         switchable: false,
         render: (record: any) =>
           record.date ? (
-            <Text
-              size='sm'
-              c={
-                record.date < today
-                  ? 'red'
-                  : record.group == 'later'
-                    ? 'dimmed'
-                    : undefined
-              }
-            >
-              {formatDate(record.date)}
-            </Text>
+            <Stack gap={0}>
+              <Text
+                size='sm'
+                c={
+                  record.date < today
+                    ? 'red'
+                    : record.group == 'later'
+                      ? 'dimmed'
+                      : undefined
+                }
+              >
+                {formatDate(record.date)}
+              </Text>
+              {record.kind == 'maintenance' && record.next_pm_manual && (
+                <Text size='xs' c='dimmed'>{t`Manual date`}</Text>
+              )}
+            </Stack>
           ) : (
             <Text size='sm' c='dimmed'>{t`No date`}</Text>
           )

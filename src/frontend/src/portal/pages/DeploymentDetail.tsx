@@ -537,6 +537,14 @@ export default function DeploymentDetail(): ReactNode {
               {t`Set Site and Date`}
             </Menu.Item>
           )}
+          {state.canChangeMaintenanceDate && (
+            <Menu.Item
+              leftSection={<IconCalendarEvent size={18} />}
+              onClick={deploymentActions.openChangeMaintenanceDate}
+            >
+              {t`Change Maintenance Date`}
+            </Menu.Item>
+          )}
           {state.canEdit && (
             <Menu.Item
               leftSection={<IconPencil size={18} />}

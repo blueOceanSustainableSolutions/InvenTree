@@ -591,6 +591,12 @@ class DeploymentSetState(DeploymentActionMixin, CreateAPI):
     serializer_class = fleet_serializers.DeploymentSetStateSerializer
 
 
+class DeploymentSetPMDate(DeploymentActionMixin, CreateAPI):
+    """Change the next preventive-maintenance date of a deployed device."""
+
+    serializer_class = fleet_serializers.DeploymentSetPMDateSerializer
+
+
 class DeploymentVerify(DeploymentActionMixin, CreateAPI):
     """Check that a deployed device reports fresh data (nothing is stored)."""
 
@@ -708,6 +714,11 @@ class AlertOutputOptions(OutputConfiguration):
             'site_detail',
             default=True,
             description='Include detailed information about the site',
+        ),
+        InvenTreeOutputOption(
+            'task_detail',
+            default=True,
+            description='Include the linked task reference and status',
         ),
     ]
 
@@ -1746,6 +1757,11 @@ fleet_api_urls = [
                                 'set-state/',
                                 DeploymentSetState.as_view(),
                                 name='api-fleet-deployment-set-state',
+                            ),
+                            path(
+                                'set-pm-date/',
+                                DeploymentSetPMDate.as_view(),
+                                name='api-fleet-deployment-set-pm-date',
                             ),
                             meta_path(Deployment),
                             path(

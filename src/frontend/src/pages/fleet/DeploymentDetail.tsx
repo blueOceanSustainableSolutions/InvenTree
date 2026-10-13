@@ -3,6 +3,7 @@ import { Alert, Skeleton, Stack, Text } from '@mantine/core';
 import {
   IconActivityHeartbeat,
   IconAlertTriangle,
+  IconCalendarEvent,
   IconFlag,
   IconInfoCircle,
   IconListCheck,
@@ -330,6 +331,13 @@ export default function DeploymentDetail() {
             hidden: !can.canEdit,
             onClick: deploymentActions.openEdit
           }),
+          {
+            name: t`Change Maintenance Date`,
+            tooltip: t`Override or recalculate the next preventive-maintenance date`,
+            icon: <IconCalendarEvent />,
+            hidden: !can.canChangeMaintenanceDate,
+            onClick: deploymentActions.openChangeMaintenanceDate
+          },
           {
             name: t`Set Device State`,
             tooltip: t`Problem acknowledged, docked or decommissioned`,

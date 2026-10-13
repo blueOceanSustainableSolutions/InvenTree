@@ -1,23 +1,27 @@
 import { t } from '@lingui/core/macro';
-import { Stack, Text } from '@mantine/core';
+import { Anchor, Group, Stack, Text } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { IconCircleCheck, IconEye, IconTool } from '@tabler/icons-react';
 import { useCallback, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import type { RowAction } from '@lib/components/RowActions';
 import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
 import { ModelType } from '@lib/enums/ModelType';
 import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
+import { getDetailUrl } from '@lib/functions/Navigation';
 import useTable from '@lib/hooks/UseTable';
 import type { TableFilter } from '@lib/types/Filters';
 import type { TableColumn } from '@lib/types/Tables';
+import { StatusRenderer } from '../../components/render/StatusRenderer';
 import { useApi } from '../../contexts/ApiContext';
 import {
   alertCreateTaskFields,
   resolveAlertFields
 } from '../../forms/FleetForms';
 import { showApiErrorMessage } from '../../functions/notifications';
+import useStatusCodes from '../../hooks/UseStatusCodes';
 import { useCreateApiFormModal } from '../../hooks/UseForm';
 import { useUserState } from '../../states/UserState';
 import {
@@ -54,6 +58,8 @@ export function AlertTable({
   const table = useTable(tableName ?? 'fleet-alerts');
   const user = useUserState();
   const api = useApi();
+  const navigate = useNavigate();
+  const taskStatus = useStatusCodes({ modelType: ModelType.maintenancetask });
 
   const [selected, setSelected] = useState<number | undefined>(undefined);
 
@@ -158,6 +164,36 @@ export function AlertTable({
             '-'
           )
       },
+      {
+        accessor: 'task',
+        title: t`Task`,
+        sortable: false,
+        render: (record: any) =>
+          record.task_detail ? (
+            <Group gap='xs' wrap='nowrap'>
+              <Anchor
+                size='sm'
+                onClick={(event) => {
+                  event.stopPropagation();
+                  navigate(
+                    getDetailUrl(
+                      ModelType.maintenancetask,
+                      record.task_detail.pk
+                    )
+                  );
+                }}
+              >
+                {record.task_detail.reference}
+              </Anchor>
+              <StatusRenderer
+                status={record.task_detail.status}
+                type={ModelType.maintenancetask}
+              />
+            </Group>
+          ) : (
+            '-'
+          )
+      },
       DateColumn({
         accessor: 'opened_at',
         title: t`Opened`,
@@ -195,7 +231,7 @@ export function AlertTable({
         defaultVisible: false
       }
     ],
-    [params, openOnly]
+    [params, openOnly, navigate]
   );
 
   const filters: TableFilter[] = useMemo(() => {
@@ -236,6 +272,13 @@ export function AlertTable({
   const rowActions = useCallback(
     (record: any): RowAction[] => {
       const resolved = record.resolved_at != null;
+      const hasOpenTask =
+        record.task_detail &&
+        [
+          taskStatus.PROPOSED,
+          taskStatus.SCHEDULED,
+          taskStatus.IN_PROGRESS
+        ].includes(record.task_detail.status);
 
       return [
         {
@@ -249,11 +292,21 @@ export function AlertTable({
           title: t`Create Task`,
           icon: <IconTool />,
           color: 'blue',
-          hidden: !canChange || resolved || !record.deployment,
+          hidden: !canChange || resolved || !record.deployment || hasOpenTask,
           onClick: () => {
             setSelected(record.pk);
             createTask.open();
           }
+        },
+        {
+          title: t`Open Task`,
+          icon: <IconTool />,
+          color: 'blue',
+          hidden: !hasOpenTask,
+          onClick: () =>
+            navigate(
+              getDetailUrl(ModelType.maintenancetask, record.task_detail.pk)
+            )
         },
         {
           title: t`Resolve`,
@@ -267,7 +320,7 @@ export function AlertTable({
         }
       ];
     },
-    [canChange, acknowledge, resolveAlert, createTask]
+    [canChange, acknowledge, resolveAlert, createTask, navigate, taskStatus]
   );
 
   const queryParams = useMemo(() => {

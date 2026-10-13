@@ -655,3 +655,34 @@ def compute_next_pm(deployment: Deployment, commit: bool = True):
         deployment.save()
 
     return next_pm
+
+
+@transaction.atomic
+def set_next_pm_date(
+    deployment: Deployment, next_pm_date=None, automatic: bool = False
+):
+    """Set a manual PM date, or return to the calculated maintenance cycle."""
+    if deployment.status != DeploymentStatus.DEPLOYED.value:
+        raise ValidationError(_('Preventive maintenance applies to deployed devices'))
+
+    if deployment.coverage != Coverage.FULL:
+        raise ValidationError(
+            _('This deployment does not receive preventive maintenance')
+        )
+
+    if automatic:
+        deployment.next_pm_manual = False
+        compute_next_pm(deployment)
+    else:
+        if next_pm_date is None:
+            raise ValidationError(_('Enter the next preventive maintenance date'))
+
+        deployment.next_pm_date = next_pm_date
+        deployment.next_pm_manual = True
+        deployment.save(update_fields=['next_pm_date', 'next_pm_manual'])
+
+    # Import here because planning imports compute_next_pm from this module.
+    from fleet.services.planning import sync_pm_task
+
+    sync_pm_task(deployment)
+    return deployment

@@ -971,6 +971,47 @@ class DeploymentSetStateSerializer(DeploymentActionSerializer):
         )
 
 
+class DeploymentSetPMDateSerializer(DeploymentActionSerializer):
+    """Set the next PM date manually, or return to the calculated schedule."""
+
+    next_pm_date = serializers.DateField(
+        required=False,
+        allow_null=True,
+        label=_('Next Preventive Maintenance'),
+        help_text=_('The date when the next preventive maintenance is due'),
+    )
+
+    automatic = serializers.BooleanField(
+        required=False,
+        default=False,
+        label=_('Use Calculated Schedule'),
+        help_text=_(
+            'Calculate the date from the deployment or last completed maintenance'
+        ),
+    )
+
+    def validate(self, attrs):
+        """A manual schedule requires a date."""
+        attrs = super().validate(attrs)
+
+        if not attrs.get('automatic') and attrs.get('next_pm_date') is None:
+            raise serializers.ValidationError(
+                {'next_pm_date': _('Enter the next preventive maintenance date')}
+            )
+
+        return attrs
+
+    def save(self):
+        """Update the date and synchronize its proposed task."""
+        from fleet.services import deployment
+
+        deployment.set_next_pm_date(
+            self.target,
+            next_pm_date=self.validated_data.get('next_pm_date'),
+            automatic=self.validated_data.get('automatic', False),
+        )
+
+
 class DeploymentRecoverSerializer(DeploymentActionSerializer):
     """Recover a deployed device: a return order brings it to the office."""
 
@@ -1036,6 +1077,7 @@ class PlanRowSerializer(serializers.Serializer):
     trip_reference = serializers.CharField(read_only=True, allow_null=True)
     health = serializers.IntegerField(read_only=True, allow_null=True)
     next_pm_date = serializers.DateField(read_only=True, allow_null=True)
+    next_pm_manual = serializers.BooleanField(read_only=True)
     risks = ReadinessRiskSerializer(many=True, read_only=True)
 
 
@@ -1151,6 +1193,17 @@ class DeploymentBriefSerializer(InvenTreeModelSerializer):
     )
 
 
+class AlertTaskBriefSerializer(serializers.ModelSerializer):
+    """The task information needed by an alert row."""
+
+    class Meta:
+        """Metaclass options."""
+
+        model = MaintenanceTask
+        fields = ['pk', 'reference', 'status']
+        read_only_fields = fields
+
+
 class AlertSerializer(
     CustomStatusSerializerMixin,
     FilterableSerializerMixin,
@@ -1191,6 +1244,7 @@ class AlertSerializer(
             'resolved_by_detail',
             'resolution',
             'task',
+            'task_detail',
             'dedupe_key',
         ]
         read_only_fields = fields
@@ -1217,6 +1271,18 @@ class AlertSerializer(
         },
         default_include=True,
         prefetch_fields=['site'],
+    )
+
+    task_detail = OptionalField(
+        serializer_class=AlertTaskBriefSerializer,
+        serializer_kwargs={
+            'source': 'task',
+            'many': False,
+            'read_only': True,
+            'allow_null': True,
+        },
+        default_include=True,
+        prefetch_fields=['task'],
     )
 
     stream_key = serializers.CharField(

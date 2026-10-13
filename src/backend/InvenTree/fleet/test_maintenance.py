@@ -597,6 +597,32 @@ class PlanningTest(MaintenanceTestBase):
 
         self.assertEqual(len(planning.propose_pm_tasks()), 1)
 
+    def test_change_pm_date_synchronizes_proposal(self):
+        """Changing a PM date creates or updates a proposal immediately."""
+        dep = self.deploy('AUR-0199', site=self.site, days_ago=0)
+        self.assertFalse(MaintenanceTask.objects.filter(deployment=dep).exists())
+
+        due = current_date() + timedelta(days=10)
+        deployment_service.set_next_pm_date(dep, due)
+
+        dep.refresh_from_db()
+        task = MaintenanceTask.objects.get(deployment=dep)
+        self.assertTrue(dep.next_pm_manual)
+        self.assertEqual(dep.next_pm_date, due)
+        self.assertEqual(task.due_date, due)
+
+        later = current_date() + timedelta(days=100)
+        deployment_service.set_next_pm_date(dep, later)
+        task.refresh_from_db()
+        self.assertEqual(task.due_date, later)
+
+        deployment_service.set_next_pm_date(dep, automatic=True)
+        dep.refresh_from_db()
+        task.refresh_from_db()
+        self.assertFalse(dep.next_pm_manual)
+        self.assertEqual(dep.next_pm_date, dep.deployed_at.date() + timedelta(days=180))
+        self.assertEqual(task.due_date, dep.next_pm_date)
+
     def test_recovered_cancels_proposal(self):
         """A proposal whose deployment ended is cancelled."""
         dep = self.deploy('AUR-0192', site=self.site)
@@ -1238,7 +1264,30 @@ class MaintenanceAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
         alert.refresh_from_db()
         self.assertEqual(alert.status, AlertStatus.ACKNOWLEDGED.value)
 
+        listed = self.get(reverse('api-fleet-alert-list')).data[0]
+        self.assertEqual(listed['task_detail']['pk'], response.data['pk'])
+        self.assertEqual(listed['task_detail']['reference'], response.data['reference'])
+        self.assertEqual(listed['task_detail']['status'], TaskStatus.SCHEDULED.value)
+
         self.post(url, {}, expected_code=400)
+
+    def test_change_pm_date_action(self):
+        """The PM-date action overrides and restores the calculated date."""
+        dep = self.deploy('AUR-0303', site=self.site, days_ago=0)
+        url = reverse('api-fleet-deployment-set-pm-date', kwargs={'pk': dep.pk})
+        due = current_date() + timedelta(days=10)
+
+        response = self.post(url, {'next_pm_date': due.isoformat()}, expected_code=200)
+        self.assertTrue(response.data['next_pm_manual'])
+        self.assertEqual(response.data['next_pm_date'], due.isoformat())
+        self.assertEqual(MaintenanceTask.objects.get(deployment=dep).due_date, due)
+
+        response = self.post(url, {'automatic': True}, expected_code=200)
+        self.assertFalse(response.data['next_pm_manual'])
+        self.assertEqual(
+            response.data['next_pm_date'],
+            (dep.deployed_at.date() + timedelta(days=180)).isoformat(),
+        )
 
     def test_templates_and_fault_codes(self):
         """Checklist and kit templates per device type, and fault codes."""
@@ -1304,6 +1353,7 @@ class MaintenanceAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
             '/api/fleet/task/{id}/component-action/',
             '/api/fleet/task/{id}/complete/',
             '/api/fleet/alert/{id}/create-task/',
+            '/api/fleet/deployment/{id}/set-pm-date/',
         ]:
             self.assertIn('post', schema['paths'][url])
 
@@ -1339,6 +1389,7 @@ class MaintenanceAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
             self.task_url(task),
             reverse('api-fleet-task-list'),
             reverse('api-fleet-alert-create-task', kwargs={'pk': alert.pk}),
+            reverse('api-fleet-deployment-set-pm-date', kwargs={'pk': dep.pk}),
             reverse('api-fleet-checklist-item-list'),
             reverse('api-fleet-kit-line-list'),
             reverse('api-fleet-fault-code-list'),

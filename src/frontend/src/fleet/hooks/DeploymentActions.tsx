@@ -9,6 +9,7 @@ import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
 import {
   deployFields,
+  maintenanceDateFields,
   newDeploymentFields,
   planDeploymentFields,
   recoverFields,
@@ -43,6 +44,7 @@ export type DeploymentState = {
   isDocked: boolean;
   isDecommissioned: boolean;
   canSetState: boolean;
+  canChangeMaintenanceDate: boolean;
 };
 
 /**
@@ -97,7 +99,12 @@ export function useDeploymentState(deployment: any): DeploymentState {
       isDecommissioned: deployment?.internal_state == 'DECOMMISSIONED',
       // Technicians and managers; not for a device still in the pipeline
       canSetState:
-        !!deployment?.pk && !!deployment?.device && !isPipeline && canChange
+        !!deployment?.pk && !!deployment?.device && !isPipeline && canChange,
+      canChangeMaintenanceDate:
+        !!deployment?.pk &&
+        isDeployed &&
+        deployment?.coverage == 'FULL' &&
+        canChange
     };
   }, [deployment, user, deploymentStatus]);
 }
@@ -220,6 +227,23 @@ export function useDeploymentActions({
     onFormSuccess: onUpdate
   });
 
+  const changeMaintenanceDate = useCreateApiFormModal({
+    url: apiUrl(ApiEndpoints.fleet_deployment_set_pm_date, deployment?.pk),
+    title: t`Change Maintenance Date`,
+    fields: maintenanceDateFields(),
+    initialData: {
+      next_pm_date: deployment?.next_pm_date,
+      automatic: false
+    },
+    preFormContent: (
+      <Alert color='blue' icon={<IconInfoCircle />}>
+        {t`A task is proposed when this date enters the planning horizon. If a proposal already exists, its due date is updated immediately; scheduled or in-progress tasks are not moved.`}
+      </Alert>
+    ),
+    successMessage: t`Maintenance date updated`,
+    onFormSuccess: onUpdate
+  });
+
   const setState = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.fleet_deployment_set_state, deployment?.pk),
     title: t`Set Device State`,
@@ -263,6 +287,7 @@ export function useDeploymentActions({
       {deleteDeployment.modal}
       {deploy.modal}
       {setPosition.modal}
+      {changeMaintenanceDate.modal}
       {recover.modal}
       {setState.modal}
     </>
@@ -276,6 +301,7 @@ export function useDeploymentActions({
     openDelete: deleteDeployment.open,
     openDeploy: deploy.open,
     openSetPosition: setPosition.open,
+    openChangeMaintenanceDate: changeMaintenanceDate.open,
     openRecover: recover.open,
     openSetState: setState.open
   };

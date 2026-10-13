@@ -125,6 +125,7 @@ def deployment_row(deployment: Deployment, today: date) -> dict:
         'trip_reference': trip_task.trip.reference if trip_task else None,
         'health': None,
         'next_pm_date': None,
+        'next_pm_manual': False,
         'risks': readiness_risks(deployment, today=today),
     }
 
@@ -158,6 +159,7 @@ def maintenance_row(deployment: Deployment) -> dict:
         'trip_reference': trip_task.trip.reference if trip_task else None,
         'health': deployment.health,
         'next_pm_date': deployment.next_pm_date,
+        'next_pm_manual': deployment.next_pm_manual,
         'risks': [],
     }
 

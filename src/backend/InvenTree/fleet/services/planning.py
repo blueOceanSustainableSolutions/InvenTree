@@ -144,6 +144,56 @@ def propose_pm_tasks(today: date | None = None) -> list[MaintenanceTask]:
     return created
 
 
+def sync_pm_task(
+    deployment: Deployment, today: date | None = None
+) -> MaintenanceTask | None:
+    """Synchronize the proposed preventive task after its PM date changes.
+
+    Existing proposals always follow the new date. A new proposal is only
+    created when the deployment is eligible and its date is inside the
+    planning horizon. Scheduled or in-progress tasks are never moved.
+    """
+    proposed = deployment.tasks.filter(
+        task_type=TaskType.PREVENTIVE, status=TaskStatus.PROPOSED.value
+    ).first()
+
+    if proposed is not None:
+        if deployment.next_pm_date and proposed.due_date != deployment.next_pm_date:
+            proposed.due_date = deployment.next_pm_date
+            proposed.save(update_fields=['due_date'])
+
+        return proposed
+
+    if deployment.next_pm_date is None:
+        return None
+
+    today = today or current_date()
+    horizon = today + timedelta(
+        days=get_global_setting('FLEET_PLAN_HORIZON_DAYS', cache=False)
+    )
+
+    if deployment.next_pm_date > horizon:
+        return None
+
+    if not pm_deployments().filter(pk=deployment.pk).exists():
+        return None
+
+    if deployment.tasks.filter(
+        task_type=TaskType.PREVENTIVE, status__in=TaskStatusGroups.OPEN
+    ).exists():
+        return None
+
+    return MaintenanceTask.objects.create(
+        status=TaskStatus.PROPOSED.value,
+        task_type=TaskType.PREVENTIVE,
+        description=str(_('Preventive maintenance')),
+        device=deployment.device,
+        deployment=deployment,
+        site=deployment.site,
+        due_date=deployment.next_pm_date,
+    )
+
+
 def cancel_stale_proposals() -> int:
     """Cancel proposed preventive tasks which no longer apply.
 

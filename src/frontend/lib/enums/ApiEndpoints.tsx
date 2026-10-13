@@ -278,6 +278,7 @@ export enum ApiEndpoints {
   fleet_deployment_recover = 'fleet/deployment/:id/recover/',
   fleet_deployment_set_position = 'fleet/deployment/:id/set-position/',
   fleet_deployment_set_state = 'fleet/deployment/:id/set-state/',
+  fleet_deployment_set_pm_date = 'fleet/deployment/:id/set-pm-date/',
   fleet_calendar = 'fleet/calendar/',
   fleet_overview = 'fleet/overview/',
   fleet_plan = 'fleet/plan/',
