@@ -89,7 +89,13 @@ export function deploymentDetailFields(
       name: 'device_type',
       label: t`Device Type`,
       icon: 'fleet_device_type',
-      model: ModelType.fleetdevicetype
+      model: ModelType.fleetdevicetype,
+      model_filters: { part_detail: true },
+      model_formatter: (deviceType: any) =>
+        deviceType?.part_detail?.full_name ??
+        deviceType?.part_name ??
+        deployment.device_type_detail?.part_name,
+      backup_value: deployment.device_type_detail?.part_name
     },
     // The device: the unit when it is built, else the build order which
     // makes it (its material is on the Device Materials panel)
@@ -99,6 +105,9 @@ export function deploymentDetailFields(
       label: t`Device`,
       icon: 'serial',
       model: ModelType.stockitem,
+      model_formatter: (device: any) =>
+        device?.serial ?? deployment.device_detail?.serial,
+      backup_value: deployment.device_detail?.serial,
       hidden: !deployment.device
     },
     {
