@@ -478,12 +478,17 @@ class Site(
     The name is the nickname shown in the app (e.g. "Algarve #1"). It stays
     with the location when the device at that location is replaced.
 
+    The site is the only place which says where a device should be: its
+    deployments have no position of their own. Once set, the location is
+    changed only by moving the site (fleet.services.site.move_site), which
+    keeps the old location and the reason in a SiteLocationChange.
+
     Attributes:
         reference: Unique reference (e.g. ST-001)
         name: Nickname of the site
-        latitude: Nominal latitude
-        longitude: Nominal longitude
-        depth_m: Water depth (m)
+        latitude: Current latitude
+        longitude: Current longitude
+        depth_m: Current water depth (m)
         coverage: Service coverage of devices at this site
         client: Customer company which the data is produced for
         project: Project name
@@ -580,6 +585,85 @@ class Site(
     geofence_polygon = geofence_polygon_field()
 
     active = models.BooleanField(default=True, verbose_name=_('Active'))
+
+    @property
+    def has_location(self) -> bool:
+        """Whether the latitude and longitude of the site are set."""
+        return self.latitude is not None and self.longitude is not None
+
+
+class SiteLocationChange(InvenTree.models.InvenTreeModel):
+    """A change of the location of a site, with the reason for it.
+
+    Attributes:
+        site: The site which was moved
+        effective_at: When the device was actually moved
+        old_latitude: Latitude before the change (empty if it was not set)
+        old_longitude: Longitude before the change
+        old_depth_m: Depth before the change
+        latitude: New latitude
+        longitude: New longitude
+        depth_m: New depth
+        comment: Why the site was moved
+        created_by: User who recorded the change
+        created_at: When the change was recorded
+    """
+
+    class Meta:
+        """Metaclass options for the SiteLocationChange model."""
+
+        verbose_name = _('Site Location Change')
+        verbose_name_plural = _('Site Location Changes')
+        ordering = ['site', '-effective_at', '-pk']
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with the SiteLocationChange model."""
+        return reverse('api-fleet-site-location-list')
+
+    def __str__(self):
+        """String representation of a SiteLocationChange."""
+        return f'{self.site} @ {self.effective_at}'
+
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='location_changes',
+        verbose_name=_('Site'),
+    )
+
+    effective_at = models.DateTimeField(
+        default=timezone.now,
+        verbose_name=_('Effective At'),
+        help_text=_('When the device was actually moved'),
+    )
+
+    old_latitude = latitude_field(_('Old Latitude'), blank=True, null=True)
+
+    old_longitude = longitude_field(_('Old Longitude'), blank=True, null=True)
+
+    old_depth_m = depth_field()
+
+    latitude = latitude_field(_('Latitude'))
+
+    longitude = longitude_field(_('Longitude'))
+
+    depth_m = depth_field()
+
+    comment = models.CharField(
+        max_length=500, verbose_name=_('Comment'), help_text=_('Why the site was moved')
+    )
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='+',
+        verbose_name=_('Created By'),
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_('Created At'))
 
 
 class DeviceLink(InvenTree.models.MetadataMixin, InvenTree.models.InvenTreeModel):
@@ -715,7 +799,8 @@ class Deployment(
         device_type: Type of device to deploy
         build: The build order which produces the device
         device: The serialized device, once known
-        site: Where the device is (or will be) deployed
+        site: Where the device is (or will be) deployed; required to deploy.
+            The location of the site is the position the device should be at
         deployment_type: New station, replacement or temporary
         replaces: For a replacement, the deployment which it ends
         client: Customer company (defaults from the site)
@@ -723,11 +808,6 @@ class Deployment(
         target_date: Planned deployment date
         deployed_at: When the device was deployed
         recovered_at: When the device was recovered
-        latitude: Nominal latitude, recorded at deployment
-        longitude: Nominal longitude, recorded at deployment
-        depth_m: Water depth (m)
-        geofence_radius_m: Geofence radius (m), copied from the site
-        geofence_polygon: Geofence polygon, copied from the site
         next_pm_date: Next preventive maintenance date
         next_pm_manual: Whether next_pm_date was set by hand
         health: Overall health (cached)
@@ -735,7 +815,8 @@ class Deployment(
         last_latitude: Last reported latitude (cached)
         last_longitude: Last reported longitude (cached)
         last_position_at: Time of the last reported position (cached)
-        distance_from_nominal_m: Distance from the nominal position (cached)
+        distance_from_site_m: Distance of the reported position from the
+            site location (cached)
         last_polled_at: Last time the data platform was polled (cached)
     """
 
@@ -1014,16 +1095,6 @@ class Deployment(
         blank=True, null=True, verbose_name=_('Recovered At')
     )
 
-    latitude = latitude_field(_('Latitude'), blank=True, null=True)
-
-    longitude = longitude_field(_('Longitude'), blank=True, null=True)
-
-    depth_m = depth_field()
-
-    geofence_radius_m = geofence_radius_field()
-
-    geofence_polygon = geofence_polygon_field()
-
     next_pm_date = models.DateField(
         blank=True, null=True, verbose_name=_('Next PM Date')
     )
@@ -1054,13 +1125,13 @@ class Deployment(
         blank=True, null=True, verbose_name=_('Last Position At')
     )
 
-    distance_from_nominal_m = models.DecimalField(
+    distance_from_site_m = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         blank=True,
         null=True,
-        verbose_name=_('Distance From Nominal'),
-        help_text=_('Distance from the nominal position (m)'),
+        verbose_name=_('Distance From Site'),
+        help_text=_('Distance of the reported position from the site location (m)'),
     )
 
     last_polled_at = models.DateTimeField(
@@ -2304,7 +2375,7 @@ class MaintenanceAction(
         REPAIR = 'REPAIR', _('Repair')
         CLEAN = 'CLEAN', _('Clean')
         FIRMWARE = 'FIRMWARE', _('Firmware')
-        REPOSITION = 'REPOSITION', _('Reposition')
+        REPOSITION = 'REPOSITION', _('Move Site')
         OTHER = 'OTHER', _('Other')
 
     class Meta:

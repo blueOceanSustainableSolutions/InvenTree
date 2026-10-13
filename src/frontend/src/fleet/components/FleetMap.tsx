@@ -40,11 +40,11 @@ export type FleetMapPoint = {
   device_serial?: string | null;
   latitude?: number | null;
   longitude?: number | null;
-  nominal_latitude?: number | null;
-  nominal_longitude?: number | null;
+  site_latitude?: number | null;
+  site_longitude?: number | null;
   last_latitude?: number | null;
   last_longitude?: number | null;
-  distance_from_nominal_m?: number | null;
+  distance_from_site_m?: number | null;
   radius_m?: number | null;
   polygon?: number[][] | null;
   health?: number;
@@ -81,9 +81,11 @@ function FitBounds({ points }: Readonly<{ points: LatLngTuple[] }>) {
 /**
  * Map of deployed devices.
  *
- * - Pins are coloured by health (at the last position, else the nominal one)
- * - The geofence is shown as a circle (radius) or a polygon
- * - When the last position differs from the nominal one, a line joins them
+ * - Pins are coloured by health (at the reported position, else at the
+ *   location of the site)
+ * - The geofence of the site is shown as a circle (radius) or a polygon
+ * - When the reported position differs from the site location, a line joins
+ *   them
  * - An optional track (position history) is drawn as a line
  */
 export function FleetMap({
@@ -145,14 +147,14 @@ export function FleetMap({
           point.latitude as number,
           point.longitude as number
         ];
-        const nominal: LatLngTuple | null =
-          point.nominal_latitude != null && point.nominal_longitude != null
-            ? [point.nominal_latitude, point.nominal_longitude]
+        const site: LatLngTuple | null =
+          point.site_latitude != null && point.site_longitude != null
+            ? [point.site_latitude, point.site_longitude]
             : null;
         const moved =
-          nominal != null &&
+          site != null &&
           point.last_latitude != null &&
-          (nominal[0] != position[0] || nominal[1] != position[1]);
+          (site[0] != position[0] || site[1] != position[1]);
 
         return (
           <Fragment key={point.pk}>
@@ -162,16 +164,16 @@ export function FleetMap({
                 pathOptions={{ color: color, weight: 1, fillOpacity: 0.08 }}
               />
             )}
-            {showGeofence && !point.polygon && nominal && point.radius_m && (
+            {showGeofence && !point.polygon && site && point.radius_m && (
               <Circle
-                center={nominal}
+                center={site}
                 radius={point.radius_m}
                 pathOptions={{ color: color, weight: 1, fillOpacity: 0.08 }}
               />
             )}
-            {moved && nominal && (
+            {moved && site && (
               <Polyline
-                positions={[nominal, position]}
+                positions={[site, position]}
                 pathOptions={{ color: color, weight: 2, dashArray: '4 4' }}
               />
             )}
@@ -221,10 +223,10 @@ export function FleetMap({
                       ? formatDate(point.last_contact, { showTime: true })
                       : t`Never`}
                   </Text>
-                  {point.distance_from_nominal_m != null && (
+                  {point.distance_from_site_m != null && (
                     <Text size='xs' c='dimmed'>
-                      {t`From nominal`}:{' '}
-                      {Math.round(point.distance_from_nominal_m)} m
+                      {t`From the site`}:{' '}
+                      {Math.round(point.distance_from_site_m)} m
                       {point.radius_m ? ` / ${point.radius_m} m` : ''}
                     </Text>
                   )}
@@ -296,7 +298,7 @@ export function FleetMapView({
 
   const deployments: FleetMapPoint[] = mapQuery.data ?? [];
 
-  // Devices without a position (none set, none reported) are not drawn
+  // Devices without a position (site without a location, none reported) are not drawn
   const missing = deployments.filter((point) => !hasPosition(point)).length;
 
   return (
@@ -309,7 +311,7 @@ export function FleetMapView({
       {missing > 0 && (
         <Text size='sm' c='dimmed'>
           {deploymentId
-            ? t`This device has no position yet. Use "Set Position" to add it.`
+            ? t`Its site has no location yet. Use "Set Site Location" to add it.`
             : t`Devices without a position (not shown on the map): ${missing}`}
         </Text>
       )}

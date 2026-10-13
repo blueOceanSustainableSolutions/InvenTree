@@ -355,9 +355,7 @@ class Scenario7SwapTest(TripTestBase):
 
         # The technician deploys the new device
         maintenance.start(task, user=self.user)
-        record = maintenance.deploy(
-            task, user=self.user, latitude='37.000100', longitude='-7.900100'
-        )
+        record = maintenance.deploy(task, user=self.user)
 
         old.refresh_from_db()
         new.refresh_from_db()
@@ -925,10 +923,19 @@ class TripAPITest(TripDataMixin, InvenTreeAPITestCase):
         )
         response = self.post(
             reverse('api-fleet-task-deploy', kwargs={'pk': deploy_task.pk}),
-            {'latitude': '37.100000', 'longitude': '-8.000000', 'depth_m': '20'},
+            {
+                'new_site_name': 'Sines #9',
+                'new_site_latitude': '37.100000',
+                'new_site_longitude': '-8.000000',
+                'new_site_depth_m': '20',
+            },
             expected_code=200,
         )
         self.assertEqual(response.data['action_count'], 1)
+
+        # The device was deployed at the new site, and the task follows it
+        deploy_task.refresh_from_db()
+        self.assertEqual(deploy_task.site.name, 'Sines #9')
 
         ready.refresh_from_db()
         self.assertEqual(ready.status, DeploymentStatus.DEPLOYED.value)

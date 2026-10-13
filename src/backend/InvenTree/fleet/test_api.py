@@ -38,7 +38,7 @@ from fleet.status_codes import (
     HealthStatus,
     TaskStatus,
 )
-from fleet.test_support import plan_unit, sell_unit
+from fleet.test_support import new_site, plan_unit, sell_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeAPITestCase
 from order.models import ReturnOrderLineItem, SalesOrder
@@ -123,10 +123,11 @@ class FleetPermissionTest(FleetAPITestBase):
         dep = plan_unit(self.make_device('AUR-1'), self.device_type, site=self.site)
         self.post(self.action_url(dep, 'deploy'), {}, expected_code=403)
         self.post(
-            self.action_url(dep, 'set-position'),
-            {'latitude': '38.7', 'longitude': '-9.1'},
+            reverse('api-fleet-site-move', kwargs={'pk': self.site.pk}),
+            {'latitude': '38.7', 'longitude': '-9.1', 'comment': 'Moved'},
             expected_code=403,
         )
+        self.get(reverse('api-fleet-site-location-list'))
 
     def test_change_role(self):
         """Technicians (fleet change) run actions but cannot delete sites."""
@@ -207,24 +208,29 @@ class SiteAPITest(FleetAPITestBase):
         self.assertEqual(site.latitude, Decimal('38.7222555556'))
         self.assertEqual(site.longitude, Decimal('-9.1393050000'))
 
-        # Plain numbers still work, rounded to the stored precision
-        detail = reverse('api-fleet-site-detail', kwargs={'pk': site.pk})
+        # A site without a location gets one by editing it; plain numbers
+        # still work, rounded to the stored precision
+        empty = Site.objects.create(name='Lisbon later')
+        detail = reverse('api-fleet-site-detail', kwargs={'pk': empty.pk})
         self.patch(detail, {'latitude': 38.722255555555555, 'longitude': '-9,5'})
-        site.refresh_from_db()
-        self.assertEqual(site.latitude, Decimal('38.7222555556'))
-        self.assertEqual(site.longitude, Decimal('-9.5'))
+        empty.refresh_from_db()
+        self.assertEqual(empty.latitude, Decimal('38.7222555556'))
+        self.assertEqual(empty.longitude, Decimal('-9.5'))
 
         # Invalid values are rejected with a clear message
-        response = self.patch(detail, {'latitude': '38 75 N'}, expected_code=400)
-        self.assertIn('below 60', str(response.data['latitude']))
-        self.patch(detail, {'latitude': '38 E'}, expected_code=400)
-        self.patch(detail, {'longitude': '181'}, expected_code=400)
+        move = reverse('api-fleet-site-move', kwargs={'pk': site.pk})
 
-        # Empty clears the position
-        self.patch(detail, {'latitude': '', 'longitude': None})
-        site.refresh_from_db()
-        self.assertIsNone(site.latitude)
-        self.assertIsNone(site.longitude)
+        def bad(**values):
+            return self.post(
+                move,
+                {'latitude': '38', 'longitude': '-9', 'comment': 'x', **values},
+                expected_code=400,
+            )
+
+        response = bad(latitude='38 75 N')
+        self.assertIn('below 60', str(response.data['latitude']))
+        bad(latitude='38 E')
+        bad(longitude='181')
 
         # The form renders a coordinate input
         fields = self.options(url).data['actions']['POST']
@@ -450,11 +456,7 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(response.data['device_detail']['serial'], 'AUR-0500')
         self.assertEqual(response.data['platform_id'], '')
 
-        response = self.post(
-            self.action_url(dep, 'deploy'),
-            {'latitude': '37.000100', 'longitude': '-7.900100', 'depth_m': 20},
-            expected_code=200,
-        )
+        response = self.post(self.action_url(dep, 'deploy'), {}, expected_code=200)
         self.assertEqual(response.data['status'], DeploymentStatus.DEPLOYED.value)
         self.assertIsNotNone(response.data['next_pm_date'])
 
@@ -591,14 +593,14 @@ class DeploymentAPITest(FleetAPITestBase):
 
         # A deployed device, maintenance due in 5 days
         deployed = planned('AUR-1004')
-        deployment_service.deploy(deployed)
+        deployment_service.deploy(deployed, site=new_site('Sines #1'))
         Deployment.objects.filter(pk=deployed.pk).update(
             next_pm_date=today + timedelta(days=5)
         )
 
         # A deployed device which the fleet team does not service
         other = planned('AUR-1005')
-        deployment_service.deploy(other)
+        deployment_service.deploy(other, site=new_site('Sines #2'))
         Deployment.objects.filter(pk=other.pk).update(coverage='NO_SERVICE')
 
         url = reverse('api-fleet-plan')
@@ -856,10 +858,10 @@ class MonitoringAPITest(FleetAPITestBase):
         self.assertEqual(row['site_name'], 'Algarve #1')
         self.assertEqual(row['health'], HealthStatus.OK.value)
         self.assertEqual(row['latitude'], 37.001)
-        self.assertEqual(row['nominal_latitude'], 37.0)
+        self.assertEqual(row['site_latitude'], 37.0)
         self.assertEqual(row['radius_m'], 200)
         self.assertEqual(row['open_alert_count'], 0)
-        self.assertAlmostEqual(row['distance_from_nominal_m'], 111.2, delta=0.5)
+        self.assertAlmostEqual(row['distance_from_site_m'], 111.2, delta=0.5)
 
         self.assertEqual(
             len(
@@ -937,92 +939,164 @@ class MonitoringAPITest(FleetAPITestBase):
         self.assertEqual(len(response.data), 1)
 
 
-class StockDrivenAPITest(FleetAPITestBase):
-    """Site optional, position per device (P2b)."""
+class SiteLocationAPITest(FleetAPITestBase):
+    """The site is the only location: required to deploy, moved with a reason."""
 
     roles = ['fleet.view', 'fleet.change', 'stock.change']
 
-    def deployed_without_site(self, serial):
-        """Return a DEPLOYED deployment without a site or a position."""
-        dep = plan_unit(self.make_device(serial), self.device_type)
-        deployment_service.deploy(dep)
-        dep.refresh_from_db()
-        return dep
+    def deploy_url(self, serial, site=None):
+        """Plan a unit (at a site, or without one); return its deploy URL."""
+        dep = plan_unit(self.make_device(serial), self.device_type, site=site)
+        return dep, self.action_url(dep, 'deploy')
 
-    def test_deploy_without_site(self):
-        """The deploy action works without a site; the position may stay empty."""
-        dep = plan_unit(self.make_device('AUR-0800'), self.device_type)
+    def test_deploy_requires_site(self):
+        """Deploying needs a site: the planned one, a chosen one, or a new one."""
+        dep, url = self.deploy_url('AUR-0800')
 
-        data = self.post(self.action_url(dep, 'deploy'), {}, expected_code=200).data
-        self.assertEqual(data['status'], DeploymentStatus.DEPLOYED.value)
-        self.assertIsNone(data['site'])
-        self.assertIsNone(data['latitude'])
+        response = self.post(url, {}, expected_code=400)
+        self.assertIn('site', response.data)
 
-    def test_set_position_and_filters(self):
-        """Set position action, has_position / has_site filters, overview KPIs."""
-        dep = self.deployed_without_site('AUR-0810')
-        other = self.deployed_without_site('AUR-0811')
-        url = reverse('api-fleet-deployment-list')
-
-        overview = self.get(reverse('api-fleet-overview')).data
-        self.assertEqual(overview['no_position'], 2)
-        self.assertEqual(overview['no_site'], 2)
-
-        # Latitude and longitude are required, and validated
-        self.post(self.action_url(dep, 'set-position'), {}, expected_code=400)
+        # A new site needs its location, and excludes choosing a site
+        response = self.post(url, {'new_site_name': 'Sines #3'}, expected_code=400)
+        self.assertIn('new_site_latitude', response.data)
         self.post(
-            self.action_url(dep, 'set-position'),
-            {'latitude': 91, 'longitude': 0},
+            url,
+            {
+                'site': self.site.pk,
+                'new_site_name': 'Sines #3',
+                'new_site_latitude': '37.9',
+                'new_site_longitude': '-8.8',
+            },
             expected_code=400,
         )
 
         data = self.post(
-            self.action_url(dep, 'set-position'),
-            {'latitude': '38.7', 'longitude': '-9.1', 'geofence_radius_m': 250},
+            url,
+            {
+                'new_site_name': 'Sines #3',
+                'new_site_latitude': '37 54 N',
+                'new_site_longitude': '-8.8',
+                'new_site_depth_m': 22,
+            },
             expected_code=200,
         ).data
-        self.assertEqual(float(data['latitude']), 38.7)
-        self.assertEqual(data['geofence_radius_m'], 250)
+        self.assertEqual(data['status'], DeploymentStatus.DEPLOYED.value)
 
-        response = self.get(url, {'has_position': True})
-        self.assertEqual([row['pk'] for row in response.data], [dep.pk])
+        site = Site.objects.get(pk=data['site'])
+        self.assertEqual(site.name, 'Sines #3')
+        self.assertEqual(site.latitude, Decimal('37.9'))
+        self.assertEqual(site.depth_m, 22)
+        self.assertEqual(site.coverage, dep.coverage)
 
-        response = self.get(url, {'has_position': False})
-        self.assertEqual([row['pk'] for row in response.data], [other.pk])
+        # A chosen site replaces the planned one
+        dep, url = self.deploy_url('AUR-0801', site=site)
+        other = Site.objects.create(name='Sines #4', latitude='38', longitude='-9')
+        data = self.post(url, {'site': other.pk}, expected_code=200).data
+        self.assertEqual(data['site'], other.pk)
 
-        response = self.get(url, {'has_site': False})
-        self.assertEqual(len(response.data), 2)
+    def test_location_filters(self):
+        """has_position / no_position follow the location of the site."""
+        located = self.deploy_url('AUR-0810', site=self.site)[0]
+        deployment_service.deploy(located)
+        unlocated = self.deploy_url('AUR-0811', site=new_site('Sines #5'))[0]
+        deployment_service.deploy(unlocated)
+        url = reverse('api-fleet-deployment-list')
 
         overview = self.get(reverse('api-fleet-overview')).data
         self.assertEqual(overview['no_position'], 1)
+        self.assertEqual(overview['no_site'], 0)
 
-        # The map lists both; the one without a position has no coordinates
+        response = self.get(url, {'has_position': True})
+        self.assertEqual([row['pk'] for row in response.data], [located.pk])
+
+        response = self.get(url, {'has_position': False})
+        self.assertEqual([row['pk'] for row in response.data], [unlocated.pk])
+
+        # The map lists both; the one without a location has no coordinates
         rows = {
             row['pk']: row for row in self.get(reverse('api-fleet-deployment-map')).data
         }
-        self.assertEqual(rows[dep.pk]['nominal_latitude'], 38.7)
-        self.assertIsNone(rows[other.pk]['latitude'])
+        self.assertEqual(rows[located.pk]['site_latitude'], 37.0)
+        self.assertIsNone(rows[unlocated.pk]['latitude'])
 
-    def test_set_site_later(self):
-        """Setting a site fills an empty position, but never overwrites one."""
-        dep = self.deployed_without_site('AUR-0820')
-        positioned = self.deployed_without_site('AUR-0821')
-        deployment_service.set_position(positioned, latitude='38', longitude='-9')
+    def test_move_site(self):
+        """Moving a site keeps the old location and the reason in its history."""
+        url = reverse('api-fleet-site-move', kwargs={'pk': self.site.pk})
+        detail = reverse('api-fleet-site-detail', kwargs={'pk': self.site.pk})
+        history = reverse('api-fleet-site-location-list')
 
-        def detail(deployment):
-            return reverse('api-fleet-deployment-detail', kwargs={'pk': deployment.pk})
+        # The location is no longer edited directly
+        response = self.patch(detail, {'latitude': '37.1'}, expected_code=400)
+        self.assertIn('Move Site', str(response.data['latitude']))
+        self.patch(detail, {'latitude': '37.0', 'name': 'Algarve #1b'})
 
-        data = self.patch(detail(dep), {'site': self.site.pk}, expected_code=200).data
-        self.assertEqual(float(data['latitude']), 37.0)
-        self.assertEqual(float(data['longitude']), -7.9)
+        # A reason is required; the date cannot be in the future
+        self.post(url, {'latitude': '37.01', 'longitude': '-7.9'}, expected_code=400)
+        self.post(
+            url,
+            {
+                'latitude': '37.01',
+                'longitude': '-7.9',
+                'comment': 'Shipping lane',
+                'effective_at': (timezone.now() + timedelta(days=1)).isoformat(),
+            },
+            expected_code=400,
+        )
 
-        # The site is now occupied by an active deployment
-        self.patch(detail(positioned), {'site': self.site.pk}, expected_code=400)
+        # The same location is not a move
+        self.post(
+            url,
+            {'latitude': '37.0', 'longitude': '-7.9', 'comment': 'Nothing'},
+            expected_code=400,
+        )
+
+        moved_at = timezone.now() - timedelta(days=2)
+        data = self.post(
+            url,
+            {
+                'latitude': '37.01',
+                'longitude': '-7.9',
+                'comment': 'Moved 1.1 km north, away from the shipping lane',
+                'effective_at': moved_at.isoformat(),
+            },
+            expected_code=200,
+        ).data
+        self.assertEqual(Decimal(data['latitude']), Decimal('37.01'))
+
+        rows = self.get(history, {'site': self.site.pk}).data
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(Decimal(rows[0]['old_latitude']), Decimal('37.0'))
+        self.assertEqual(Decimal(rows[0]['latitude']), Decimal('37.01'))
+        self.assertAlmostEqual(rows[0]['distance_m'], 1112, delta=2)
+        self.assertEqual(rows[0]['created_by_detail']['username'], self.user.username)
+
+        # A move cannot be dated before the last one
+        self.post(
+            url,
+            {
+                'latitude': '37.02',
+                'longitude': '-7.9',
+                'comment': 'Back',
+                'effective_at': (moved_at - timedelta(days=1)).isoformat(),
+            },
+            expected_code=400,
+        )
+
+    def test_change_site_later(self):
+        """The site of a deployed device can be changed, to a free site only."""
+        dep = self.deploy_url('AUR-0820', site=new_site('Sines #6'))[0]
+        deployment_service.deploy(dep)
+        busy = self.deploy_url('AUR-0821', site=self.site)[0]
+        deployment_service.deploy(busy)
+
+        detail = reverse('api-fleet-deployment-detail', kwargs={'pk': dep.pk})
+
+        # The site is occupied by an active deployment
+        self.patch(detail, {'site': self.site.pk}, expected_code=400)
 
         other_site = Site.objects.create(
-            name='Sines #2', latitude='37.9', longitude='-8.8'
+            name='Sines #7', latitude='37.9', longitude='-8.8'
         )
-        data = self.patch(
-            detail(positioned), {'site': other_site.pk}, expected_code=200
-        ).data
-        self.assertEqual(float(data['latitude']), 38.0)
+        data = self.patch(detail, {'site': other_site.pk}, expected_code=200).data
+        self.assertEqual(data['site'], other_site.pk)
+        self.assertNotIn('latitude', data)

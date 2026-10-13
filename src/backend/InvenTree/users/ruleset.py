@@ -187,6 +187,7 @@ def get_ruleset_models() -> dict:
             'fleet_maintenancetask',
             'fleet_positionfix',
             'fleet_site',
+            'fleet_sitelocationchange',
             'fleet_streamtemplate',
             'fleet_tripkitline',
         ],

@@ -4,6 +4,7 @@ Shipping is not deploying: only the fleet Deploy action deploys a device, and
 a deployed device comes back only through the fleet.
 """
 
+from decimal import Decimal
 from io import StringIO
 
 from django.core.exceptions import ValidationError
@@ -25,7 +26,7 @@ from fleet.status_codes import (
 )
 from fleet.tasks import fleet_sync_pipeline
 from fleet.test_pipeline import FleetServiceTestBase
-from fleet.test_support import plan_unit
+from fleet.test_support import new_site, plan_unit
 from part.models import Part
 from stock.models import StockItem
 from stock.status_codes import StockHistoryCode
@@ -51,8 +52,12 @@ class StockSyncTest(FleetServiceTestBase):
         return item
 
     def deployed(self, serial, site=None):
-        """A device deployed through the fleet (without a site unless given)."""
-        dep = plan_unit(self.make_device(serial), self.device_type, site=site)
+        """A device deployed through the fleet (at a new site unless given)."""
+        dep = plan_unit(
+            self.make_device(serial),
+            self.device_type,
+            site=site or new_site(f'Site {serial}'),
+        )
         deployment_service.deploy(dep, user=self.user)
         dep.refresh_from_db()
         dep.device.refresh_from_db()
@@ -77,9 +82,7 @@ class StockSyncTest(FleetServiceTestBase):
         self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
 
         # The fleet Deploy action deploys it, with the customer it was given
-        deployment_service.deploy(
-            dep, user=self.user, latitude='37.0', longitude='-8.0'
-        )
+        deployment_service.deploy(dep, user=self.user, site=new_site('Sines #1'))
 
         dep.refresh_from_db()
         item.refresh_from_db()
@@ -389,7 +392,7 @@ class StockSyncTest(FleetServiceTestBase):
 
         # The sync keeps it as the row of the unit; the fleet can deploy it
         self.assertEqual(sync_stock_deployments(), EMPTY_SUMMARY)
-        deployment_service.deploy(old)
+        deployment_service.deploy(old, site=new_site('Sines #2'))
         old.refresh_from_db()
         self.assertEqual(old.status, DeploymentStatus.DEPLOYED.value)
 
@@ -403,11 +406,12 @@ class StockSyncTest(FleetServiceTestBase):
             call_command('fleet_undeploy', by_fleet.reference, stdout=StringIO())
 
     def test_monitoring_without_position(self):
-        """A device without a position is monitored, without a geofence check."""
+        """A device at a site without a location is monitored, without a geofence check."""
         from fleet.integrations.base import DeviceStatus, Position, StreamStatus
+        from fleet.services.site import move_site
 
         dep = self.deployed('AUR-0600')
-        self.assertIsNone(dep.latitude)
+        self.assertFalse(dep.site.has_location)
 
         now = timezone.now()
         status = DeviceStatus(
@@ -424,15 +428,15 @@ class StockSyncTest(FleetServiceTestBase):
 
         dep.refresh_from_db()
         self.assertEqual(dep.health, HealthStatus.OK.value)
-        self.assertIsNone(dep.distance_from_nominal_m)
+        self.assertIsNone(dep.distance_from_site_m)
         self.assertFalse(
             Alert.objects.filter(
                 deployment=dep, alert_type=Alert.AlertType.GEOFENCE_BREACH
             ).exists()
         )
 
-        # Once a position is set, the geofence applies
-        deployment_service.set_position(dep, latitude='37.0', longitude='-8.0')
+        # Once the site has a location, the geofence applies
+        move_site(dep.site, self.user, Decimal('37.0'), Decimal('-8.0'), 'Surveyed')
         dep.refresh_from_db()
         monitoring.apply_status(dep, status, now=now)
 
@@ -568,7 +572,7 @@ class SalesBuildPipelineTest(FleetServiceTestBase):
         self.assertEqual(dep.status, DeploymentStatus.READY.value)
         self.assertEqual(Deployment.objects.count(), 1)
 
-        deployment_service.deploy(dep)
+        deployment_service.deploy(dep, site=new_site('Sines #3'))
         dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
         self.assertEqual(dep.client, self.client_company)

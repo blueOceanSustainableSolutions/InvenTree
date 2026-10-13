@@ -84,9 +84,11 @@ async function setupFleetData(): Promise<FleetData> {
   });
   expect(withClient.ok(), await withClient.text()).toBeTruthy();
 
+  // A site is required: deploy at a new one, created with its location
   const deployed = await post(api, `fleet/deployment/${planned.pk}/deploy/`, {
-    latitude: '37.010000',
-    longitude: '-7.930000'
+    new_site_name: `PW Site ${uid}`,
+    new_site_latitude: '37.010000',
+    new_site_longitude: '-7.930000'
   });
   expect(deployed.status).toBe(50);
 

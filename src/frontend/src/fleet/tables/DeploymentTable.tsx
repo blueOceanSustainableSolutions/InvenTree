@@ -230,20 +230,33 @@ export function DeploymentTable({
         render: (record: any) => record.client_detail?.name ?? '-'
       },
       {
-        accessor: 'latitude',
-        title: t`Position`,
+        // Where the device should be: the location of its site
+        accessor: 'site_location',
+        title: t`Site Location`,
         sortable: false,
         hidden: mode == 'pipeline',
         render: (record: any) =>
-          record.latitude != null && record.longitude != null ? (
+          record.site_detail?.latitude != null &&
+          record.site_detail?.longitude != null ? (
             <PositionValue
-              latitude={record.latitude}
-              longitude={record.longitude}
+              latitude={record.site_detail.latitude}
+              longitude={record.site_detail.longitude}
               compact
             />
           ) : (
             <Badge color='orange' variant='light'>{t`Not set`}</Badge>
           )
+      },
+      {
+        accessor: 'distance_from_site_m',
+        title: t`From Site`,
+        sortable: false,
+        hidden: mode == 'pipeline',
+        defaultVisible: false,
+        render: (record: any) =>
+          record.distance_from_site_m != null
+            ? `${Math.round(record.distance_from_site_m)} m`
+            : '-'
       },
       {
         accessor: 'build',
@@ -364,8 +377,8 @@ export function DeploymentTable({
       },
       {
         name: 'has_position',
-        label: t`Has Position`,
-        description: t`Show deployments with a position set`
+        label: t`Site Has Location`,
+        description: t`Show deployments whose site has a location`
       }
     );
 

@@ -59,7 +59,7 @@ from fleet.status_codes import (
     TaskStatus,
 )
 from fleet.tasks import fleet_daily_planning
-from fleet.test_support import plan_unit
+from fleet.test_support import new_site, plan_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeAPITestCase, InvenTreeTestCase
 from part.models import Part
@@ -190,13 +190,16 @@ class MaintenanceDataMixin:
         return device
 
     def deploy(self, serial, site=None, days_ago=170, battery=None):
-        """Deploy a new unit (at a site, or without one) some days ago.
+        """Deploy a new unit some days ago.
 
+        Without a site given, it is deployed at a new site without a location.
         The unit has a battery installed (serial BAT-<serial> by default).
         """
         device = self.make_device(serial, battery=battery or f'BAT-{serial}')
 
-        dep = plan_unit(device, self.device_type, site=site)
+        dep = plan_unit(
+            device, self.device_type, site=site or new_site(f'Site {serial}')
+        )
         deployment_service.deploy(
             dep, deployed_at=timezone.now() - timedelta(days=days_ago)
         )
@@ -562,10 +565,11 @@ class PlanningTest(MaintenanceTestBase):
 
     def test_proposals(self):
         """One proposal per deployment, without a site, following the PM date."""
-        dep = self.deploy('AUR-0190')  # no site, no position
+        # Deployed before a site was required (no site)
+        dep = self.deploy('AUR-0190')
+        Deployment.objects.filter(pk=dep.pk).update(site=None)
+        dep.refresh_from_db()
         far = self.deploy('AUR-0191', site=self.site, days_ago=10)
-
-        self.assertIsNone(dep.site)
 
         created = planning.propose_pm_tasks()
         self.assertEqual([task.deployment for task in created], [dep])
@@ -891,7 +895,7 @@ class TaskLifecycleTest(MaintenanceTestBase):
             maintenance.verify(task)
 
         with self.assertRaises(ValidationError):
-            maintenance.reposition(task, self.user, 37.1, -7.8)
+            maintenance.reposition(task, self.user, 37.1, -7.8, 'Moved')
 
         maintenance.record_action(
             task,
@@ -922,18 +926,29 @@ class TaskLifecycleTest(MaintenanceTestBase):
         self.assertFalse(MaintenanceTask.objects.filter(follow_up_of=task).exists())
 
     def test_reposition(self):
-        """Repositioning moves the nominal position and keeps the old one."""
+        """Repositioning moves the site, with the note as the reason."""
         dep = self.deploy('AUR-0205', site=self.site)
         task = self.started_task(dep, TaskType.CORRECTIVE)
+
+        # A reason is required
+        with self.assertRaises(ValidationError):
+            maintenance.reposition(
+                task, self.user, Decimal('37.01'), Decimal('-7.91'), ''
+            )
 
         action = maintenance.reposition(
             task, self.user, Decimal('37.010000'), Decimal('-7.910000'), 'Moved'
         )
 
-        dep.refresh_from_db()
-        self.assertEqual(dep.latitude, Decimal('37.010000'))
+        self.site.refresh_from_db()
+        self.assertEqual(self.site.latitude, Decimal('37.010000'))
         self.assertEqual(action.metadata['old_position']['latitude'], 37.0)
         self.assertEqual(action.metadata['new_position']['longitude'], -7.91)
+
+        change = self.site.location_changes.get()
+        self.assertEqual(change.pk, action.metadata['location_change'])
+        self.assertEqual(change.comment, f'{task.reference}: Moved')
+        self.assertEqual(change.created_by, self.user)
 
     def test_consume_rules(self):
         """Consumables: bulk stock only, within the available quantity."""
@@ -1049,7 +1064,7 @@ class MaintenanceAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
 
     def test_task_flow(self):
         """Create, schedule, start, execute and complete a task over the API."""
-        dep = self.deploy('AUR-0300')  # no site
+        dep = self.deploy('AUR-0300')
         url = reverse('api-fleet-task-list')
 
         response = self.post(
@@ -1065,7 +1080,7 @@ class MaintenanceAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
         task = MaintenanceTask.objects.get(pk=response.data['pk'])
         self.assertEqual(response.data['status'], TaskStatus.PROPOSED.value)
         self.assertEqual(response.data['deployment'], dep.pk)
-        self.assertEqual(response.data['display_name'], 'AUR-0300')
+        self.assertEqual(response.data['display_name'], 'Site AUR-0300')
         self.assertTrue(response.data['reference'].startswith('MT-'))
 
         # Scheduling by date
@@ -1144,7 +1159,7 @@ class MaintenanceAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
         )
         self.post(
             self.task_url(task, 'reposition'),
-            {'latitude': '37.1', 'longitude': '-7.8'},
+            {'latitude': '37.1', 'longitude': '-7.8', 'note': 'Dragged by a trawler'},
             expected_code=200,
         )
 
@@ -1803,7 +1818,7 @@ class DeviceStateAPITest(MaintenanceDataMixin, InvenTreeAPITestCase):
 
         overview = self.get(reverse('api-fleet-overview')).data
         self.assertEqual(overview['deployed'], 1)
-        self.assertEqual(overview['no_site'], 1)
+        self.assertEqual(overview['no_site'], 0)
         self.assertEqual(overview['state_docked'], 1)
         self.assertEqual(overview['state_active'], 1)
         self.assertEqual(overview['state_decommissioned'], 1)

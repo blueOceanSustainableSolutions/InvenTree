@@ -60,7 +60,6 @@ import {
   StreamStatusList,
   formatAge
 } from '../../fleet/components/StreamStatusList';
-import { PositionValue } from '../../fleet/coordinates';
 import {
   deploymentDetailFields,
   detailFieldsByName
@@ -182,7 +181,7 @@ function StartMaintenanceModal({
  * Device card of a deployment (manager and technician): site, serial, live
  * streams, a map snippet, the installed components (read only), alerts, the
  * history timeline and maintenance, with the actions Start Maintenance,
- * Deploy, Recover and Set Position (and, in the pipeline, Set Site and
+ * Deploy, Recover and Move Site (and, in the pipeline, Set Site and
  * Date). Site and position are optional.
  */
 export default function DeploymentDetail(): ReactNode {
@@ -303,24 +302,10 @@ export default function DeploymentDetail(): ReactNode {
               },
               fields.next_pm_date,
               {
-                type: 'string',
-                name: 'position',
-                label: t`Position`,
-                value_formatter: () =>
-                  state.hasPosition ? (
-                    <PositionValue
-                      latitude={deployment.latitude}
-                      longitude={deployment.longitude}
-                      suffix={
-                        deployment.depth_m != null
-                          ? ` (${deployment.depth_m} m)`
-                          : ''
-                      }
-                    />
-                  ) : state.isClosed ? undefined : (
-                    <Text size='sm' c='orange'>{t`Not set`}</Text>
-                  )
+                ...fields.site_location,
+                hidden: state.isClosed
               },
+              fields.reported_position,
               {
                 ...fields.build,
                 hidden: false,
@@ -495,15 +480,15 @@ export default function DeploymentDetail(): ReactNode {
         {t`Recover`}
       </Button>
     ) : null,
-    state.canSetPosition ? (
+    state.canMoveSite ? (
       <Button
-        key='position'
+        key='move-site'
         variant='outline'
         color={state.hasPosition ? 'gray' : 'orange'}
         leftSection={<IconCurrentLocation size={18} />}
-        onClick={deploymentActions.openSetPosition}
+        onClick={deploymentActions.openMoveSite}
       >
-        {t`Set Position`}
+        {state.hasPosition ? t`Move Site` : t`Set Site Location`}
       </Button>
     ) : null,
     state.canSetState ? (

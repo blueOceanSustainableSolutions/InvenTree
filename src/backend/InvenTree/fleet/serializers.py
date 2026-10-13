@@ -30,6 +30,7 @@ from fleet.models import (
     MaintenanceTask,
     PositionFix,
     Site,
+    SiteLocationChange,
     StreamTemplate,
     TripKitLine,
 )
@@ -227,6 +228,20 @@ class StreamTemplateSerializer(InvenTreeModelSerializer):
         ]
 
 
+def depth_input(**kwargs):
+    """Return an input field for a water depth (m)."""
+    return serializers.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        min_value=0,
+        required=False,
+        allow_null=True,
+        label=kwargs.pop('label', _('Depth')),
+        help_text=kwargs.pop('help_text', _('Water depth (m)')),
+        **kwargs,
+    )
+
+
 class SiteBriefSerializer(InvenTreeModelSerializer):
     """Brief serializer for the Site model."""
 
@@ -234,7 +249,15 @@ class SiteBriefSerializer(InvenTreeModelSerializer):
         """Metaclass options."""
 
         model = Site
-        fields = ['pk', 'reference', 'name', 'latitude', 'longitude', 'coverage']
+        fields = [
+            'pk',
+            'reference',
+            'name',
+            'latitude',
+            'longitude',
+            'depth_m',
+            'coverage',
+        ]
         read_only_fields = fields
 
 
@@ -312,6 +335,73 @@ class SiteSerializer(
         """The reference must match the reference pattern setting."""
         Site.validate_reference_field(reference)
         return reference
+
+    def validate(self, data):
+        """Once a site has a location, it changes only by moving the site."""
+        from fleet.services.site import LOCATION_FIELDS
+
+        data = super().validate(data)
+        site = self.instance
+
+        if site is not None and site.has_location:
+            for field in LOCATION_FIELDS:
+                if field in data and data[field] != getattr(site, field):
+                    raise serializers.ValidationError(
+                        {
+                            field: _(
+                                'Use "Move Site" to change the location, so that the change is recorded'
+                            )
+                        }
+                    )
+
+        return data
+
+
+class SiteLocationChangeSerializer(InvenTreeModelSerializer):
+    """Serializer for the SiteLocationChange model (location history of a site)."""
+
+    class Meta:
+        """Metaclass options."""
+
+        model = SiteLocationChange
+        fields = [
+            'pk',
+            'site',
+            'effective_at',
+            'old_latitude',
+            'old_longitude',
+            'old_depth_m',
+            'latitude',
+            'longitude',
+            'depth_m',
+            'distance_m',
+            'comment',
+            'created_by',
+            'created_by_detail',
+            'created_at',
+        ]
+        read_only_fields = fields
+
+    created_by_detail = UserSerializer(source='created_by', read_only=True)
+
+    distance_m = serializers.SerializerMethodField(
+        label=_('Distance'), help_text=_('Distance from the old location (m)')
+    )
+
+    def get_distance_m(self, change) -> float | None:
+        """Return the distance between the old and the new location (m)."""
+        if change.old_latitude is None or change.old_longitude is None:
+            return None
+
+        return round(
+            geo.haversine(
+                change.old_latitude,
+                change.old_longitude,
+                change.latitude,
+                change.longitude,
+            ),
+            1,
+        )
 
 
 class DeviceLinkSerializer(FilterableSerializerMixin, InvenTreeModelSerializer):
@@ -427,10 +517,6 @@ class DeploymentSerializer(
 ):
     """Serializer for the Deployment model."""
 
-    latitude = CoordinateField('latitude', required=False, allow_null=True)
-
-    longitude = CoordinateField('longitude', required=False, allow_null=True)
-
     class Meta:
         """Metaclass options."""
 
@@ -460,11 +546,6 @@ class DeploymentSerializer(
             'target_date',
             'deployed_at',
             'recovered_at',
-            'latitude',
-            'longitude',
-            'depth_m',
-            'geofence_radius_m',
-            'geofence_polygon',
             'next_pm_date',
             'next_pm_manual',
             'health',
@@ -473,7 +554,7 @@ class DeploymentSerializer(
             'last_latitude',
             'last_longitude',
             'last_position_at',
-            'distance_from_nominal_m',
+            'distance_from_site_m',
             'last_polled_at',
             'open_alert_count',
             'device_state',
@@ -502,7 +583,7 @@ class DeploymentSerializer(
             'last_latitude',
             'last_longitude',
             'last_position_at',
-            'distance_from_nominal_m',
+            'distance_from_site_m',
             'last_polled_at',
         ]
 
@@ -720,37 +801,6 @@ class DeploymentSerializer(
         Deployment.validate_reference_field(reference)
         return reference
 
-    def update(self, instance, validated_data):
-        """Setting a site on a deployed device fills an empty position from it.
-
-        A position which is already set is never overwritten. Pipeline
-        deployments take the site position when they are deployed.
-        """
-        if instance.status == DeploymentStatus.DEPLOYED.value:
-            self.copy_site_position(validated_data, instance)
-
-        return super().update(instance, validated_data)
-
-    @staticmethod
-    def copy_site_position(validated_data: dict, instance) -> None:
-        """Copy the site position into the deployment if it has none."""
-        site = validated_data.get('site')
-
-        if site is None or site.latitude is None or site.longitude is None:
-            return
-
-        def current(field):
-            if field in validated_data:
-                return validated_data[field]
-            return getattr(instance, field, None)
-
-        if current('latitude') is None and current('longitude') is None:
-            validated_data['latitude'] = site.latitude
-            validated_data['longitude'] = site.longitude
-
-            if current('depth_m') is None:
-                validated_data['depth_m'] = site.depth_m
-
 
 class FleetActionSerializer(serializers.Serializer):
     """Base class for the input of an action on one fleet object.
@@ -789,6 +839,49 @@ class TaskActionSerializer(FleetActionSerializer):
     """Base class for an action on a maintenance task."""
 
     CONTEXT_KEY = 'task'
+
+
+class SiteActionSerializer(FleetActionSerializer):
+    """Base class for an action on a site."""
+
+    CONTEXT_KEY = 'site'
+
+
+class SiteMoveSerializer(SiteActionSerializer):
+    """Move a site to a new location (the old one is kept in its history)."""
+
+    latitude = CoordinateField('latitude')
+
+    longitude = CoordinateField('longitude')
+
+    depth_m = depth_input(help_text=_('Leave blank to keep the current depth'))
+
+    effective_at = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        label=_('Effective At'),
+        help_text=_('When the device was actually moved (defaults to now)'),
+    )
+
+    comment = serializers.CharField(
+        max_length=500, label=_('Reason'), help_text=_('Why the site is moved')
+    )
+
+    def save(self):
+        """Move the site."""
+        from fleet.services import site
+
+        data = self.validated_data
+
+        site.move_site(
+            self.target,
+            self.user,
+            data['latitude'],
+            data['longitude'],
+            comment=data['comment'],
+            depth_m=data.get('depth_m'),
+            effective_at=data.get('effective_at'),
+        )
 
 
 class TripActionSerializer(FleetActionSerializer):
@@ -858,28 +951,38 @@ class DeploymentNewSerializer(DeploymentActionSerializer):
 
 
 class DeployFieldsSerializer(serializers.Serializer):
-    """The inputs of a deploy action (the site is optional)."""
+    """The inputs of a deploy action.
 
-    latitude = CoordinateField(
-        'latitude',
+    A site is required: an existing one (defaults to the planned site), or a
+    new one created from the new_site_* fields. The device has no position of
+    its own; it should be at the location of its site.
+    """
+
+    site = serializers.PrimaryKeyRelatedField(
+        queryset=Site.objects.filter(active=True),
         required=False,
         allow_null=True,
-        help_text=_(
-            'Actual position (defaults to the deployment position, then the site position; may stay empty)'
-        ),
+        label=_('Site'),
+        help_text=_('Where the device is deployed (defaults to the planned site)'),
     )
 
-    longitude = CoordinateField('longitude', required=False, allow_null=True)
-
-    depth_m = serializers.DecimalField(
-        max_digits=8,
-        decimal_places=2,
-        min_value=0,
+    new_site_name = serializers.CharField(
         required=False,
-        allow_null=True,
-        label=_('Depth'),
-        help_text=_('Water depth (m)'),
+        allow_blank=True,
+        max_length=100,
+        label=_('New Site'),
+        help_text=_('Or create a new site with this name'),
     )
+
+    new_site_latitude = CoordinateField(
+        'latitude', required=False, allow_null=True, label=_('New Site Latitude')
+    )
+
+    new_site_longitude = CoordinateField(
+        'longitude', required=False, allow_null=True, label=_('New Site Longitude')
+    )
+
+    new_site_depth_m = depth_input(label=_('New Site Depth'))
 
     deployed_at = serializers.DateTimeField(
         required=False,
@@ -888,60 +991,62 @@ class DeployFieldsSerializer(serializers.Serializer):
         help_text=_('Defaults to now'),
     )
 
+    def validate(self, data):
+        """A new site needs its location (deploy() checks that there is a site)."""
+        data = super().validate(data)
+
+        name = (data.get('new_site_name') or '').strip()
+        data['new_site_name'] = name
+
+        if name:
+            if data.get('site') is not None:
+                raise serializers.ValidationError(
+                    {'new_site_name': _('Choose a site, or create a new one, not both')}
+                )
+
+            errors = {
+                field: _('Required for a new site')
+                for field in ['new_site_latitude', 'new_site_longitude']
+                if data.get(field) is None
+            }
+
+            if errors:
+                raise serializers.ValidationError(errors)
+
+        return data
+
+    def get_site(self, deployment):
+        """Return the chosen site, or the new site created from the inputs."""
+        data = self.validated_data
+
+        if not data.get('new_site_name'):
+            return data.get('site')
+
+        site = Site(
+            name=data['new_site_name'],
+            latitude=data['new_site_latitude'],
+            longitude=data['new_site_longitude'],
+            depth_m=data.get('new_site_depth_m'),
+            coverage=deployment.coverage,
+            client=deployment.client,
+        )
+        site.full_clean()
+        site.save()
+
+        return site
+
 
 class DeploymentDeploySerializer(DeploymentActionSerializer, DeployFieldsSerializer):
     """Deploy the device of a ready deployment."""
 
     def save(self):
-        """Deploy the device."""
+        """Deploy the device (at a new site, if one is given)."""
         data = self.validated_data
 
         self.target.deploy(
             user=self.user,
-            latitude=data.get('latitude'),
-            longitude=data.get('longitude'),
-            depth_m=data.get('depth_m'),
+            site=self.get_site(self.target),
             deployed_at=data.get('deployed_at'),
-        )
-
-
-class DeploymentSetPositionSerializer(DeploymentActionSerializer):
-    """Set the nominal position of a device."""
-
-    latitude = CoordinateField('latitude')
-
-    longitude = CoordinateField('longitude')
-
-    depth_m = serializers.DecimalField(
-        max_digits=8,
-        decimal_places=2,
-        min_value=0,
-        required=False,
-        allow_null=True,
-        label=_('Depth'),
-        help_text=_('Water depth (m)'),
-    )
-
-    geofence_radius_m = serializers.IntegerField(
-        min_value=1,
-        required=False,
-        allow_null=True,
-        label=_('Geofence Radius'),
-        help_text=_('Geofence radius (m). Leave blank to keep the current value'),
-    )
-
-    def save(self):
-        """Set the position."""
-        from fleet.services import deployment
-
-        data = self.validated_data
-
-        deployment.set_position(
-            self.target,
-            latitude=data['latitude'],
-            longitude=data['longitude'],
-            depth_m=data.get('depth_m'),
-            geofence_radius_m=data.get('geofence_radius_m'),
         )
 
 
@@ -1426,15 +1531,17 @@ class DeploymentMapSerializer(serializers.Serializer):
     site_reference = serializers.CharField(read_only=True, allow_null=True)
     device_serial = serializers.CharField(read_only=True, allow_null=True)
     latitude = serializers.FloatField(
-        read_only=True, allow_null=True, help_text='Last position, else nominal'
+        read_only=True,
+        allow_null=True,
+        help_text='Reported position, else the site location',
     )
     longitude = serializers.FloatField(read_only=True, allow_null=True)
-    nominal_latitude = serializers.FloatField(read_only=True, allow_null=True)
-    nominal_longitude = serializers.FloatField(read_only=True, allow_null=True)
+    site_latitude = serializers.FloatField(read_only=True, allow_null=True)
+    site_longitude = serializers.FloatField(read_only=True, allow_null=True)
     last_latitude = serializers.FloatField(read_only=True, allow_null=True)
     last_longitude = serializers.FloatField(read_only=True, allow_null=True)
     last_position_at = serializers.DateTimeField(read_only=True, allow_null=True)
-    distance_from_nominal_m = serializers.FloatField(read_only=True, allow_null=True)
+    distance_from_site_m = serializers.FloatField(read_only=True, allow_null=True)
     radius_m = serializers.IntegerField(read_only=True, allow_null=True)
     polygon = serializers.JSONField(read_only=True, allow_null=True)
     health = serializers.IntegerField(read_only=True, help_text='HealthStatus')
@@ -2036,18 +2143,22 @@ class TaskConsumeSerializer(TaskActionSerializer):
 
 
 class TaskRepositionSerializer(TaskActionSerializer):
-    """Move the nominal position of the deployed device."""
+    """Move the site of the deployed device (the device was physically moved)."""
 
     latitude = CoordinateField('latitude')
 
     longitude = CoordinateField('longitude')
 
+    depth_m = depth_input(help_text=_('Leave blank to keep the current depth'))
+
     note = serializers.CharField(
-        required=False, allow_blank=True, max_length=500, label=_('Note')
+        max_length=450,
+        label=_('Reason'),
+        help_text=_('Why the device was moved (kept in the site location history)'),
     )
 
     def save(self):
-        """Set the new position."""
+        """Move the site."""
         from fleet.services import maintenance
 
         data = self.validated_data
@@ -2057,7 +2168,8 @@ class TaskRepositionSerializer(TaskActionSerializer):
             self.user,
             data['latitude'],
             data['longitude'],
-            note=data.get('note', ''),
+            note=data['note'],
+            depth_m=data.get('depth_m'),
         )
 
 
@@ -2228,13 +2340,12 @@ class TaskDeploySerializer(TaskActionSerializer, DeployFieldsSerializer):
         from fleet.services import maintenance
 
         data = self.validated_data
+        deployment = self.target.deployment
 
         maintenance.deploy(
             self.target,
             user=self.user,
-            latitude=data.get('latitude'),
-            longitude=data.get('longitude'),
-            depth_m=data.get('depth_m'),
+            site=self.get_site(deployment) if deployment is not None else None,
             deployed_at=data.get('deployed_at'),
             note=data.get('note', ''),
         )

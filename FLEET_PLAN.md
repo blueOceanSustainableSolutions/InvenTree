@@ -33,7 +33,7 @@ The plan is written for an engineer or agent who has **no prior context**. Read 
 | Customer on deploy (Q5, answered 2026-10-07) | A single default customer company (e.g. "BlueOasis Fleet") via `FLEET_DEFAULT_CUSTOMER`, used when a site has no client. |
 | Default PM interval (Q6, answered 2026-10-07) | 180 days (`FleetDeviceType.pm_interval_days` default). Per-type intervals, checklists and kits are entered as data later. |
 | Source of the deployed list (answered 2026-10-08) | **No import.** The devices already in InvenTree *are* the list. Every serialized stock item of a part marked as a fleet device type (or a variant of it) that **has a customer** is a deployed device, and gets its deployment record **automatically** (option A; items of other parts with a customer are ignored). When the customer is removed (returned), the deployment is closed automatically. See section 2.10 (phase P2b). |
-| Site and position (answered 2026-10-08) | **A site is optional.** Each device gets its own coordinates (latitude, longitude, depth) on its deployment. Automatically found devices start **without a site and without a position**; both stay empty until a user adds them. Nothing may be required to have a site to be deployed, monitored or planned. |
+| Site and position (answered 2026-10-08, **replaced 2026-10-13**) | **The site is the only location.** Deployments have no coordinates of their own: the site's latitude, longitude, depth and geofence say where the device should be, and the data platform's last position is shown next to it as the *reported position* (with the distance from the site). **Deploying requires a site**: the planned one, another one, or a new one created in the Deploy form (name + location). Planning still allows no site. Once a site has a location it is changed only with **Move Site** (`site/<pk>/move/`: new location, optional depth and effective date, required reason), which keeps the old location in `SiteLocationChange` (history at `site-location/?site=<pk>`); the field-task *Move Site* action (`task/<pk>/reposition/`, reason required) does the same. Migration 0011 dropped the deployment coordinates without converting them. |
 | Sales visibility (Q8, answered 2026-10-08) | **Every device of a fleet device type that is in a build order linked to a sale (sales order) must be visible in the Fleet list.** Scope chosen: **option (b) only**. A fleet build order linked to a sales order enters the pipeline (PLANNED) as soon as it is **created**, before it is issued; other build orders still enter at issue. No sales-order column (a), and no rows for allocated-but-unshipped units (c). See section 2.10. |
 
 ### 0.3 Repositories and layout
@@ -539,7 +539,7 @@ def get_client() -> DataPlatformClient: # by FLEET_DATA_PROVIDER
 - `consume(task, user, stock_item, quantity, note)`:
   - The bulk consumable must be in the trip kit location, or any location if there is no trip.
   - Call `stock_item.take_stock(quantity, user, notes=f'[{task.reference}] …')` and record a CONSUME action. Check the exact `take_stock` signature in `B/stock/models.py`.
-- `reposition(task, user, lat, lon)`: updates the deployment's nominal position and moves the geofence centre. It records a REPOSITION action that stores the old position in `metadata`.
+- `reposition(task, user, lat, lon, note, depth_m=None)`: moves the **site** of the deployment with `site.move_site()` (the note, prefixed with the task reference, is the reason), and records a REPOSITION action (shown as "Move Site") with the old and new location in `metadata`.
 - `verify(task)`: calls `monitoring.verify_now(task.deployment, since=task.started_at)` and stores the result in `task.verification`.
 - `complete(task, user, override_reason=None)`:
   1. Requires every **required** checklist item to be non-PENDING.
@@ -735,7 +735,7 @@ status/<class>/                 StatusView per status class
 - Not done yet: `alert/<pk>/create-task/` (P3, needs the maintenance service), task (P3), trip (P4) and fault-code (P3) endpoints.
 
 **As built in P2b:**
-- `deployment/<pk>/set-position/` (POST `{latitude, longitude, depth_m?, geofence_radius_m?}`, fleet change, name `api-fleet-deployment-set-position`) returns the deployment. It answers 400 for closed deployments or invalid coordinates.
+- ~~`deployment/<pk>/set-position/`~~ removed 2026-10-13. Use `site/<pk>/move/` (POST `{latitude, longitude, depth_m?, effective_at?, comment}`, fleet change, name `api-fleet-site-move`), which returns the site; the history is `site-location/` (GET, `?site=<pk>`, name `api-fleet-site-location-list`).
 - `deploy/` accepts a deployment without a site (see 2.6).
 - Deployment filters `has_site` and `has_position` (latitude and longitude set). Search also matches `client__name`.
 - Editing a deployment (PATCH): setting a site on a **DEPLOYED** deployment copies the site position (and depth) only when the deployment has no position; an existing position is never overwritten. A site that already has another DEPLOYED deployment is refused (400). Pipeline deployments take the site position when deployed, so changing a planned site still moves the position.

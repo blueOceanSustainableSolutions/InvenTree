@@ -82,9 +82,8 @@ export default function DeploymentDetail() {
     }
   });
 
-  const { isPipeline, isDeployed } = useDeploymentState(deployment);
-  const hasPosition =
-    deployment.latitude != null && deployment.longitude != null;
+  const { isPipeline, isDeployed, hasPosition } =
+    useDeploymentState(deployment);
 
   const detailsPanel = useMemo(() => {
     if (instanceQuery.isFetching) {
@@ -290,12 +289,12 @@ export default function DeploymentDetail() {
         onClick={deploymentActions.openDeploy}
       />,
       <PrimaryActionButton
-        key='set-position'
-        title={t`Set Position`}
+        key='move-site'
+        title={hasPosition ? t`Move Site` : t`Set Site Location`}
         icon='location'
         color={hasPosition ? 'gray' : 'orange'}
-        hidden={!can.canSetPosition}
-        onClick={deploymentActions.openSetPosition}
+        hidden={!can.canMoveSite}
+        onClick={deploymentActions.openMoveSite}
       />,
       <PrimaryActionButton
         key='recover'

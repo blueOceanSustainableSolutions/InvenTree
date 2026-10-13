@@ -53,9 +53,6 @@ from fleet.status_codes import (
 )
 from stock.status_codes import StockHistoryCode
 
-# Fields changed by set_position()
-POSITION_FIELDS = ['latitude', 'longitude', 'depth_m', 'geofence_radius_m']
-
 # Completed task types which restart the preventive maintenance interval
 PM_BASE_TASK_TYPES = [
     MaintenanceTask.TaskType.PREVENTIVE,
@@ -81,19 +78,14 @@ def copy_streams(deployment: Deployment) -> None:
 
 @transaction.atomic
 def deploy(
-    deployment: Deployment,
-    user=None,
-    latitude=None,
-    longitude=None,
-    depth_m=None,
-    deployed_at=None,
+    deployment: Deployment, user=None, site=None, deployed_at=None
 ) -> Deployment:
     """Deploy the device of a READY (or SCHEDULED) deployment.
 
-    The site is optional. Without one the position comes only from the
-    arguments (or the deployment), and may stay empty until it is set.
+    A site is required: the given one, else the site already planned on the
+    deployment. The device has no position of its own; the location of the
+    site is where it should be.
 
-    - Records the nominal position and copies the site geofence if empty
     - Copies the stream templates into data streams
     - Ships a unit in stock on its own from its sales order; a unit already
       shipped keeps its customer. Adds a FLEET_DEPLOYED tracking entry
@@ -109,7 +101,6 @@ def deploy(
         raise ValidationError(_('Only a ready or scheduled deployment can be deployed'))
 
     device = deployment.device
-    site = deployment.site
 
     if device is None:
         raise ValidationError(_('No device has been assigned to this deployment'))
@@ -129,6 +120,19 @@ def deploy(
         )
 
     check_not_decommissioned(device)
+
+    # A site chosen at deploy time replaces the planned one (and its coverage)
+    if site is not None and site.pk != deployment.site_id:
+        deployment.site = site
+        deployment.coverage = site.coverage
+
+    site = deployment.site
+
+    if site is None:
+        raise ValidationError({'site': _('A site is required to deploy a device')})
+
+    if not site.active:
+        raise ValidationError({'site': _('The site is not active')})
 
     # A shipped unit stays with the customer it was shipped to; any other is
     # shipped from its sales order
@@ -150,42 +154,19 @@ def deploy(
             notes=str(_('Replaced by')) + f' {deployment.reference}',
         )
 
-    if site is not None:
-        active = (
-            Deployment.objects.filter(site=site, status=DeploymentStatus.DEPLOYED.value)
-            .exclude(pk=deployment.pk)
-            .first()
+    active = (
+        Deployment.objects.filter(site=site, status=DeploymentStatus.DEPLOYED.value)
+        .exclude(pk=deployment.pk)
+        .first()
+    )
+
+    if active is not None:
+        raise ValidationError(
+            {
+                'site': _('The site already has an active deployment')
+                + f' ({active.reference})'
+            }
         )
-
-        if active is not None:
-            raise ValidationError(
-                {
-                    'site': _('The site already has an active deployment')
-                    + f' ({active.reference})'
-                }
-            )
-
-    # Position: given, else the one already on the deployment, else the site's
-    if latitude is not None and longitude is not None:
-        deployment.latitude = latitude
-        deployment.longitude = longitude
-    elif (
-        deployment.latitude is None or deployment.longitude is None
-    ) and site is not None:
-        deployment.latitude = site.latitude
-        deployment.longitude = site.longitude
-
-    if depth_m is not None:
-        deployment.depth_m = depth_m
-    elif deployment.depth_m is None and site is not None:
-        deployment.depth_m = site.depth_m
-
-    if site is not None:
-        if deployment.geofence_radius_m is None:
-            deployment.geofence_radius_m = site.geofence_radius_m
-
-        if deployment.geofence_polygon is None:
-            deployment.geofence_polygon = site.geofence_polygon
 
     deployment.client = customer
     deployment.deployed_at = deployed_at or timezone.now()
@@ -195,10 +176,7 @@ def deploy(
     copy_streams(deployment)
     ensure_device_link(device)
 
-    notes = f'Deployed {deployment.reference}'
-
-    if site is not None:
-        notes += f' at {site.reference}'
+    notes = f'Deployed {deployment.reference} at {site.reference}'
 
     if sale is not None:
         sales.ship(sale, deployment, user=user)
@@ -206,7 +184,7 @@ def deploy(
     device.add_tracking_entry(
         StockHistoryCode.FLEET_DEPLOYED,
         user,
-        deltas={'deployment': deployment.pk, 'site': site.pk if site else None},
+        deltas={'deployment': deployment.pk, 'site': site.pk},
         notes=notes,
     )
 
@@ -570,47 +548,6 @@ def resolve_open_alerts(deployment: Deployment, user=None, now=None) -> int:
     trigger_status_events('alert', pks, AlertStatus.RESOLVED.value)
 
     return count
-
-
-@transaction.atomic
-def set_position(
-    deployment: Deployment, latitude, longitude, depth_m=None, geofence_radius_m=None
-) -> Deployment:
-    """Set the nominal position of a device (and optionally its geofence radius).
-
-    Devices found automatically from the stock have no position until a user
-    sets it. Closed deployments cannot be changed.
-    """
-    Deployment.objects.select_for_update().filter(pk=deployment.pk).first()
-    deployment.refresh_from_db()
-
-    if deployment.status in DeploymentStatusGroups.CLOSED:
-        raise ValidationError(
-            _('The position of a closed deployment cannot be changed')
-        )
-
-    if latitude is None or longitude is None:
-        raise ValidationError(_('Latitude and longitude are both required'))
-
-    deployment.latitude = latitude
-    deployment.longitude = longitude
-
-    if depth_m is not None:
-        deployment.depth_m = depth_m
-
-    if geofence_radius_m is not None:
-        deployment.geofence_radius_m = geofence_radius_m
-
-    deployment.clean_fields(
-        exclude=[
-            field.name
-            for field in Deployment._meta.fields
-            if field.name not in POSITION_FIELDS
-        ]
-    )
-    deployment.save()
-
-    return deployment
 
 
 def compute_next_pm(deployment: Deployment, commit: bool = True):

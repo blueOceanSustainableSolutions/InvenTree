@@ -27,7 +27,7 @@ from fleet.models import (
     StreamTemplate,
 )
 from fleet.services import deployment as deployment_service
-from fleet.services import pipeline, planning
+from fleet.services import monitoring, pipeline, planning
 from fleet.services.stock_sync import sync_stock_deployments
 from fleet.status_codes import AlertSeverity, AlertStatus, DeploymentStatus, TaskStatus
 from fleet.tasks import fleet_sync_pipeline
@@ -473,25 +473,18 @@ class DeploymentServiceTest(FleetServiceTestBase):
 
         deployed_at = timezone.now() - timedelta(hours=2)
 
-        deployment_service.deploy(
-            dep,
-            user=self.user,
-            latitude='37.012400',
-            longitude='-7.934600',
-            depth_m=19,
-            deployed_at=deployed_at,
-        )
+        deployment_service.deploy(dep, user=self.user, deployed_at=deployed_at)
 
         dep.refresh_from_db()
         device.refresh_from_db()
 
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
         self.assertEqual(dep.deployed_at, deployed_at)
-        self.assertEqual(dep.latitude, Decimal('37.012400'))
-        self.assertEqual(dep.depth_m, 19)
 
-        # Geofence copied from the site
-        self.assertEqual(dep.geofence_radius_m, 150)
+        # The geofence is the one of the site (nothing is copied)
+        fence = monitoring.get_geofence(dep)
+        self.assertEqual(fence['radius_m'], 150)
+        self.assertEqual(fence['latitude'], Decimal('37.012345'))
 
         # The site has no client, so the default fleet customer is used
         self.assertEqual(device.customer, self.customer)
@@ -534,12 +527,6 @@ class DeploymentServiceTest(FleetServiceTestBase):
         dep.device.refresh_from_db()
         self.assertEqual(dep.device.customer, self.client_company)
 
-        # The position defaults to the site position
-        dep.refresh_from_db()
-        self.site.refresh_from_db()
-        self.assertEqual(dep.latitude, self.site.latitude)
-        self.assertEqual(dep.depth_m, self.site.depth_m)
-
     def test_deploy_validation(self):
         """Deployments must be ready, have a device and a customer."""
         # Still in production
@@ -569,72 +556,73 @@ class DeploymentServiceTest(FleetServiceTestBase):
         other.refresh_from_db()
         self.assertEqual(other.status, DeploymentStatus.READY.value)
 
-    def test_deploy_without_site(self):
-        """A site is optional: the position comes from the arguments, or stays empty."""
+    def test_deploy_requires_site(self):
+        """A site is required: the planned one, or one given at deploy time."""
         dep = plan_unit(self.make_device('AUR-0400'), self.device_type)
-        deployment_service.deploy(dep, user=self.user)
+
+        with self.assertRaisesMessage(ValidationError, 'A site is required'):
+            deployment_service.deploy(dep, user=self.user)
+
+        dep.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.READY.value)
+
+        # An inactive site is refused
+        closed = Site.objects.create(name='Closed', active=False)
+
+        with self.assertRaisesMessage(ValidationError, 'not active'):
+            deployment_service.deploy(dep, site=closed)
+
+        # A site given at deploy time is used, with its coverage
+        site = Site.objects.create(name='Sines #1', coverage='NO_SERVICE')
+        deployment_service.deploy(dep, user=self.user, site=site)
 
         dep.refresh_from_db()
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
-        self.assertIsNone(dep.site)
-        self.assertIsNone(dep.latitude)
-        self.assertIsNone(dep.longitude)
-        self.assertIsNone(dep.geofence_radius_m)
-        self.assertEqual(dep.client, self.customer)
-        self.assertEqual(dep.device.customer, self.customer)
+        self.assertEqual(dep.site, site)
+        self.assertEqual(dep.coverage, 'NO_SERVICE')
 
         entry = StockItemTracking.objects.filter(
             item=dep.device, tracking_type=StockHistoryCode.FLEET_DEPLOYED.value
         ).get()
-        self.assertEqual(entry.deltas, {'deployment': dep.pk, 'site': None})
+        self.assertEqual(entry.deltas, {'deployment': dep.pk, 'site': site.pk})
 
-        # With a position given, it is used
-        other = plan_unit(
-            self.make_device('AUR-0401'), self.device_type, client=self.client_company
-        )
-        deployment_service.deploy(
-            other, latitude='38.500000', longitude='-9.100000', depth_m=12
-        )
+    def test_move_site(self):
+        """Moving a site records the old location and the reason."""
+        from fleet.services.site import move_site
 
-        other.refresh_from_db()
-        self.assertEqual(other.latitude, Decimal('38.500000'))
-        self.assertEqual(other.depth_m, 12)
-        self.assertEqual(other.device.customer, self.client_company)
+        site = Site.objects.create(name='Sines #2')
 
-        # Two deployments without a site do not collide
+        # Setting the first location is a move too (from nothing)
+        first = move_site(site, self.user, Decimal('37.1'), Decimal('-8.2'), 'Placed')
+        self.assertIsNone(first.old_latitude)
+        self.assertEqual(site.latitude, Decimal('37.1'))
+
+        move_site(site, self.user, Decimal('37.2'), Decimal('-8.3'), 'Moved', 12)
+        site.refresh_from_db()
+        self.assertEqual(site.longitude, Decimal('-8.3'))
+        self.assertEqual(site.depth_m, 12)
+
+        # The depth is kept when not given
+        last = move_site(site, None, Decimal('37.3'), Decimal('-8.3'), 'Again')
+        self.assertEqual(last.old_depth_m, 12)
+        self.assertEqual(last.depth_m, 12)
+        self.assertIsNone(last.created_by)
+
         self.assertEqual(
-            Deployment.objects.filter(
-                status=DeploymentStatus.DEPLOYED.value, site__isnull=True
-            ).count(),
-            2,
+            list(site.location_changes.values_list('comment', flat=True)),
+            ['Again', 'Moved', 'Placed'],
         )
 
-    def test_set_position(self):
-        """Set the position of a deployed device; closed deployments are refused."""
-        dep = plan_unit(self.make_device('AUR-0410'), self.device_type)
-        deployment_service.deploy(dep)
+        for args in [
+            (Decimal('95'), Decimal('0'), 'Bad latitude'),
+            (Decimal('37.4'), Decimal('-8.3'), '  '),
+            (None, Decimal('-8.3'), 'No latitude'),
+            (Decimal('37.3'), Decimal('-8.3'), 'Same place'),
+        ]:
+            with self.assertRaises(ValidationError):
+                move_site(site, self.user, *args)
 
-        deployment_service.set_position(
-            dep, latitude='37.1', longitude='-8.2', depth_m=5, geofence_radius_m=300
-        )
-        dep.refresh_from_db()
-        self.assertEqual(dep.latitude, Decimal('37.100000'))
-        self.assertEqual(dep.geofence_radius_m, 300)
-        self.assertEqual(dep.depth_m, 5)
-
-        # The radius and depth are kept when not given
-        deployment_service.set_position(dep, latitude='37.2', longitude='-8.3')
-        dep.refresh_from_db()
-        self.assertEqual(dep.geofence_radius_m, 300)
-        self.assertEqual(dep.longitude, Decimal('-8.300000'))
-
-        with self.assertRaises(ValidationError):
-            deployment_service.set_position(dep, latitude='95', longitude='0')
-
-        deployment_service.recover(dep)
-
-        with self.assertRaises(ValidationError):
-            deployment_service.set_position(dep, latitude='37', longitude='-8')
+        self.assertEqual(site.location_changes.count(), 3)
 
     def test_sales_build_planned_when_created(self):
         """A fleet BO linked to a sales order enters the pipeline when created."""
@@ -835,7 +823,7 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertEqual(dep.status, DeploymentStatus.READY.value)
         self.assertTrue(pipeline.is_sold(dep))
 
-        deployment_service.deploy(dep, user=self.user)
+        deployment_service.deploy(dep, user=self.user, site=self.site)
 
         output.refresh_from_db()
         line = order.lines.get()

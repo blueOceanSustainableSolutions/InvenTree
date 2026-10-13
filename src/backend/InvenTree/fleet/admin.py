@@ -57,6 +57,15 @@ class SiteAdmin(admin.ModelAdmin):
     autocomplete_fields = ['client']
 
 
+@admin.register(models.SiteLocationChange)
+class SiteLocationChangeAdmin(admin.ModelAdmin):
+    """Admin class for the SiteLocationChange model."""
+
+    list_display = ('site', 'effective_at', 'latitude', 'longitude', 'created_by')
+    search_fields = ('site__reference', 'site__name', 'comment')
+    autocomplete_fields = ['site']
+
+
 @admin.register(models.DeviceLink)
 class DeviceLinkAdmin(admin.ModelAdmin):
     """Admin class for the DeviceLink model."""

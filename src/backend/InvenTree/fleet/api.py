@@ -42,6 +42,7 @@ from fleet.models import (
     MaintenanceAction,
     MaintenanceTask,
     Site,
+    SiteLocationChange,
     StreamTemplate,
     TripKitLine,
 )
@@ -366,6 +367,36 @@ class SiteList(DataExportViewMixin, SiteMixin, OutputOptionsMixin, ListCreateAPI
     search_fields = ['reference', 'name', 'project', 'client__name']
 
 
+class SiteMove(FleetActionMixin, CreateAPI):
+    """Move a site to a new location; the old one is kept in its history."""
+
+    queryset = Site.objects.all()
+    model = Site
+    context_key = 'site'
+    serializer_class = fleet_serializers.SiteMoveSerializer
+    response_serializer_class = fleet_serializers.SiteSerializer
+
+    @extend_schema(responses={200: fleet_serializers.SiteSerializer})
+    def post(self, request, *args, **kwargs):
+        """Move the site, and return it."""
+        return super().post(request, *args, **kwargs)
+
+
+class SiteLocationHistory(FleetRoleMixin, ListAPI):
+    """Location history of the sites (newest first)."""
+
+    queryset = SiteLocationChange.objects.select_related('created_by')
+    serializer_class = fleet_serializers.SiteLocationChangeSerializer
+    filter_backends = SEARCH_ORDER_FILTER
+    filterset_fields = ['site']
+    ordering_fields = ['effective_at', 'created_at']
+    ordering = ['-effective_at', '-pk']
+    required_alternate_scopes = {
+        'GET': [['g:read'], ['r:view:fleet']],
+        'OPTIONS': [['g:read']],
+    }
+
+
 class SiteDetail(SiteMixin, OutputOptionsMixin, RetrieveUpdateDestroyAPI):
     """Retrieve, update or delete a site."""
 
@@ -577,12 +608,6 @@ class DeploymentRecover(DeploymentActionMixin, CreateAPI):
 
     serializer_class = fleet_serializers.DeploymentRecoverSerializer
     extra_roles = [('stock', 'change')]
-
-
-class DeploymentSetPosition(DeploymentActionMixin, CreateAPI):
-    """Set the nominal position (and optionally the geofence radius) of a device."""
-
-    serializer_class = fleet_serializers.DeploymentSetPositionSerializer
 
 
 class DeploymentSetState(DeploymentActionMixin, CreateAPI):
@@ -958,7 +983,7 @@ class TaskConsume(TaskActionMixin, CreateAPI):
 
 
 class TaskReposition(TaskActionMixin, CreateAPI):
-    """Move the nominal position of the deployed device."""
+    """Move the site of the deployed device (the device was physically moved)."""
 
     serializer_class = fleet_serializers.TaskRepositionSerializer
 
@@ -1438,7 +1463,9 @@ class FleetOverview(FleetReadView):
                 ),
                 pm_overdue=Count('pk', filter=Q(next_pm_date__lt=today)),
                 no_position=Count(
-                    'pk', filter=Q(latitude__isnull=True) | Q(longitude__isnull=True)
+                    'pk',
+                    filter=Q(site__latitude__isnull=True)
+                    | Q(site__longitude__isnull=True),
                 ),
                 no_site=Count('pk', filter=Q(site__isnull=True)),
                 **{
@@ -1547,8 +1574,8 @@ class DeploymentMap(FleetReadView):
 
         for dep in queryset:
             fence = monitoring.get_geofence(dep)
-            nominal_lat = as_float(fence['latitude'])
-            nominal_lon = as_float(fence['longitude'])
+            site_lat = as_float(fence['latitude'])
+            site_lon = as_float(fence['longitude'])
             last_lat = as_float(dep.last_latitude)
             last_lon = as_float(dep.last_longitude)
             has_last = last_lat is not None and last_lon is not None
@@ -1562,14 +1589,14 @@ class DeploymentMap(FleetReadView):
                     'site_name': dep.site.name if dep.site else None,
                     'site_reference': dep.site.reference if dep.site else None,
                     'device_serial': dep.device.serial if dep.device else None,
-                    'latitude': last_lat if has_last else nominal_lat,
-                    'longitude': last_lon if has_last else nominal_lon,
-                    'nominal_latitude': nominal_lat,
-                    'nominal_longitude': nominal_lon,
+                    'latitude': last_lat if has_last else site_lat,
+                    'longitude': last_lon if has_last else site_lon,
+                    'site_latitude': site_lat,
+                    'site_longitude': site_lon,
                     'last_latitude': last_lat,
                     'last_longitude': last_lon,
                     'last_position_at': dep.last_position_at,
-                    'distance_from_nominal_m': as_float(dep.distance_from_nominal_m),
+                    'distance_from_site_m': as_float(dep.distance_from_site_m),
                     'radius_m': fence['radius_m'],
                     'polygon': fence['polygon'],
                     'health': dep.health,
@@ -1660,6 +1687,11 @@ fleet_api_urls = [
     ),
     # Sites
     path(
+        'site-location/',
+        SiteLocationHistory.as_view(),
+        name='api-fleet-site-location-list',
+    ),
+    path(
         'site/',
         include(
             [
@@ -1668,6 +1700,9 @@ fleet_api_urls = [
                     include(
                         [
                             meta_path(Site),
+                            path(
+                                'move/', SiteMove.as_view(), name='api-fleet-site-move'
+                            ),
                             path(
                                 '', SiteDetail.as_view(), name='api-fleet-site-detail'
                             ),
@@ -1747,11 +1782,6 @@ fleet_api_urls = [
                                 'recover/',
                                 DeploymentRecover.as_view(),
                                 name='api-fleet-deployment-recover',
-                            ),
-                            path(
-                                'set-position/',
-                                DeploymentSetPosition.as_view(),
-                                name='api-fleet-deployment-set-position',
                             ),
                             path(
                                 'set-state/',

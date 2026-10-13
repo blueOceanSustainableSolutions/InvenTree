@@ -5,6 +5,7 @@ the monitoring part of scenario 8 (NO_SERVICE coverage still raises alerts).
 """
 
 from datetime import timedelta
+from decimal import Decimal
 from unittest import mock
 
 from django.core.exceptions import ValidationError
@@ -247,7 +248,7 @@ class MonitoringScenarioTest(MonitoringTestBase):
         self.poll(minutes_later=15)
 
         self.assertEqual(self.dep.health, HealthStatus.CRITICAL.value)
-        self.assertAlmostEqual(float(self.dep.distance_from_nominal_m), 340, delta=1)
+        self.assertAlmostEqual(float(self.dep.distance_from_site_m), 340, delta=1)
 
         breach = self.open_alerts().get()
         self.assertEqual(breach.alert_type, Alert.AlertType.GEOFENCE_BREACH)
@@ -433,10 +434,10 @@ class PositionTest(MonitoringTestBase):
 
         self.assertEqual(self.dep.health, HealthStatus.OK.value)
 
-    def test_deployment_radius(self):
-        """The deployment radius (copied from the site) is used."""
-        self.dep.geofence_radius_m = 100
-        self.dep.save()
+    def test_site_radius(self):
+        """The radius of the site is used."""
+        self.site.geofence_radius_m = 100
+        self.site.save()
 
         self.report(hydrophone=1, battery=1, position=self.position_north(150))
         self.poll()
@@ -450,13 +451,13 @@ class PositionTest(MonitoringTestBase):
 
     def test_polygon(self):
         """A polygon geofence replaces the radius."""
-        self.dep.geofence_polygon = [
+        self.site.geofence_polygon = [
             [36.99, -7.91],
             [36.99, -7.89],
             [37.01, -7.89],
             [37.01, -7.91],
         ]
-        self.dep.save()
+        self.site.save()
 
         # 340 m north is inside the polygon (it reaches ~1.1 km north)
         self.report(hydrophone=1, battery=1, position=self.position_north(340))
@@ -466,6 +467,28 @@ class PositionTest(MonitoringTestBase):
         self.report(hydrophone=1, battery=1, position=self.position_north(2000))
         self.poll()
         self.assertEqual(self.dep.health, HealthStatus.CRITICAL.value)
+
+    def test_site_moved(self):
+        """After the site is moved, the device is checked against its new location."""
+        from fleet.services.site import move_site
+
+        self.report(hydrophone=1, battery=1, position=self.position_north(340))
+        self.poll()
+        self.assertEqual(self.dep.health, HealthStatus.CRITICAL.value)
+
+        # The device was moved on purpose: move the site to where it is now
+        move_site(
+            self.site,
+            None,
+            Decimal(str(round(37.0 + 340 / M_PER_DEG, 10))),
+            Decimal('-7.9'),
+            'Moved away from the shipping lane',
+        )
+
+        self.report(hydrophone=1, battery=1, position=self.position_north(340))
+        self.poll()
+        self.assertEqual(self.dep.health, HealthStatus.OK.value)
+        self.assertLess(float(self.dep.distance_from_site_m), 1)
 
     def test_track_downsampling(self):
         """Fixes are stored hourly, or when the device moved more than 25 m."""

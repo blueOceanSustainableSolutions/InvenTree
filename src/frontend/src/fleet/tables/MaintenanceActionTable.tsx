@@ -116,7 +116,9 @@ export function MaintenanceActionTable({
 
           if (record.metadata?.new_position) {
             const pos = record.metadata.new_position;
-            extra.push(`${t`New position`}: ${pos.latitude}, ${pos.longitude}`);
+            extra.push(
+              `${t`New site location`}: ${pos.latitude}, ${pos.longitude}`
+            );
           }
 
           return (

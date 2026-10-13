@@ -39,8 +39,8 @@ import {
   recordActionFields,
   repositionFields,
   taskComponentFields,
-  taskDeployFields,
-  taskRemovalFields
+  taskRemovalFields,
+  useDeployFields
 } from '../../forms/FleetForms';
 import { showApiErrorMessage } from '../../functions/notifications';
 import { useCreateApiFormModal } from '../../hooks/UseForm';
@@ -204,7 +204,7 @@ export function TaskExecution({
     );
   const isSwap = task.task_type == 'SWAP';
 
-  // The deployment (position to pre-fill the deploy form)
+  // The deployment (its planned site pre-fills the deploy form)
   const { instance: deployment } = useInstance({
     endpoint: ApiEndpoints.fleet_deployment_list,
     pk: task.deployment,
@@ -220,19 +220,19 @@ export function TaskExecution({
     disabled: !task.trip
   });
 
+  const deployFields = useDeployFields({
+    siteId: deployment.site ?? task.site,
+    withNote: true
+  });
+
   const deployDevice = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.fleet_task_deploy, task.pk),
     title: t`Deploy Device`,
-    fields: taskDeployFields(),
-    initialData: {
-      latitude: deployment.latitude ?? task.site_detail?.latitude,
-      longitude: deployment.longitude ?? task.site_detail?.longitude,
-      depth_m: deployment.depth_m
-    },
+    fields: deployFields,
     preFormContent: (
       <Stack gap='xs'>
         <Alert color='blue'>
-          {t`The device goes into the water: the deployment becomes deployed and its monitoring starts. The position is optional.`}
+          {t`The device goes into the water: the deployment becomes deployed and its monitoring starts. A site is required: the device should be at the location of its site.`}
         </Alert>
         {isSwap && (
           <Alert color='orange' title={t`Swap`}>
@@ -256,14 +256,18 @@ export function TaskExecution({
 
   const reposition = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.fleet_task_reposition, task.pk),
-    title: t`Reposition Device`,
+    title: t`Move Site`,
     fields: repositionFields(),
+    initialData: {
+      latitude: task.site_detail?.latitude,
+      longitude: task.site_detail?.longitude
+    },
     preFormContent: (
       <Alert color='blue'>
-        {t`The new nominal position of the device. The geofence moves with it; the old position is kept in the action.`}
+        {t`The device was moved on purpose: the site moves to its new location, and the geofence with it. The old location and the reason are kept in the location history of the site.`}
       </Alert>
     ),
-    successMessage: t`Position updated`,
+    successMessage: t`Site moved`,
     onFormSuccess: onUpdate
   });
 
@@ -410,7 +414,7 @@ export function TaskExecution({
                       disabled={!canChange}
                       onClick={() => reposition.open()}
                     >
-                      {t`Reposition`}
+                      {t`Move Site`}
                     </Button>
                   )}
                 </Group>

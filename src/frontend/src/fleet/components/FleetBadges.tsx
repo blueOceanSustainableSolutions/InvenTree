@@ -250,7 +250,7 @@ export function maintenanceActionLabel(action: string): string {
     case 'FIRMWARE':
       return t`Firmware`;
     case 'REPOSITION':
-      return t`Reposition`;
+      return t`Move Site`;
     default:
       return t`Other`;
   }

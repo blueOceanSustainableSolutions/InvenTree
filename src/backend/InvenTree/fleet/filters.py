@@ -157,8 +157,8 @@ class DeploymentFilter(FilterSet):
     )
 
     def filter_has_position(self, queryset, name, value):
-        """Filter by whether the nominal position (latitude and longitude) is set."""
-        position = Q(latitude__isnull=False, longitude__isnull=False)
+        """Filter by whether the site of the deployment has a location."""
+        position = Q(site__latitude__isnull=False, site__longitude__isnull=False)
 
         if str2bool(value):
             return queryset.filter(position)

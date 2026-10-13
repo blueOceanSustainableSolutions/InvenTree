@@ -8,13 +8,13 @@ import { ModelType } from '@lib/enums/ModelType';
 import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
 import {
-  deployFields,
   maintenanceDateFields,
   newDeploymentFields,
   planDeploymentFields,
   recoverFields,
   setDeviceStateFields,
-  setPositionFields,
+  siteHasLocation,
+  useDeployFields,
   useDeploymentFields
 } from '../../forms/FleetForms';
 import {
@@ -24,18 +24,20 @@ import {
 } from '../../hooks/UseForm';
 import useStatusCodes from '../../hooks/UseStatusCodes';
 import { useUserState } from '../../states/UserState';
+import { useSiteMoveForm } from './SiteActions';
 
 /** What a deployment is, and which actions the user may run on it */
 export type DeploymentState = {
   isPipeline: boolean;
   isDeployed: boolean;
   isClosed: boolean;
+  /** The site of the deployment has a location */
   hasPosition: boolean;
   canEdit: boolean;
   canDelete: boolean;
   isReturning: boolean;
   canDeploy: boolean;
-  canSetPosition: boolean;
+  canMoveSite: boolean;
   canRecover: boolean;
   /** Effective internal state (ACTIVE, DOCKED, ...), null outside of deployed */
   deviceState: string | null;
@@ -66,8 +68,7 @@ export function useDeploymentState(deployment: any): DeploymentState {
     const isClosed =
       status == deploymentStatus.RECOVERED ||
       status == deploymentStatus.CANCELLED;
-    const hasPosition =
-      deployment?.latitude != null && deployment?.longitude != null;
+    const hasPosition = siteHasLocation(deployment?.site_detail);
 
     const canChange = user.hasChangeRole(UserRoles.fleet);
     const canMoveStock = canChange && user.hasChangeRole(UserRoles.stock);
@@ -91,7 +92,7 @@ export function useDeploymentState(deployment: any): DeploymentState {
           status == deploymentStatus.SCHEDULED) &&
         !isReturning &&
         canMoveStock,
-      canSetPosition: !isClosed && !!deployment?.pk && canChange,
+      canMoveSite: !isClosed && !!deployment?.site && canChange,
       canRecover: isDeployed && canMoveStock,
       deviceState: deployment?.device_state ?? null,
       internalState: deployment?.internal_state ?? '',
@@ -146,7 +147,7 @@ export function useNewDeploymentForm({
 /**
  * The action forms of a deployment, shared by the deployment page of the main
  * UI, the Fleet Portal and the pipeline table: edit, plan (site and date),
- * delete, deploy, set position, recover, set device state.
+ * delete, deploy, move the site, recover, set device state.
  *
  * Render `modals` once; call the `open*` functions from buttons.
  */
@@ -191,40 +192,24 @@ export function useDeploymentActions({
     onFormSuccess: () => onDeleted?.()
   });
 
+  const deployFields = useDeployFields({ siteId: deployment?.site });
+
   const deploy = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.fleet_deployment_deploy, deployment?.pk),
     title: t`Deploy Device`,
-    fields: deployFields(),
-    initialData: {
-      latitude: deployment?.latitude ?? deployment?.site_detail?.latitude,
-      longitude: deployment?.longitude ?? deployment?.site_detail?.longitude
-    },
+    fields: deployFields,
     preFormContent: (
       <Alert color='blue' icon={<IconInfoCircle />}>
-        {t`A device in stock is shipped on its own from its sales order (in a shipment of its own) and leaves stock. A device already shipped to a customer stays with that customer. Shipping alone never deploys a device. The site and the position are optional and can be set later.`}
+        {t`A device in stock is shipped on its own from its sales order (in a shipment of its own) and leaves stock. A device already shipped to a customer stays with that customer. Shipping alone never deploys a device. A site is required: the device should be at the location of its site.`}
       </Alert>
     ),
     successMessage: t`Device deployed`,
     onFormSuccess: onUpdate
   });
 
-  const setPosition = useCreateApiFormModal({
-    url: apiUrl(ApiEndpoints.fleet_deployment_set_position, deployment?.pk),
-    title: t`Set Position`,
-    fields: setPositionFields(),
-    initialData: {
-      latitude: deployment?.latitude ?? deployment?.site_detail?.latitude,
-      longitude: deployment?.longitude ?? deployment?.site_detail?.longitude,
-      depth_m: deployment?.depth_m,
-      geofence_radius_m: deployment?.geofence_radius_m
-    },
-    preFormContent: (
-      <Alert color='blue' icon={<IconInfoCircle />}>
-        {t`The nominal position of the device. The geofence is centred on it.`}
-      </Alert>
-    ),
-    successMessage: t`Position updated`,
-    onFormSuccess: onUpdate
+  const moveSite = useSiteMoveForm({
+    site: deployment?.site_detail,
+    onSuccess: onUpdate
   });
 
   const changeMaintenanceDate = useCreateApiFormModal({
@@ -286,7 +271,7 @@ export function useDeploymentActions({
       {planDeployment.modal}
       {deleteDeployment.modal}
       {deploy.modal}
-      {setPosition.modal}
+      {moveSite.modal}
       {changeMaintenanceDate.modal}
       {recover.modal}
       {setState.modal}
@@ -300,7 +285,7 @@ export function useDeploymentActions({
     openPlan: planDeployment.open,
     openDelete: deleteDeployment.open,
     openDeploy: deploy.open,
-    openSetPosition: setPosition.open,
+    openMoveSite: moveSite.open,
     openChangeMaintenanceDate: changeMaintenanceDate.open,
     openRecover: recover.open,
     openSetState: setState.open

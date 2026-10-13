@@ -3,6 +3,7 @@ import { Skeleton, Stack } from '@mantine/core';
 import {
   IconAlertTriangle,
   IconAnchor,
+  IconHistory,
   IconInfoCircle,
   IconMap,
   IconTool
@@ -16,6 +17,7 @@ import { UserRoles } from '@lib/enums/Roles';
 import { getDetailUrl } from '@lib/functions/Navigation';
 import type { PanelType } from '@lib/types/Panel';
 import AdminButton from '../../components/buttons/AdminButton';
+import PrimaryActionButton from '../../components/buttons/PrimaryActionButton';
 import { DetailsTable } from '../../components/details/Details';
 import { ItemDetailsGrid } from '../../components/details/ItemDetails';
 import {
@@ -31,10 +33,12 @@ import { PanelGroup } from '../../components/panels/PanelGroup';
 import { CoverageBadge } from '../../fleet/components/FleetBadges';
 import { FleetMapView } from '../../fleet/components/FleetMap';
 import { siteDetailFields } from '../../fleet/details/FleetDetailFields';
+import { useSiteMoveForm } from '../../fleet/hooks/SiteActions';
 import { AlertTable } from '../../fleet/tables/AlertTable';
 import { DeploymentTable } from '../../fleet/tables/DeploymentTable';
+import { SiteLocationTable } from '../../fleet/tables/SiteLocationTable';
 import { TaskTable } from '../../fleet/tables/TaskTable';
-import { useSiteFields } from '../../forms/FleetForms';
+import { siteHasLocation, useSiteFields } from '../../forms/FleetForms';
 import {
   useDeleteApiFormModal,
   useEditApiFormModal
@@ -70,7 +74,7 @@ export default function SiteDetail() {
     return (
       <ItemDetailsGrid>
         <DetailsTable title={t`Site`} fields={left} item={site} />
-        <DetailsTable title={t`Position`} fields={right} item={site} />
+        <DetailsTable title={t`Location`} fields={right} item={site} />
       </ItemDetailsGrid>
     );
   }, [site, instanceQuery]);
@@ -106,6 +110,14 @@ export default function SiteDetail() {
         ) : null
       },
       {
+        name: 'locations',
+        label: t`Location History`,
+        icon: <IconHistory />,
+        content: site.pk ? (
+          <SiteLocationTable siteId={site.pk} tableName='fleet-site-locations' />
+        ) : null
+      },
+      {
         name: 'alerts',
         label: t`Alerts`,
         icon: <IconAlertTriangle />,
@@ -137,7 +149,10 @@ export default function SiteDetail() {
     [site, detailsPanel]
   );
 
-  const siteFields = useSiteFields();
+  const siteFields = useSiteFields(site);
+
+  const moveSite = useSiteMoveForm({ site, onSuccess: refreshInstance });
+  const located = siteHasLocation(site);
 
   const editSite = useEditApiFormModal({
     url: ApiEndpoints.fleet_site_list,
@@ -156,6 +171,14 @@ export default function SiteDetail() {
 
   const actions = useMemo(
     () => [
+      <PrimaryActionButton
+        key='move-site'
+        title={located ? t`Move Site` : t`Set Location`}
+        icon='location'
+        color={located ? 'gray' : 'orange'}
+        hidden={!site.pk || !user.hasChangeRole(UserRoles.fleet)}
+        onClick={moveSite.open}
+      />,
       <AdminButton key='admin' model={ModelType.site} id={site.pk} />,
       <OptionsActionDropdown
         key='options'
@@ -172,7 +195,7 @@ export default function SiteDetail() {
         ]}
       />
     ],
-    [user, site]
+    [user, site, located]
   );
 
   const badges = useMemo(
@@ -187,6 +210,7 @@ export default function SiteDetail() {
     <>
       {editSite.modal}
       {deleteSite.modal}
+      {moveSite.modal}
       <InstanceDetail query={instanceQuery} requiredRole={UserRoles.fleet}>
         <Stack gap='xs'>
           <PageDetail

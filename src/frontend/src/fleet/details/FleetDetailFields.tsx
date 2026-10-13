@@ -13,7 +13,7 @@ import {
   userDisplayName,
   userListNames
 } from '../components/FleetBadges';
-import { CoordinateValue } from '../coordinates';
+import { CoordinateValue, PositionValue } from '../coordinates';
 
 /**
  * Detail field definitions of the fleet models, shared by the detail pages
@@ -227,46 +227,47 @@ export function deploymentDetailFields(
       hidden: !deployment.recovered_at
     },
     {
+      // Where the device should be: the location of its site
       type: 'string',
-      name: 'position',
-      label: t`Position`,
+      name: 'site_location',
+      label: t`Site Location`,
       icon: 'location',
-      hidden: hasPosition || !isDeployed,
-      value_formatter: () => <Text size='sm' c='orange'>{t`Not set`}</Text>
+      hidden: !deployment.site_detail && !isDeployed,
+      value_formatter: () =>
+        hasPosition ? (
+          <PositionValue
+            latitude={deployment.site_detail.latitude}
+            longitude={deployment.site_detail.longitude}
+            suffix={
+              deployment.site_detail.depth_m != null
+                ? ` (${deployment.site_detail.depth_m} m)`
+                : ''
+            }
+          />
+        ) : (
+          <Text size='sm' c={isDeployed ? 'orange' : 'dimmed'}>
+            {deployment.site_detail ? t`Not set` : t`No site`}
+          </Text>
+        )
     },
     {
+      // Where the device says it is (data platform)
       type: 'string',
-      name: 'latitude',
-      label: t`Latitude`,
+      name: 'reported_position',
+      label: t`Reported Position`,
       icon: 'location',
-      hidden: deployment.latitude == null,
+      hidden: deployment.last_latitude == null,
       value_formatter: () => (
-        <CoordinateValue value={deployment.latitude} axis='latitude' />
+        <PositionValue
+          latitude={deployment.last_latitude}
+          longitude={deployment.last_longitude}
+          suffix={
+            deployment.distance_from_site_m != null
+              ? ` (${Math.round(deployment.distance_from_site_m)} m ${t`from the site`})`
+              : ''
+          }
+        />
       )
-    },
-    {
-      type: 'string',
-      name: 'longitude',
-      label: t`Longitude`,
-      icon: 'location',
-      hidden: deployment.longitude == null,
-      value_formatter: () => (
-        <CoordinateValue value={deployment.longitude} axis='longitude' />
-      )
-    },
-    {
-      type: 'number',
-      name: 'depth_m',
-      label: t`Depth (m)`,
-      icon: 'info',
-      hidden: deployment.depth_m == null
-    },
-    {
-      type: 'number',
-      name: 'geofence_radius_m',
-      label: t`Geofence Radius (m)`,
-      icon: 'info',
-      hidden: deployment.geofence_radius_m == null
     },
     {
       type: 'date',
@@ -560,7 +561,7 @@ export function tripDetailFields(trip: any): FleetDetailFields {
 }
 
 /**
- * Site fields: the site (left) and its position (right)
+ * Site fields: the site (left) and its location (right)
  */
 export function siteDetailFields(site: any): FleetDetailFields {
   const left: DetailsField[] = [
@@ -610,6 +611,14 @@ export function siteDetailFields(site: any): FleetDetailFields {
   ];
 
   const right: DetailsField[] = [
+    {
+      type: 'string',
+      name: 'location',
+      label: t`Location`,
+      icon: 'location',
+      hidden: site.latitude != null && site.longitude != null,
+      value_formatter: () => <Text size='sm' c='orange'>{t`Not set`}</Text>
+    },
     {
       type: 'string',
       name: 'latitude',

@@ -207,25 +207,25 @@ def _on_segment(x, y, x1, y1, x2, y2, tolerance=1e-12) -> bool:
 
 
 def check_geofence(
-    lat, lon, nominal_lat=None, nominal_lon=None, radius_m=None, polygon=None
+    lat, lon, centre_lat=None, centre_lon=None, radius_m=None, polygon=None
 ) -> tuple[bool | None, float | None]:
     """Check a position against a geofence.
 
     The polygon is used when it is set, otherwise the circle of radius_m
-    around the nominal position.
+    around the centre (the location of the site).
 
     Returns:
         (inside, distance): inside is None when the geofence cannot be
-        evaluated; distance is the distance from the nominal position (m), or
-        None if there is no nominal position
+        evaluated; distance is the distance from the centre (m), or None if
+        there is no centre
     """
     if lat is None or lon is None:
         return None, None
 
     distance = None
 
-    if nominal_lat is not None and nominal_lon is not None:
-        distance = haversine(nominal_lat, nominal_lon, lat, lon)
+    if centre_lat is not None and centre_lon is not None:
+        distance = haversine(centre_lat, centre_lon, lat, lon)
 
     if polygon:
         return point_in_polygon(lat, lon, polygon), distance

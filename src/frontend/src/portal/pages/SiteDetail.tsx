@@ -1,6 +1,7 @@
 import { t } from '@lingui/core/macro';
 import {
   Anchor,
+  Button,
   Group,
   Paper,
   SimpleGrid,
@@ -11,6 +12,8 @@ import {
 import {
   IconAlertTriangle,
   IconAnchor,
+  IconCurrentLocation,
+  IconHistory,
   IconMap,
   IconTool
 } from '@tabler/icons-react';
@@ -37,10 +40,14 @@ import {
   detailFieldsByName,
   siteDetailFields
 } from '../../fleet/details/FleetDetailFields';
+import { useSiteMoveForm } from '../../fleet/hooks/SiteActions';
 import { AlertTable } from '../../fleet/tables/AlertTable';
+import { SiteLocationTable } from '../../fleet/tables/SiteLocationTable';
 import { TaskTable } from '../../fleet/tables/TaskTable';
+import { siteHasLocation } from '../../forms/FleetForms';
 import { useInstance } from '../../hooks/UseInstance';
 import useStatusCodes from '../../hooks/UseStatusCodes';
+import { useUserState } from '../../states/UserState';
 import { PortalDetailFields } from '../components/PortalDetails';
 import { PortalPage } from '../components/PortalPage';
 import { PortalTabs } from '../components/PortalTabs';
@@ -142,11 +149,19 @@ export default function SiteDetail(): ReactNode {
   const isPhone = useIsPhone();
   const taskStatus = useStatusCodes({ modelType: ModelType.maintenancetask });
 
-  const { instance: site, instanceQuery } = useInstance({
+  const user = useUserState();
+
+  const {
+    instance: site,
+    instanceQuery,
+    refreshInstance
+  } = useInstance({
     endpoint: ApiEndpoints.fleet_site_list,
     pk: id,
     hasPrimaryKey: true
   });
+
+  const moveSite = useSiteMoveForm({ site, onSuccess: refreshInstance });
 
   const deploymentsQuery = useQuery({
     queryKey: ['fleet-portal-site-deployments', id],
@@ -236,6 +251,17 @@ export default function SiteDetail(): ReactNode {
           </Paper>
         ) : null
       },
+      {
+        name: 'locations',
+        label: t`Location History`,
+        icon: <IconHistory />,
+        content: site.pk ? (
+          <SiteLocationTable
+            siteId={site.pk}
+            tableName='fleet-portal-site-locations'
+          />
+        ) : null
+      },
       AttachmentPanel({
         model_type: ModelType.site,
         model_id: site.pk
@@ -252,13 +278,29 @@ export default function SiteDetail(): ReactNode {
   // The shared field definitions (the portal shows some of them)
   const siteFields = detailFieldsByName(siteDetailFields(site));
 
+  const located = siteHasLocation(site);
+
   return (
     <InstanceDetail query={instanceQuery} requiredRole={UserRoles.fleet}>
+      {moveSite.modal}
       <PortalPage
         title={site.name ?? ''}
         subtitle={[site.reference, site.project].filter(Boolean).join(' · ')}
         back='/sites'
         badges={[<CoverageBadge key='coverage' coverage={site.coverage} />]}
+        actions={[
+          user.hasChangeRole(UserRoles.fleet) && site.pk ? (
+            <Button
+              key='move-site'
+              variant='outline'
+              color={located ? 'gray' : 'orange'}
+              leftSection={<IconCurrentLocation size={18} />}
+              onClick={moveSite.open}
+            >
+              {located ? t`Move Site` : t`Set Location`}
+            </Button>
+          ) : null
+        ]}
       >
         <Paper withBorder p='sm'>
           <SimpleGrid cols={{ base: 2, sm: 4 }} spacing='sm'>
@@ -290,15 +332,17 @@ export default function SiteDetail(): ReactNode {
                 },
                 {
                   type: 'string',
-                  name: 'position',
-                  label: t`Position`,
+                  name: 'location',
+                  label: t`Location`,
                   value_formatter: () =>
-                    site.latitude != null && site.longitude != null ? (
+                    located ? (
                       <PositionValue
                         latitude={site.latitude}
                         longitude={site.longitude}
                       />
-                    ) : undefined
+                    ) : (
+                      <Text size='sm' c='orange'>{t`Not set`}</Text>
+                    )
                 },
                 siteFields.depth_m
               ]}

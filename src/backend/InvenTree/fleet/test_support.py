@@ -29,6 +29,13 @@ def sales_order(part, customer=None, quantity=1):
     return order
 
 
+def new_site(name, **kwargs):
+    """Create a site (without a location unless given): deploying needs a site."""
+    from fleet.models import Site
+
+    return Site.objects.create(name=name, **kwargs)
+
+
 def sell_unit(unit, customer=None, shipment=None):
     """Sell a unit: allocate it to a new sales order line (not shipped).
 

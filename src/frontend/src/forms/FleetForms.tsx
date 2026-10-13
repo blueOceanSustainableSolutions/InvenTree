@@ -1,7 +1,7 @@
 import { t } from '@lingui/core/macro';
 import { Table, Text } from '@mantine/core';
 import { IconUsersGroup } from '@tabler/icons-react';
-import { type ReactNode, useMemo } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 
 import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
 import { ModelType } from '@lib/enums/ModelType';
@@ -16,17 +16,28 @@ import {
 } from '../fleet/components/TeamSelect';
 import { RenderPartColumn } from '../tables/ColumnRenderers';
 
+/** Whether a site has a location (latitude and longitude) */
+export function siteHasLocation(site: any): boolean {
+  return site?.latitude != null && site?.longitude != null;
+}
+
 /**
- * Fields for creating or editing a fleet site
+ * Fields for creating or editing a fleet site. Once a site has a location,
+ * it is changed only with "Move Site" (which records the change), so the
+ * location fields are left out of the edit form.
  */
-export function useSiteFields(): ApiFormFieldSet {
-  return useMemo(
-    () => ({
+export function useSiteFields(site?: any): ApiFormFieldSet {
+  const locked = siteHasLocation(site);
+
+  return useMemo(() => {
+    const location = { hidden: locked, exclude: locked };
+
+    return {
       reference: {},
       name: {},
-      latitude: {},
-      longitude: {},
-      depth_m: {},
+      latitude: location,
+      longitude: location,
+      depth_m: location,
       coverage: {},
       client: {
         filters: { is_customer: true }
@@ -35,9 +46,21 @@ export function useSiteFields(): ApiFormFieldSet {
       pm_interval_override_days: {},
       geofence_radius_m: {},
       active: {}
-    }),
-    []
-  );
+    };
+  }, [locked]);
+}
+
+/**
+ * Fields for moving a site: the new location, when, and why
+ */
+export function siteMoveFields(): ApiFormFieldSet {
+  return {
+    latitude: {},
+    longitude: {},
+    depth_m: {},
+    effective_at: {},
+    comment: {}
+  };
 }
 
 /**
@@ -112,13 +135,6 @@ export function useDeploymentFields({
       coverage: {}
     };
 
-    if (!create) {
-      fields.latitude = {};
-      fields.longitude = {};
-      fields.depth_m = {};
-      fields.geofence_radius_m = {};
-    }
-
     return fields;
   }, [create]);
 }
@@ -147,27 +163,44 @@ export function planDeploymentFields(): ApiFormFieldSet {
 }
 
 /**
- * Fields for deploying a device (the site is optional)
+ * Fields for deploying a device. A site is required: the planned one, another
+ * one, or (with the site left empty) a new site created here with its
+ * location. The device has no position of its own: it should be at its site.
  */
-export function deployFields(): ApiFormFieldSet {
-  return {
-    latitude: {},
-    longitude: {},
-    depth_m: {},
-    deployed_at: {}
-  };
-}
+export function useDeployFields({
+  siteId,
+  withNote
+}: {
+  siteId?: number | null;
+  withNote?: boolean;
+}): ApiFormFieldSet {
+  const [site, setSite] = useState<number | null>(siteId ?? null);
 
-/**
- * Fields for setting the position of a device
- */
-export function setPositionFields(): ApiFormFieldSet {
-  return {
-    latitude: {},
-    longitude: {},
-    depth_m: {},
-    geofence_radius_m: {}
-  };
+  useEffect(() => setSite(siteId ?? null), [siteId]);
+
+  return useMemo(() => {
+    const newSite = { hidden: !!site, exclude: !!site };
+
+    const fields: ApiFormFieldSet = {
+      site: {
+        filters: { active: true },
+        value: siteId ?? undefined,
+        description: t`Where the device is deployed. Leave empty to create a new site`,
+        onValueChange: (value: any) => setSite(value || null)
+      },
+      new_site_name: { ...newSite, required: !site },
+      new_site_latitude: { ...newSite, required: !site },
+      new_site_longitude: { ...newSite, required: !site },
+      new_site_depth_m: newSite,
+      deployed_at: {}
+    };
+
+    if (withNote) {
+      fields.note = {};
+    }
+
+    return fields;
+  }, [site, siteId, withNote]);
 }
 
 /**
@@ -470,12 +503,14 @@ export function consumeFields(kitLocationId?: number): ApiFormFieldSet {
 }
 
 /**
- * Fields for moving the nominal position of a device during a task
+ * Fields for moving the site of a device during a task (the device was
+ * physically moved)
  */
 export function repositionFields(): ApiFormFieldSet {
   return {
     latitude: {},
     longitude: {},
+    depth_m: {},
     note: {}
   };
 }
@@ -738,18 +773,5 @@ export function prepareKitData(data: any): any {
 export function cancelTripFields(): ApiFormFieldSet {
   return {
     reason: {}
-  };
-}
-
-/**
- * Fields for deploying the device of a deployment or swap task
- */
-export function taskDeployFields(): ApiFormFieldSet {
-  return {
-    latitude: {},
-    longitude: {},
-    depth_m: {},
-    deployed_at: {},
-    note: {}
   };
 }

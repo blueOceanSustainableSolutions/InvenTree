@@ -8,7 +8,7 @@ Tests control the output through class attributes:
     MockDataPlatformClient.reset()            # back to the defaults
 
 By default (generate=True), a device without an explicit status reports every
-enabled stream of its active deployment as seen now, at its nominal position.
+enabled stream of its active deployment as seen now, at the location of its site.
 """
 
 from django.utils import timezone
@@ -56,7 +56,7 @@ class MockDataPlatformClient(DataPlatformClient):
         return result
 
     def generate_status(self, platform_id: str) -> DeviceStatus | None:
-        """Report every enabled stream as seen now, at the nominal position."""
+        """Report every enabled stream as seen now, at the location of the site."""
         from fleet.models import Deployment
         from fleet.status_codes import DeploymentStatus
 
@@ -82,17 +82,12 @@ class MockDataPlatformClient(DataPlatformClient):
         ]
 
         position = None
-        latitude = deployment.latitude
-        longitude = deployment.longitude
+        site = deployment.site
 
-        if latitude is None and deployment.site:
-            latitude = deployment.site.latitude
-            longitude = deployment.site.longitude
-
-        if latitude is not None and longitude is not None:
+        if site is not None and site.has_location:
             position = Position(
-                latitude=float(latitude),
-                longitude=float(longitude),
+                latitude=float(site.latitude),
+                longitude=float(site.longitude),
                 timestamp=now,
                 source='mock',
             )

@@ -69,7 +69,7 @@ export function OverviewKpis(): ReactNode {
         />
         <KpiTile label={t`PM overdue`} value={data.pm_overdue} color='red' />
         <KpiTile
-          label={t`No position`}
+          label={t`Site without location`}
           value={data.no_position}
           color='orange'
         />

@@ -744,39 +744,52 @@ def consume(
 
 @transaction.atomic
 def reposition(
-    task: MaintenanceTask, user, latitude, longitude, note: str = ''
+    task: MaintenanceTask, user, latitude, longitude, note: str, depth_m=None
 ) -> MaintenanceAction:
-    """Move the nominal position (and the geofence centre) of the deployment.
+    """Move the site of the deployed device (the device was physically moved).
 
-    The old position is kept in the action metadata.
+    The site is moved with site.move_site(), with the note as the reason; the
+    old and new locations are also kept in the action metadata.
     """
+    from fleet.services import site as site_service
+
     lock_task(task)
     require_in_progress(task)
 
     deployment = task.deployment
 
     if deployment is None or deployment.status != DeploymentStatus.DEPLOYED.value:
-        raise ValidationError(_('Only a deployed device can be repositioned'))
+        raise ValidationError(_('Only the site of a deployed device can be moved'))
+
+    if deployment.site is None:
+        raise ValidationError(_('The deployment has no site'))
+
+    change = site_service.move_site(
+        deployment.site,
+        user,
+        latitude,
+        longitude,
+        comment=f'{task.reference}: {note}' if note else '',
+        depth_m=depth_m,
+    )
 
     def as_float(value):
         return float(value) if value is not None else None
-
-    old = {
-        'latitude': as_float(deployment.latitude),
-        'longitude': as_float(deployment.longitude),
-    }
-
-    deployment_service.set_position(deployment, latitude, longitude)
 
     record = MaintenanceAction.objects.create(
         task=task,
         action=MaintenanceAction.Action.REPOSITION,
         note=note[:500],
         metadata={
-            'old_position': old,
+            'site': deployment.site.reference,
+            'location_change': change.pk,
+            'old_position': {
+                'latitude': as_float(change.old_latitude),
+                'longitude': as_float(change.old_longitude),
+            },
             'new_position': {
-                'latitude': as_float(latitude),
-                'longitude': as_float(longitude),
+                'latitude': as_float(change.latitude),
+                'longitude': as_float(change.longitude),
             },
         },
         created_by=user if user is not None and user.is_authenticated else None,
@@ -838,13 +851,7 @@ def record_action(
 
 @transaction.atomic
 def deploy(
-    task: MaintenanceTask,
-    user=None,
-    latitude=None,
-    longitude=None,
-    depth_m=None,
-    deployed_at=None,
-    note: str = '',
+    task: MaintenanceTask, user=None, site=None, deployed_at=None, note: str = ''
 ) -> MaintenanceAction:
     """Deploy the device of a deployment (or swap) task.
 
@@ -867,16 +874,14 @@ def deploy(
         replaced is not None and replaced.status == DeploymentStatus.DEPLOYED.value
     )
 
-    deployment_service.deploy(
-        deployment,
-        user=user,
-        latitude=latitude,
-        longitude=longitude,
-        depth_m=depth_m,
-        deployed_at=deployed_at,
-    )
+    deployment_service.deploy(deployment, user=user, site=site, deployed_at=deployed_at)
 
-    metadata = {'deployed': deployment.reference}
+    # The task follows the site the device was deployed at
+    if task.site_id != deployment.site_id:
+        task.site = deployment.site
+        task.save()
+
+    metadata = {'deployed': deployment.reference, 'site': deployment.site.reference}
 
     if swapped:
         replaced.refresh_from_db()

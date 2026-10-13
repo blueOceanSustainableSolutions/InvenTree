@@ -276,32 +276,21 @@ def acknowledge_alert(alert: Alert, user=None) -> Alert:
 
 
 def get_geofence(deployment: Deployment) -> dict:
-    """Return the nominal position and geofence of a deployment.
+    """Return the location and geofence of the site of a deployment.
 
-    The nominal position falls back to the site, and the radius to the site
-    and then to FLEET_GEOFENCE_DEFAULT_RADIUS_M.
+    The device has no position of its own: it should be at the location of
+    its site. The radius defaults to FLEET_GEOFENCE_DEFAULT_RADIUS_M.
     """
     site = deployment.site
-    latitude = deployment.latitude
-    longitude = deployment.longitude
-
-    if (latitude is None or longitude is None) and site is not None:
-        latitude, longitude = site.latitude, site.longitude
-
-    radius = deployment.geofence_radius_m
-
-    if radius is None and site is not None:
-        radius = site.geofence_radius_m
+    latitude = site.latitude if site is not None else None
+    longitude = site.longitude if site is not None else None
+    radius = site.geofence_radius_m if site is not None else None
+    polygon = site.geofence_polygon if site is not None else None
 
     if radius is None:
         radius = (
             get_global_setting('FLEET_GEOFENCE_DEFAULT_RADIUS_M', cache=False) or None
         )
-
-    polygon = deployment.geofence_polygon
-
-    if polygon is None and site is not None:
-        polygon = site.geofence_polygon
 
     return {
         'latitude': latitude,
@@ -485,7 +474,7 @@ def apply_status(
         fence['polygon'],
     )
 
-    deployment.distance_from_nominal_m = to_decimal(distance, 2)
+    deployment.distance_from_site_m = to_decimal(distance, 2)
 
     # 4. Health
     enabled = [s for s in streams if s.enabled]
@@ -522,7 +511,7 @@ def apply_status(
             'last_latitude',
             'last_longitude',
             'last_position_at',
-            'distance_from_nominal_m',
+            'distance_from_site_m',
             'health',
             'last_polled_at',
         ]
@@ -590,7 +579,7 @@ def apply_status(
         message = str(_('Device is outside its geofence'))
 
         if distance is not None:
-            message += f' ({round(distance)} m ' + str(_('from nominal')) + ')'
+            message += f' ({round(distance)} m ' + str(_('from the site')) + ')'
 
         raise_alert(
             Alert.AlertType.GEOFENCE_BREACH,
