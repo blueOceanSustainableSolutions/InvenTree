@@ -48,6 +48,7 @@ from stock.models import StockItem
 
 logger = structlog.get_logger('inventree')
 
+
 class DryRunError(Exception):
     """Raised to roll back a dry run."""
 
@@ -196,8 +197,7 @@ def sync_changes(summary: dict) -> None:
     pool_ids = set(pool.values_list('pk', flat=True))
 
     for item in (
-        pool
-        .exclude(fleet_deployments__status__in=HOLDING_STATUSES)
+        pool.exclude(fleet_deployments__status__in=HOLDING_STATUSES)
         .exclude(build__fleet_deployment__status__in=HOLDING_STATUSES)
         .select_related('part')
     ):

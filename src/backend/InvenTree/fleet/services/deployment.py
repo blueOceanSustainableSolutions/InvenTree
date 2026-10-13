@@ -145,22 +145,25 @@ def deploy(
 
     if replaced is not None and replaced.status == DeploymentStatus.DEPLOYED.value:
         recover(
-            replaced, user=user, notes=str(_('Replaced by')) + f' {deployment.reference}'
+            replaced,
+            user=user,
+            notes=str(_('Replaced by')) + f' {deployment.reference}',
         )
 
     if site is not None:
         active = (
-            Deployment.objects
-            .filter(site=site, status=DeploymentStatus.DEPLOYED.value)
+            Deployment.objects.filter(site=site, status=DeploymentStatus.DEPLOYED.value)
             .exclude(pk=deployment.pk)
             .first()
         )
 
         if active is not None:
-            raise ValidationError({
-                'site': _('The site already has an active deployment')
-                + f' ({active.reference})'
-            })
+            raise ValidationError(
+                {
+                    'site': _('The site already has an active deployment')
+                    + f' ({active.reference})'
+                }
+            )
 
     # Position: given, else the one already on the deployment, else the site's
     if latitude is not None and longitude is not None:
@@ -415,8 +418,7 @@ def schedule(deployment: Deployment, trip) -> MaintenanceTask:
         check_not_decommissioned(device)
 
     task = (
-        deployment.tasks
-        .filter(
+        deployment.tasks.filter(
             status__in=[TaskStatus.PROPOSED.value, TaskStatus.SCHEDULED.value],
             task_type__in=[
                 MaintenanceTask.TaskType.DEPLOYMENT,
@@ -626,8 +628,7 @@ def compute_next_pm(deployment: Deployment, commit: bool = True):
 
     if deployment.coverage != Coverage.NO_SERVICE:
         last_task = (
-            deployment.tasks
-            .filter(
+            deployment.tasks.filter(
                 status=TaskStatus.COMPLETED.value,
                 task_type__in=PM_BASE_TASK_TYPES,
                 completed_at__isnull=False,

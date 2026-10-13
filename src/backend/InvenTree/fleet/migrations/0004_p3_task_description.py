@@ -4,20 +4,36 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
-    dependencies = [
-        ('fleet', '0003_deployment_creation_date'),
-    ]
+    dependencies = [('fleet', '0003_deployment_creation_date')]
 
     operations = [
         migrations.AddField(
             model_name='checklisttemplateitem',
             name='task_type',
-            field=models.CharField(blank=True, choices=[('PREVENTIVE', 'Preventive'), ('CORRECTIVE', 'Corrective'), ('DEPLOYMENT', 'Deployment'), ('RECOVERY', 'Recovery'), ('SWAP', 'Swap'), ('INSPECTION', 'Inspection')], default='PREVENTIVE', help_text='Type of task which uses this item (blank: every task type)', max_length=20, verbose_name='Task Type'),
+            field=models.CharField(
+                blank=True,
+                choices=[
+                    ('PREVENTIVE', 'Preventive'),
+                    ('CORRECTIVE', 'Corrective'),
+                    ('DEPLOYMENT', 'Deployment'),
+                    ('RECOVERY', 'Recovery'),
+                    ('SWAP', 'Swap'),
+                    ('INSPECTION', 'Inspection'),
+                ],
+                default='PREVENTIVE',
+                help_text='Type of task which uses this item (blank: every task type)',
+                max_length=20,
+                verbose_name='Task Type',
+            ),
         ),
         migrations.AddField(
             model_name='maintenancetask',
             name='description',
-            field=models.CharField(blank=True, help_text='What needs to be done', max_length=250, verbose_name='Description'),
+            field=models.CharField(
+                blank=True,
+                help_text='What needs to be done',
+                max_length=250,
+                verbose_name='Description',
+            ),
         ),
     ]

@@ -83,7 +83,13 @@ class TripDataMixin(MaintenanceDataMixin):
 
     def replacement(self, old, serial):
         """Plan a READY replacement of a deployed device, with a new unit."""
-        dep = plan_unit(self.make_device(serial), self.device_type, site=old.site, deployment_type=Deployment.DeploymentType.REPLACEMENT, replaces=old)
+        dep = plan_unit(
+            self.make_device(serial),
+            self.device_type,
+            site=old.site,
+            deployment_type=Deployment.DeploymentType.REPLACEMENT,
+            replaces=old,
+        )
         dep.refresh_from_db()
         return dep
 

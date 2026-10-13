@@ -74,6 +74,7 @@ export type ApiFormFieldHeader = {
  * @param adjustFilters : Callback function to adjust the filters for a related field before a query is made
  * @param addRow : Callback function to add a new row to a table field
  * @param headers : Optional definitions of table headers (for table fields)
+ * @param axis : 'latitude' or 'longitude' (for coordinate fields)
  * @param singleFetchFunction : Optional function to fetch a single value for this field (used for fetching the initial value when editing an existing object)
  */
 export type ApiFormFieldType = {
@@ -95,6 +96,7 @@ export type ApiFormFieldType = {
     | 'decimal'
     | 'float'
     | 'number'
+    | 'coordinate'
     | 'choice'
     | 'file upload'
     | 'nested object'
@@ -137,6 +139,7 @@ export type ApiFormFieldType = {
   headers?: ApiFormFieldHeader[];
   depends_on?: string[];
   singleFetchFunction?: (value: any) => Promise<any> | null;
+  axis?: 'latitude' | 'longitude';
 };
 
 export type ApiFormFieldSet = Record<string, ApiFormFieldType>;

@@ -32,6 +32,7 @@ import { formatDate } from '../../defaults/formatters';
 import { CoverageBadge } from '../../fleet/components/FleetBadges';
 import { FleetMapView } from '../../fleet/components/FleetMap';
 import { KpiTile } from '../../fleet/components/PipelineKpis';
+import { PositionValue } from '../../fleet/coordinates';
 import {
   detailFieldsByName,
   siteDetailFields
@@ -292,9 +293,12 @@ export default function SiteDetail(): ReactNode {
                   name: 'position',
                   label: t`Position`,
                   value_formatter: () =>
-                    site.latitude != null && site.longitude != null
-                      ? `${site.latitude}, ${site.longitude}`
-                      : undefined
+                    site.latitude != null && site.longitude != null ? (
+                      <PositionValue
+                        latitude={site.latitude}
+                        longitude={site.longitude}
+                      />
+                    ) : undefined
                 },
                 siteFields.depth_m
               ]}

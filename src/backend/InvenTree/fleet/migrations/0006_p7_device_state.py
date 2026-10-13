@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ('fleet', '0005_p4_trip_kit_device'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
@@ -16,21 +15,44 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='devicelink',
             name='state',
-            field=models.CharField(blank=True, choices=[('', 'None'), ('PROBLEM_ACKNOWLEDGED', 'Problem Acknowledged'), ('DOCKED', 'Docked'), ('DECOMMISSIONED', 'Decommissioned')], default='', help_text='Internal state of the device', max_length=30, verbose_name='State'),
+            field=models.CharField(
+                blank=True,
+                choices=[
+                    ('', 'None'),
+                    ('PROBLEM_ACKNOWLEDGED', 'Problem Acknowledged'),
+                    ('DOCKED', 'Docked'),
+                    ('DECOMMISSIONED', 'Decommissioned'),
+                ],
+                default='',
+                help_text='Internal state of the device',
+                max_length=30,
+                verbose_name='State',
+            ),
         ),
         migrations.AddField(
             model_name='devicelink',
             name='state_changed_at',
-            field=models.DateTimeField(blank=True, null=True, verbose_name='State Changed'),
+            field=models.DateTimeField(
+                blank=True, null=True, verbose_name='State Changed'
+            ),
         ),
         migrations.AddField(
             model_name='devicelink',
             name='state_changed_by',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL, verbose_name='State Changed By'),
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name='+',
+                to=settings.AUTH_USER_MODEL,
+                verbose_name='State Changed By',
+            ),
         ),
         migrations.AddField(
             model_name='devicelink',
             name='state_note',
-            field=models.CharField(blank=True, max_length=250, verbose_name='State Note'),
+            field=models.CharField(
+                blank=True, max_length=250, verbose_name='State Note'
+            ),
         ),
     ]

@@ -134,12 +134,13 @@ def maintenance_row(deployment: Deployment) -> dict:
     tasks = [
         task
         for task in deployment.tasks.all()
-        if task.status in OPEN_TASK_STATUSES
-        and task.task_type not in DEPLOY_TASK_TYPES
+        if task.status in OPEN_TASK_STATUSES and task.task_type not in DEPLOY_TASK_TYPES
     ]
     trip_task = trip_of(tasks)
 
-    dates = [value for value in [*map(task_date, tasks), deployment.next_pm_date] if value]
+    dates = [
+        value for value in [*map(task_date, tasks), deployment.next_pm_date] if value
+    ]
 
     return {
         'kind': KIND_MAINTENANCE,
@@ -209,8 +210,7 @@ def plan_rows(
 
     if kind in [None, '', KIND_MAINTENANCE]:
         deployed = (
-            queryset
-            .filter(status=DeploymentStatus.DEPLOYED.value)
+            queryset.filter(status=DeploymentStatus.DEPLOYED.value)
             .filter(coverage=Coverage.FULL)
             .exclude(device_state.hidden_q())
         )

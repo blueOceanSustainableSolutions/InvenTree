@@ -65,9 +65,9 @@ def responsible_reverse(apps, schema_editor):
     """Point each trip back at its responsible user (a group is dropped)."""
     FieldTrip = apps.get_model('fleet', 'FieldTrip')
 
-    for trip in FieldTrip.objects.filter(responsible_owner__isnull=False).select_related(
-        'responsible_owner__owner_type'
-    ):
+    for trip in FieldTrip.objects.filter(
+        responsible_owner__isnull=False
+    ).select_related('responsible_owner__owner_type'):
         owner = trip.responsible_owner
 
         if owner.owner_type.app_label == 'auth' and owner.owner_type.model == 'user':
@@ -102,7 +102,6 @@ def barcode_fields(model_name):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ('contenttypes', '0002_remove_content_type_name'),
         ('fleet', '0006_p7_device_state'),

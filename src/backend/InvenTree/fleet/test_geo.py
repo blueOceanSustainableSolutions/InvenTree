@@ -110,3 +110,72 @@ class GeofenceTest(SimpleTestCase):
         inside, distance = geo.check_geofence(37, -7.9, 37, -7.9, None)
         self.assertIsNone(inside)
         self.assertEqual(distance, 0)
+
+
+class ParseCoordinateTest(SimpleTestCase):
+    """Coordinates given as DD, DDM or DMS."""
+
+    def test_decimal_degrees(self):
+        """Signed numbers and hemisphere letters, dot or comma decimals."""
+        self.assertEqual(
+            geo.parse_coordinate('38.722256', 'latitude'), Decimal('38.722256')
+        )
+        self.assertEqual(
+            geo.parse_coordinate('-9.1393', 'longitude'), Decimal('-9.1393')
+        )
+        self.assertEqual(geo.parse_coordinate('38,5 S', 'latitude'), Decimal('-38.5'))
+        self.assertEqual(geo.parse_coordinate('N 38.5', 'latitude'), Decimal('38.5'))
+        self.assertEqual(geo.parse_coordinate('9.5W', 'longitude'), Decimal('-9.5'))
+        self.assertEqual(geo.parse_coordinate('9.5 O', 'longitude'), Decimal('-9.5'))
+        self.assertEqual(geo.parse_coordinate('+12', 'longitude'), Decimal('12'))
+
+    def test_degrees_minutes(self):
+        """Degrees and decimal minutes."""
+        self.assertEqual(
+            geo.parse_coordinate('38 43.3354', 'latitude'), Decimal('38.7222566667')
+        )
+        self.assertEqual(
+            geo.parse_coordinate("38°43,5' N", 'latitude'), Decimal('38.725')
+        )
+        self.assertEqual(geo.parse_coordinate("38º 30'", 'latitude'), Decimal('38.5'))
+
+    def test_degrees_minutes_seconds(self):
+        """Degrees, minutes and seconds, with ASCII or typographic marks."""
+        expected = Decimal('38.7222555556')
+        self.assertEqual(geo.parse_coordinate('38°43\'20.12"N', 'latitude'), expected)
+        self.assertEqual(geo.parse_coordinate('38°43′20.12″N', 'latitude'), expected)  # noqa: RUF001
+        self.assertEqual(geo.parse_coordinate('38 43 20.12', 'latitude'), expected)
+        self.assertEqual(geo.parse_coordinate('38:43:20.12', 'latitude'), expected)
+        self.assertEqual(
+            geo.parse_coordinate('W 9 8 21.5', 'longitude'), Decimal('-9.1393055556')
+        )
+
+    def test_round_trip(self):
+        """The stored precision gives back the seconds that were entered."""
+        value = geo.parse_coordinate('38 43 20.1234', 'latitude')
+        seconds = (value - 38) * 3600 - 43 * 60
+        self.assertAlmostEqual(float(seconds), 20.1234, places=5)
+
+    def test_invalid(self):
+        """Invalid coordinates are rejected."""
+        invalid = [
+            ('', 'latitude'),
+            ('abc', 'latitude'),
+            ('91', 'latitude'),
+            ('181', 'longitude'),
+            ('90 0 1', 'latitude'),
+            ('38 60', 'latitude'),
+            ('38 43 60', 'latitude'),
+            ('38.5 43', 'latitude'),
+            ('38 43.5 10', 'latitude'),
+            ('-38 S', 'latitude'),
+            ('38 E', 'latitude'),
+            ('9 N', 'longitude'),
+            ('38 43 20 10', 'latitude'),
+            ('38.7, -9.1', 'latitude'),
+            ('38d43m20s', 'latitude'),
+        ]
+
+        for value, axis in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                geo.parse_coordinate(value, axis)

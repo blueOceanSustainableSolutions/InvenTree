@@ -157,8 +157,7 @@ def get_state(device) -> str:
         return InternalState.NONE
 
     return (
-        DeviceLink.objects
-        .filter(stock_item=device)
+        DeviceLink.objects.filter(stock_item=device)
         .values_list('state', flat=True)
         .first()
         or InternalState.NONE
@@ -282,11 +281,13 @@ def set_state(
     deployed = deployment.status == DeploymentStatus.DEPLOYED.value
 
     if state in DEPLOYED_ONLY_STATES and not deployed:
-        raise ValidationError({
-            'state': _(
-                'Only a deployed device can be docked or have a problem acknowledged'
-            )
-        })
+        raise ValidationError(
+            {
+                'state': _(
+                    'Only a deployed device can be docked or have a problem acknowledged'
+                )
+            }
+        )
 
     tasks = MaintenanceTask.objects.filter(device=device)
 
@@ -294,18 +295,22 @@ def set_state(
         if Deployment.objects.filter(
             device=device, status__in=DeploymentStatusGroups.PIPELINE
         ).exists():
-            raise ValidationError({
-                'state': _(
-                    'The device is in a planned deployment: cancel it or assign another device first'
-                )
-            })
+            raise ValidationError(
+                {
+                    'state': _(
+                        'The device is in a planned deployment: cancel it or assign another device first'
+                    )
+                }
+            )
 
         if tasks.filter(status=TaskStatus.IN_PROGRESS.value).exists():
-            raise ValidationError({
-                'state': _(
-                    'A task on this device is in progress: complete or cancel it first'
-                )
-            })
+            raise ValidationError(
+                {
+                    'state': _(
+                        'A task on this device is in progress: complete or cancel it first'
+                    )
+                }
+            )
 
     previous = link.state
     change_state(link, state, user=user, note=note)

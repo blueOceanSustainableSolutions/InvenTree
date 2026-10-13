@@ -69,14 +69,16 @@ def build_teams_card(
         body.append({'type': 'TextBlock', 'text': text, 'wrap': True})
 
     if facts:
-        body.append({
-            'type': 'FactSet',
-            'facts': [
-                {'title': str(name), 'value': str(value)}
-                for name, value in facts
-                if value not in (None, '')
-            ],
-        })
+        body.append(
+            {
+                'type': 'FactSet',
+                'facts': [
+                    {'title': str(name), 'value': str(value)}
+                    for name, value in facts
+                    if value not in (None, '')
+                ],
+            }
+        )
 
     content = {
         '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',

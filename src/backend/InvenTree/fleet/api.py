@@ -218,11 +218,13 @@ class FleetDeviceTypeDetail(
     def destroy(self, request, *args, **kwargs):
         """A device type with deployments cannot be deleted (deactivate it instead)."""
         if self.get_object().deployments.exists():
-            raise ValidationError({
-                'non_field_errors': [
-                    _('This device type has deployments. Mark it inactive instead')
-                ]
-            })
+            raise ValidationError(
+                {
+                    'non_field_errors': [
+                        _('This device type has deployments. Mark it inactive instead')
+                    ]
+                }
+            )
 
         return super().destroy(request, *args, **kwargs)
 
@@ -372,11 +374,13 @@ class SiteDetail(SiteMixin, OutputOptionsMixin, RetrieveUpdateDestroyAPI):
     def destroy(self, request, *args, **kwargs):
         """A site with deployments cannot be deleted (deactivate it instead)."""
         if self.get_object().deployments.exists():
-            raise ValidationError({
-                'non_field_errors': [
-                    _('This site has deployments. Mark it inactive instead')
-                ]
-            })
+            raise ValidationError(
+                {
+                    'non_field_errors': [
+                        _('This site has deployments. Mark it inactive instead')
+                    ]
+                }
+            )
 
         return super().destroy(request, *args, **kwargs)
 
@@ -519,9 +523,9 @@ class DeploymentDetail(DeploymentMixin, OutputOptionsMixin, RetrieveUpdateDestro
         deployment = self.get_object()
 
         if deployment.status != DeploymentStatus.CANCELLED.value:
-            raise ValidationError({
-                'non_field_errors': [_('Only cancelled deployments can be deleted')]
-            })
+            raise ValidationError(
+                {'non_field_errors': [_('Only cancelled deployments can be deleted')]}
+            )
 
         return super().destroy(request, *args, **kwargs)
 
@@ -895,11 +899,15 @@ class MaintenanceTaskDetail(
             task.status not in [TaskStatus.PROPOSED.value, TaskStatus.CANCELLED.value]
             or task.actions.exists()
         ):
-            raise ValidationError({
-                'non_field_errors': [
-                    _('Only proposed or cancelled tasks without actions can be deleted')
-                ]
-            })
+            raise ValidationError(
+                {
+                    'non_field_errors': [
+                        _(
+                            'Only proposed or cancelled tasks without actions can be deleted'
+                        )
+                    ]
+                }
+            )
 
         return super().destroy(request, *args, **kwargs)
 
@@ -1080,13 +1088,15 @@ class FieldTripDetail(FieldTripMixin, RetrieveUpdateDestroyAPI):
             trip.status not in [TripStatus.PLANNING.value, TripStatus.CANCELLED.value]
             or trip.tasks.filter(status__in=TaskStatusGroups.OPEN).exists()
         ):
-            raise ValidationError({
-                'non_field_errors': [
-                    _(
-                        'Only a planned or cancelled trip without open tasks can be deleted'
-                    )
-                ]
-            })
+            raise ValidationError(
+                {
+                    'non_field_errors': [
+                        _(
+                            'Only a planned or cancelled trip without open tasks can be deleted'
+                        )
+                    ]
+                }
+            )
 
         with transaction.atomic():
             trips.delete_kit_locations(trip)
@@ -1104,9 +1114,9 @@ class TripKitLineMixin:
     def perform_destroy(self, instance):
         """Kit lines of a closed trip cannot be deleted."""
         if instance.trip.status not in TripStatusGroups.OPEN:
-            raise ValidationError({
-                'non_field_errors': [_('The kit of a closed trip cannot be changed')]
-            })
+            raise ValidationError(
+                {'non_field_errors': [_('The kit of a closed trip cannot be changed')]}
+            )
 
         super().perform_destroy(instance)
 
@@ -1130,20 +1140,20 @@ def trip_kit_data(trip: FieldTrip) -> dict:
     """The kit of a trip (lines with availability, contents, removed)."""
     removed = trips.get_removed_location(trip)
 
-    return fleet_serializers.TripKitSerializer({
-        'trip': trip.pk,
-        'kit_location': trip.kit_location_id,
-        'removed_location': removed.pk if removed else None,
-        'lines': trips.kit_lines(trip),
-        'contents': trips
-        .kit_stock(trip)
-        .select_related('part', 'location')
-        .order_by('part__name', 'serial', 'pk'),
-        'removed': trips
-        .removed_stock(trip)
-        .select_related('part', 'location')
-        .order_by('part__name', 'serial', 'pk'),
-    }).data
+    return fleet_serializers.TripKitSerializer(
+        {
+            'trip': trip.pk,
+            'kit_location': trip.kit_location_id,
+            'removed_location': removed.pk if removed else None,
+            'lines': trips.kit_lines(trip),
+            'contents': trips.kit_stock(trip)
+            .select_related('part', 'location')
+            .order_by('part__name', 'serial', 'pk'),
+            'removed': trips.removed_stock(trip)
+            .select_related('part', 'location')
+            .order_by('part__name', 'serial', 'pk'),
+        }
+    ).data
 
 
 class TripKit(FleetReadView):
@@ -1242,8 +1252,7 @@ class FleetCalendar(FleetReadView):
         events = []
 
         for dep in (
-            Deployment.objects
-            .filter(
+            Deployment.objects.filter(
                 status__in=DeploymentStatusGroups.PIPELINE,
                 target_date__gte=start,
                 target_date__lte=end,
@@ -1256,20 +1265,21 @@ class FleetCalendar(FleetReadView):
             if dep.site:
                 title += f' - {dep.site.name}'
 
-            events.append({
-                'model_type': 'deployment',
-                'pk': dep.pk,
-                'title': title,
-                'start': dep.target_date,
-                'end': None,
-                'status': dep.status,
-                'status_text': dep.get_status_display(),
-                'url': dep.get_absolute_url(),
-            })
+            events.append(
+                {
+                    'model_type': 'deployment',
+                    'pk': dep.pk,
+                    'title': title,
+                    'start': dep.target_date,
+                    'end': None,
+                    'status': dep.status,
+                    'status_text': dep.get_status_display(),
+                    'url': dep.get_absolute_url(),
+                }
+            )
 
         for task in (
-            MaintenanceTask.objects
-            .filter(status__in=TaskStatusGroups.OPEN)
+            MaintenanceTask.objects.filter(status__in=TaskStatusGroups.OPEN)
             .annotate(when=Coalesce('scheduled_date', 'due_date'))
             .filter(when__gte=start, when__lte=end)
             .select_related('site')
@@ -1281,34 +1291,37 @@ class FleetCalendar(FleetReadView):
             if task.site:
                 title += f' - {task.site.name}'
 
-            events.append({
-                'model_type': 'maintenancetask',
-                'pk': task.pk,
-                'title': title,
-                'start': when,
-                'end': None,
-                'status': task.status,
-                'status_text': task.get_status_display(),
-                'url': task.get_absolute_url(),
-            })
+            events.append(
+                {
+                    'model_type': 'maintenancetask',
+                    'pk': task.pk,
+                    'title': title,
+                    'start': when,
+                    'end': None,
+                    'status': task.status,
+                    'status_text': task.get_status_display(),
+                    'url': task.get_absolute_url(),
+                }
+            )
 
         for trip in (
-            FieldTrip.objects
-            .filter(start_date__lte=end)
+            FieldTrip.objects.filter(start_date__lte=end)
             .annotate(last_day=Coalesce('end_date', 'start_date'))
             .filter(last_day__gte=start)
             .exclude(status=TripStatus.CANCELLED.value)
         ):
-            events.append({
-                'model_type': 'fieldtrip',
-                'pk': trip.pk,
-                'title': f'{trip.reference} - {trip.title}',
-                'start': trip.start_date,
-                'end': trip.end_date,
-                'status': trip.status,
-                'status_text': trip.get_status_display(),
-                'url': trip.get_absolute_url(),
-            })
+            events.append(
+                {
+                    'model_type': 'fieldtrip',
+                    'pk': trip.pk,
+                    'title': f'{trip.reference} - {trip.title}',
+                    'start': trip.start_date,
+                    'end': trip.end_date,
+                    'status': trip.status,
+                    'status_text': trip.get_status_display(),
+                    'url': trip.get_absolute_url(),
+                }
+            )
 
         events.sort(key=lambda event: (event['start'], event['title']))
 
@@ -1360,12 +1373,14 @@ class FleetPlan(FleetReadView):
         except ValueError:
             raise ValidationError({'limit': [_('Invalid page')]})
 
-        return Response({
-            'count': len(data),
-            'next': None,
-            'previous': None,
-            'results': data[offset : offset + limit] if limit else data[offset:],
-        })
+        return Response(
+            {
+                'count': len(data),
+                'next': None,
+                'previous': None,
+                'results': data[offset : offset + limit] if limit else data[offset:],
+            }
+        )
 
 
 class FleetOverview(FleetReadView):
@@ -1447,8 +1462,7 @@ class FleetOverview(FleetReadView):
         )
 
         states = dict(
-            device_state
-            .annotate_device_state(deployed, today=today)
+            device_state.annotate_device_state(deployed, today=today)
             .values_list('device_state')
             .annotate(count=Count('pk'))
             .order_by()
@@ -1485,8 +1499,7 @@ class DeploymentMap(FleetReadView):
         Docked devices are on land, so they are left out.
         """
         queryset = device_state.annotate_device_state(
-            Deployment.objects
-            .filter(status__in=DeploymentStatusGroups.ACTIVE)
+            Deployment.objects.filter(status__in=DeploymentStatusGroups.ACTIVE)
             .exclude(device_state.hidden_q())
             .select_related('site', 'device')
             .annotate(
@@ -1506,9 +1519,9 @@ class DeploymentMap(FleetReadView):
                 except ValueError:
                     raise ValidationError({param: _('Invalid value')})
 
-                queryset = queryset.filter(**{
-                    'site' if param == 'site' else 'pk': value
-                })
+                queryset = queryset.filter(
+                    **{'site' if param == 'site' else 'pk': value}
+                )
 
         if health := request.query_params.get('health'):
             try:
@@ -1529,29 +1542,31 @@ class DeploymentMap(FleetReadView):
             last_lon = as_float(dep.last_longitude)
             has_last = last_lat is not None and last_lon is not None
 
-            rows.append({
-                'pk': dep.pk,
-                'reference': dep.reference,
-                'status': dep.status,
-                'site': dep.site.pk if dep.site else None,
-                'site_name': dep.site.name if dep.site else None,
-                'site_reference': dep.site.reference if dep.site else None,
-                'device_serial': dep.device.serial if dep.device else None,
-                'latitude': last_lat if has_last else nominal_lat,
-                'longitude': last_lon if has_last else nominal_lon,
-                'nominal_latitude': nominal_lat,
-                'nominal_longitude': nominal_lon,
-                'last_latitude': last_lat,
-                'last_longitude': last_lon,
-                'last_position_at': dep.last_position_at,
-                'distance_from_nominal_m': as_float(dep.distance_from_nominal_m),
-                'radius_m': fence['radius_m'],
-                'polygon': fence['polygon'],
-                'health': dep.health,
-                'last_contact': dep.last_contact,
-                'open_alert_count': dep.open_alert_count,
-                'device_state': dep.device_state,
-            })
+            rows.append(
+                {
+                    'pk': dep.pk,
+                    'reference': dep.reference,
+                    'status': dep.status,
+                    'site': dep.site.pk if dep.site else None,
+                    'site_name': dep.site.name if dep.site else None,
+                    'site_reference': dep.site.reference if dep.site else None,
+                    'device_serial': dep.device.serial if dep.device else None,
+                    'latitude': last_lat if has_last else nominal_lat,
+                    'longitude': last_lon if has_last else nominal_lon,
+                    'nominal_latitude': nominal_lat,
+                    'nominal_longitude': nominal_lon,
+                    'last_latitude': last_lat,
+                    'last_longitude': last_lon,
+                    'last_position_at': dep.last_position_at,
+                    'distance_from_nominal_m': as_float(dep.distance_from_nominal_m),
+                    'radius_m': fence['radius_m'],
+                    'polygon': fence['polygon'],
+                    'health': dep.health,
+                    'last_contact': dep.last_contact,
+                    'open_alert_count': dep.open_alert_count,
+                    'device_state': dep.device_state,
+                }
+            )
 
         return Response(fleet_serializers.DeploymentMapSerializer(rows, many=True).data)
 
@@ -1560,321 +1575,403 @@ fleet_api_urls = [
     # Device types (and their stream templates)
     path(
         'device-type/',
-        include([
-            path(
-                'stream-template/',
-                include([
-                    path(
-                        '<int:pk>/',
-                        StreamTemplateDetail.as_view(),
-                        name='api-fleet-stream-template-detail',
+        include(
+            [
+                path(
+                    'stream-template/',
+                    include(
+                        [
+                            path(
+                                '<int:pk>/',
+                                StreamTemplateDetail.as_view(),
+                                name='api-fleet-stream-template-detail',
+                            ),
+                            path(
+                                '',
+                                StreamTemplateList.as_view(),
+                                name='api-fleet-stream-template-list',
+                            ),
+                        ]
                     ),
-                    path(
-                        '',
-                        StreamTemplateList.as_view(),
-                        name='api-fleet-stream-template-list',
+                ),
+                path(
+                    'checklist-item/',
+                    include(
+                        [
+                            path(
+                                '<int:pk>/',
+                                ChecklistTemplateItemDetail.as_view(),
+                                name='api-fleet-checklist-item-detail',
+                            ),
+                            path(
+                                '',
+                                ChecklistTemplateItemList.as_view(),
+                                name='api-fleet-checklist-item-list',
+                            ),
+                        ]
                     ),
-                ]),
-            ),
-            path(
-                'checklist-item/',
-                include([
-                    path(
-                        '<int:pk>/',
-                        ChecklistTemplateItemDetail.as_view(),
-                        name='api-fleet-checklist-item-detail',
+                ),
+                path(
+                    'kit-line/',
+                    include(
+                        [
+                            path(
+                                '<int:pk>/',
+                                KitTemplateLineDetail.as_view(),
+                                name='api-fleet-kit-line-detail',
+                            ),
+                            path(
+                                '',
+                                KitTemplateLineList.as_view(),
+                                name='api-fleet-kit-line-list',
+                            ),
+                        ]
                     ),
-                    path(
-                        '',
-                        ChecklistTemplateItemList.as_view(),
-                        name='api-fleet-checklist-item-list',
+                ),
+                path(
+                    '<int:pk>/',
+                    include(
+                        [
+                            meta_path(FleetDeviceType),
+                            path(
+                                '',
+                                FleetDeviceTypeDetail.as_view(),
+                                name='api-fleet-device-type-detail',
+                            ),
+                        ]
                     ),
-                ]),
-            ),
-            path(
-                'kit-line/',
-                include([
-                    path(
-                        '<int:pk>/',
-                        KitTemplateLineDetail.as_view(),
-                        name='api-fleet-kit-line-detail',
-                    ),
-                    path(
-                        '',
-                        KitTemplateLineList.as_view(),
-                        name='api-fleet-kit-line-list',
-                    ),
-                ]),
-            ),
-            path(
-                '<int:pk>/',
-                include([
-                    meta_path(FleetDeviceType),
-                    path(
-                        '',
-                        FleetDeviceTypeDetail.as_view(),
-                        name='api-fleet-device-type-detail',
-                    ),
-                ]),
-            ),
-            path('', FleetDeviceTypeList.as_view(), name='api-fleet-device-type-list'),
-        ]),
+                ),
+                path(
+                    '', FleetDeviceTypeList.as_view(), name='api-fleet-device-type-list'
+                ),
+            ]
+        ),
     ),
     # Sites
     path(
         'site/',
-        include([
-            path(
-                '<int:pk>/',
-                include([
-                    meta_path(Site),
-                    path('', SiteDetail.as_view(), name='api-fleet-site-detail'),
-                ]),
-            ),
-            path('', SiteList.as_view(), name='api-fleet-site-list'),
-        ]),
+        include(
+            [
+                path(
+                    '<int:pk>/',
+                    include(
+                        [
+                            meta_path(Site),
+                            path(
+                                '', SiteDetail.as_view(), name='api-fleet-site-detail'
+                            ),
+                        ]
+                    ),
+                ),
+                path('', SiteList.as_view(), name='api-fleet-site-list'),
+            ]
+        ),
     ),
     # Device links
     path(
         'device-link/',
-        include([
-            path(
-                '<int:pk>/',
-                include([
-                    meta_path(DeviceLink),
-                    path(
-                        '',
-                        DeviceLinkDetail.as_view(),
-                        name='api-fleet-device-link-detail',
+        include(
+            [
+                path(
+                    '<int:pk>/',
+                    include(
+                        [
+                            meta_path(DeviceLink),
+                            path(
+                                '',
+                                DeviceLinkDetail.as_view(),
+                                name='api-fleet-device-link-detail',
+                            ),
+                        ]
                     ),
-                ]),
-            ),
-            path('', DeviceLinkList.as_view(), name='api-fleet-device-link-list'),
-        ]),
+                ),
+                path('', DeviceLinkList.as_view(), name='api-fleet-device-link-list'),
+            ]
+        ),
     ),
     # Deployments
     path(
         'deployment/',
-        include([
-            path(
-                'stream/',
-                include([
-                    path(
-                        '<int:pk>/',
-                        DataStreamDetail.as_view(),
-                        name='api-fleet-stream-detail',
+        include(
+            [
+                path(
+                    'stream/',
+                    include(
+                        [
+                            path(
+                                '<int:pk>/',
+                                DataStreamDetail.as_view(),
+                                name='api-fleet-stream-detail',
+                            ),
+                            path(
+                                '',
+                                DataStreamList.as_view(),
+                                name='api-fleet-stream-list',
+                            ),
+                        ]
                     ),
-                    path('', DataStreamList.as_view(), name='api-fleet-stream-list'),
-                ]),
-            ),
-            path('map/', DeploymentMap.as_view(), name='api-fleet-deployment-map'),
-            path('new/', DeploymentNew.as_view(), name='api-fleet-deployment-new'),
-            path(
-                '<int:pk>/',
-                include([
-                    path(
-                        'verify/',
-                        DeploymentVerify.as_view(),
-                        name='api-fleet-deployment-verify',
+                ),
+                path('map/', DeploymentMap.as_view(), name='api-fleet-deployment-map'),
+                path('new/', DeploymentNew.as_view(), name='api-fleet-deployment-new'),
+                path(
+                    '<int:pk>/',
+                    include(
+                        [
+                            path(
+                                'verify/',
+                                DeploymentVerify.as_view(),
+                                name='api-fleet-deployment-verify',
+                            ),
+                            path(
+                                'track/',
+                                DeploymentTrack.as_view(),
+                                name='api-fleet-deployment-track',
+                            ),
+                            path(
+                                'deploy/',
+                                DeploymentDeploy.as_view(),
+                                name='api-fleet-deployment-deploy',
+                            ),
+                            path(
+                                'recover/',
+                                DeploymentRecover.as_view(),
+                                name='api-fleet-deployment-recover',
+                            ),
+                            path(
+                                'set-position/',
+                                DeploymentSetPosition.as_view(),
+                                name='api-fleet-deployment-set-position',
+                            ),
+                            path(
+                                'set-state/',
+                                DeploymentSetState.as_view(),
+                                name='api-fleet-deployment-set-state',
+                            ),
+                            meta_path(Deployment),
+                            path(
+                                '',
+                                DeploymentDetail.as_view(),
+                                name='api-fleet-deployment-detail',
+                            ),
+                        ]
                     ),
-                    path(
-                        'track/',
-                        DeploymentTrack.as_view(),
-                        name='api-fleet-deployment-track',
-                    ),
-                    path(
-                        'deploy/',
-                        DeploymentDeploy.as_view(),
-                        name='api-fleet-deployment-deploy',
-                    ),
-                    path(
-                        'recover/',
-                        DeploymentRecover.as_view(),
-                        name='api-fleet-deployment-recover',
-                    ),
-                    path(
-                        'set-position/',
-                        DeploymentSetPosition.as_view(),
-                        name='api-fleet-deployment-set-position',
-                    ),
-                    path(
-                        'set-state/',
-                        DeploymentSetState.as_view(),
-                        name='api-fleet-deployment-set-state',
-                    ),
-                    meta_path(Deployment),
-                    path(
-                        '',
-                        DeploymentDetail.as_view(),
-                        name='api-fleet-deployment-detail',
-                    ),
-                ]),
-            ),
-            path('', DeploymentList.as_view(), name='api-fleet-deployment-list'),
-        ]),
+                ),
+                path('', DeploymentList.as_view(), name='api-fleet-deployment-list'),
+            ]
+        ),
     ),
     # Alerts
     path(
         'alert/',
-        include([
-            path(
-                '<int:pk>/',
-                include([
-                    path(
-                        'acknowledge/',
-                        AlertAcknowledge.as_view(),
-                        name='api-fleet-alert-acknowledge',
+        include(
+            [
+                path(
+                    '<int:pk>/',
+                    include(
+                        [
+                            path(
+                                'acknowledge/',
+                                AlertAcknowledge.as_view(),
+                                name='api-fleet-alert-acknowledge',
+                            ),
+                            path(
+                                'resolve/',
+                                AlertResolve.as_view(),
+                                name='api-fleet-alert-resolve',
+                            ),
+                            path(
+                                'create-task/',
+                                AlertCreateTask.as_view(),
+                                name='api-fleet-alert-create-task',
+                            ),
+                            meta_path(Alert),
+                            path(
+                                '', AlertDetail.as_view(), name='api-fleet-alert-detail'
+                            ),
+                        ]
                     ),
-                    path(
-                        'resolve/',
-                        AlertResolve.as_view(),
-                        name='api-fleet-alert-resolve',
-                    ),
-                    path(
-                        'create-task/',
-                        AlertCreateTask.as_view(),
-                        name='api-fleet-alert-create-task',
-                    ),
-                    meta_path(Alert),
-                    path('', AlertDetail.as_view(), name='api-fleet-alert-detail'),
-                ]),
-            ),
-            path('', AlertList.as_view(), name='api-fleet-alert-list'),
-        ]),
+                ),
+                path('', AlertList.as_view(), name='api-fleet-alert-list'),
+            ]
+        ),
     ),
     # Maintenance tasks (and their checklist and actions)
     path(
         'task/',
-        include([
-            path(
-                'checklist/',
-                include([
-                    path(
-                        '<int:pk>/',
-                        ChecklistResultDetail.as_view(),
-                        name='api-fleet-checklist-result-detail',
+        include(
+            [
+                path(
+                    'checklist/',
+                    include(
+                        [
+                            path(
+                                '<int:pk>/',
+                                ChecklistResultDetail.as_view(),
+                                name='api-fleet-checklist-result-detail',
+                            ),
+                            path(
+                                '',
+                                ChecklistResultList.as_view(),
+                                name='api-fleet-checklist-result-list',
+                            ),
+                        ]
                     ),
-                    path(
-                        '',
-                        ChecklistResultList.as_view(),
-                        name='api-fleet-checklist-result-list',
+                ),
+                path(
+                    'action/',
+                    MaintenanceActionList.as_view(),
+                    name='api-fleet-task-action-list',
+                ),
+                path(
+                    '<int:pk>/',
+                    include(
+                        [
+                            path(
+                                'start/',
+                                TaskStart.as_view(),
+                                name='api-fleet-task-start',
+                            ),
+                            path(
+                                'component-action/',
+                                TaskComponentAction.as_view(),
+                                name='api-fleet-task-component-action',
+                            ),
+                            path(
+                                'consume/',
+                                TaskConsume.as_view(),
+                                name='api-fleet-task-consume',
+                            ),
+                            path(
+                                'reposition/',
+                                TaskReposition.as_view(),
+                                name='api-fleet-task-reposition',
+                            ),
+                            path(
+                                'record-action/',
+                                TaskRecordAction.as_view(),
+                                name='api-fleet-task-record-action',
+                            ),
+                            path(
+                                'verify/',
+                                TaskVerify.as_view(),
+                                name='api-fleet-task-verify',
+                            ),
+                            path(
+                                'complete/',
+                                TaskComplete.as_view(),
+                                name='api-fleet-task-complete',
+                            ),
+                            path(
+                                'cancel/',
+                                TaskCancel.as_view(),
+                                name='api-fleet-task-cancel',
+                            ),
+                            path(
+                                'deploy/',
+                                TaskDeploy.as_view(),
+                                name='api-fleet-task-deploy',
+                            ),
+                            meta_path(MaintenanceTask),
+                            path(
+                                '',
+                                MaintenanceTaskDetail.as_view(),
+                                name='api-fleet-task-detail',
+                            ),
+                        ]
                     ),
-                ]),
-            ),
-            path(
-                'action/',
-                MaintenanceActionList.as_view(),
-                name='api-fleet-task-action-list',
-            ),
-            path(
-                '<int:pk>/',
-                include([
-                    path('start/', TaskStart.as_view(), name='api-fleet-task-start'),
-                    path(
-                        'component-action/',
-                        TaskComponentAction.as_view(),
-                        name='api-fleet-task-component-action',
-                    ),
-                    path(
-                        'consume/', TaskConsume.as_view(), name='api-fleet-task-consume'
-                    ),
-                    path(
-                        'reposition/',
-                        TaskReposition.as_view(),
-                        name='api-fleet-task-reposition',
-                    ),
-                    path(
-                        'record-action/',
-                        TaskRecordAction.as_view(),
-                        name='api-fleet-task-record-action',
-                    ),
-                    path('verify/', TaskVerify.as_view(), name='api-fleet-task-verify'),
-                    path(
-                        'complete/',
-                        TaskComplete.as_view(),
-                        name='api-fleet-task-complete',
-                    ),
-                    path('cancel/', TaskCancel.as_view(), name='api-fleet-task-cancel'),
-                    path('deploy/', TaskDeploy.as_view(), name='api-fleet-task-deploy'),
-                    meta_path(MaintenanceTask),
-                    path(
-                        '',
-                        MaintenanceTaskDetail.as_view(),
-                        name='api-fleet-task-detail',
-                    ),
-                ]),
-            ),
-            path('', MaintenanceTaskList.as_view(), name='api-fleet-task-list'),
-        ]),
+                ),
+                path('', MaintenanceTaskList.as_view(), name='api-fleet-task-list'),
+            ]
+        ),
     ),
     # Field trips (and their kit lines)
     path(
         'trip/',
-        include([
-            path(
-                'kit-line/',
-                include([
-                    path(
-                        '<int:pk>/',
-                        TripKitLineDetail.as_view(),
-                        name='api-fleet-trip-kit-line-detail',
+        include(
+            [
+                path(
+                    'kit-line/',
+                    include(
+                        [
+                            path(
+                                '<int:pk>/',
+                                TripKitLineDetail.as_view(),
+                                name='api-fleet-trip-kit-line-detail',
+                            ),
+                            path(
+                                '',
+                                TripKitLineList.as_view(),
+                                name='api-fleet-trip-kit-line-list',
+                            ),
+                        ]
                     ),
-                    path(
-                        '',
-                        TripKitLineList.as_view(),
-                        name='api-fleet-trip-kit-line-list',
+                ),
+                path(
+                    '<int:pk>/',
+                    include(
+                        [
+                            path(
+                                'add-tasks/',
+                                TripAddTasks.as_view(),
+                                name='api-fleet-trip-add-tasks',
+                            ),
+                            path(
+                                'remove-task/',
+                                TripRemoveTask.as_view(),
+                                name='api-fleet-trip-remove-task',
+                            ),
+                            path(
+                                'suggest-kit/',
+                                TripSuggestKit.as_view(),
+                                name='api-fleet-trip-suggest-kit',
+                            ),
+                            path('kit/', TripKit.as_view(), name='api-fleet-trip-kit'),
+                            path(
+                                'prepare-kit/',
+                                TripPrepareKit.as_view(),
+                                name='api-fleet-trip-prepare-kit',
+                            ),
+                            path(
+                                'start/',
+                                TripStart.as_view(),
+                                name='api-fleet-trip-start',
+                            ),
+                            path(
+                                'reconcile/',
+                                TripReconcile.as_view(),
+                                name='api-fleet-trip-reconcile',
+                            ),
+                            path(
+                                'cancel/',
+                                TripCancel.as_view(),
+                                name='api-fleet-trip-cancel',
+                            ),
+                            meta_path(FieldTrip),
+                            path(
+                                '',
+                                FieldTripDetail.as_view(),
+                                name='api-fleet-trip-detail',
+                            ),
+                        ]
                     ),
-                ]),
-            ),
-            path(
-                '<int:pk>/',
-                include([
-                    path(
-                        'add-tasks/',
-                        TripAddTasks.as_view(),
-                        name='api-fleet-trip-add-tasks',
-                    ),
-                    path(
-                        'remove-task/',
-                        TripRemoveTask.as_view(),
-                        name='api-fleet-trip-remove-task',
-                    ),
-                    path(
-                        'suggest-kit/',
-                        TripSuggestKit.as_view(),
-                        name='api-fleet-trip-suggest-kit',
-                    ),
-                    path('kit/', TripKit.as_view(), name='api-fleet-trip-kit'),
-                    path(
-                        'prepare-kit/',
-                        TripPrepareKit.as_view(),
-                        name='api-fleet-trip-prepare-kit',
-                    ),
-                    path('start/', TripStart.as_view(), name='api-fleet-trip-start'),
-                    path(
-                        'reconcile/',
-                        TripReconcile.as_view(),
-                        name='api-fleet-trip-reconcile',
-                    ),
-                    path('cancel/', TripCancel.as_view(), name='api-fleet-trip-cancel'),
-                    meta_path(FieldTrip),
-                    path('', FieldTripDetail.as_view(), name='api-fleet-trip-detail'),
-                ]),
-            ),
-            path('', FieldTripList.as_view(), name='api-fleet-trip-list'),
-        ]),
+                ),
+                path('', FieldTripList.as_view(), name='api-fleet-trip-list'),
+            ]
+        ),
     ),
     # Fault codes
     path(
         'fault-code/',
-        include([
-            path(
-                '<int:pk>/',
-                FaultCodeDetail.as_view(),
-                name='api-fleet-fault-code-detail',
-            ),
-            path('', FaultCodeList.as_view(), name='api-fleet-fault-code-list'),
-        ]),
+        include(
+            [
+                path(
+                    '<int:pk>/',
+                    FaultCodeDetail.as_view(),
+                    name='api-fleet-fault-code-detail',
+                ),
+                path('', FaultCodeList.as_view(), name='api-fleet-fault-code-list'),
+            ]
+        ),
     ),
     path('calendar/', FleetCalendar.as_view(), name='api-fleet-calendar'),
     path('overview/', FleetOverview.as_view(), name='api-fleet-overview'),
@@ -1882,49 +1979,51 @@ fleet_api_urls = [
     # Status code information
     path(
         'status/',
-        include([
-            path(
-                'deployment/',
-                StatusView.as_view(),
-                {StatusView.MODEL_REF: DeploymentStatus},
-                name='api-fleet-deployment-status-codes',
-            ),
-            path(
-                'task/',
-                StatusView.as_view(),
-                {StatusView.MODEL_REF: TaskStatus},
-                name='api-fleet-task-status-codes',
-            ),
-            path(
-                'trip/',
-                StatusView.as_view(),
-                {StatusView.MODEL_REF: TripStatus},
-                name='api-fleet-trip-status-codes',
-            ),
-            path(
-                'alert/',
-                StatusView.as_view(),
-                {StatusView.MODEL_REF: AlertStatus},
-                name='api-fleet-alert-status-codes',
-            ),
-            path(
-                'severity/',
-                StatusView.as_view(),
-                {StatusView.MODEL_REF: AlertSeverity},
-                name='api-fleet-alert-severity-codes',
-            ),
-            path(
-                'health/',
-                StatusView.as_view(),
-                {StatusView.MODEL_REF: HealthStatus},
-                name='api-fleet-health-codes',
-            ),
-            path(
-                'stream/',
-                StatusView.as_view(),
-                {StatusView.MODEL_REF: DataStreamStatus},
-                name='api-fleet-stream-status-codes',
-            ),
-        ]),
+        include(
+            [
+                path(
+                    'deployment/',
+                    StatusView.as_view(),
+                    {StatusView.MODEL_REF: DeploymentStatus},
+                    name='api-fleet-deployment-status-codes',
+                ),
+                path(
+                    'task/',
+                    StatusView.as_view(),
+                    {StatusView.MODEL_REF: TaskStatus},
+                    name='api-fleet-task-status-codes',
+                ),
+                path(
+                    'trip/',
+                    StatusView.as_view(),
+                    {StatusView.MODEL_REF: TripStatus},
+                    name='api-fleet-trip-status-codes',
+                ),
+                path(
+                    'alert/',
+                    StatusView.as_view(),
+                    {StatusView.MODEL_REF: AlertStatus},
+                    name='api-fleet-alert-status-codes',
+                ),
+                path(
+                    'severity/',
+                    StatusView.as_view(),
+                    {StatusView.MODEL_REF: AlertSeverity},
+                    name='api-fleet-alert-severity-codes',
+                ),
+                path(
+                    'health/',
+                    StatusView.as_view(),
+                    {StatusView.MODEL_REF: HealthStatus},
+                    name='api-fleet-health-codes',
+                ),
+                path(
+                    'stream/',
+                    StatusView.as_view(),
+                    {StatusView.MODEL_REF: DataStreamStatus},
+                    name='api-fleet-stream-status-codes',
+                ),
+            ]
+        ),
     ),
 ]

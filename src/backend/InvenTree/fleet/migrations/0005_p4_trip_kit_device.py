@@ -5,7 +5,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ('fleet', '0004_p3_task_description'),
         ('stock', '0126_stockitem_consumed_by_quick_build_and_more'),
@@ -15,16 +14,43 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='tripkitline',
             name='stock_item',
-            field=models.ForeignKey(blank=True, help_text='The device to take (a device to deploy)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='fleet_trip_kit_lines', to='stock.stockitem', verbose_name='Stock Item'),
+            field=models.ForeignKey(
+                blank=True,
+                help_text='The device to take (a device to deploy)',
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name='fleet_trip_kit_lines',
+                to='stock.stockitem',
+                verbose_name='Stock Item',
+            ),
         ),
         migrations.AddField(
             model_name='tripkitline',
             name='task',
-            field=models.ForeignKey(blank=True, help_text='The task which needs this line', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='kit_lines', to='fleet.maintenancetask', verbose_name='Task'),
+            field=models.ForeignKey(
+                blank=True,
+                help_text='The task which needs this line',
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name='kit_lines',
+                to='fleet.maintenancetask',
+                verbose_name='Task',
+            ),
         ),
         migrations.AlterField(
             model_name='tripkitline',
             name='source',
-            field=models.CharField(choices=[('ALWAYS', 'Always'), ('LIKELY', 'Likely'), ('ALERT', 'Alert'), ('MANUAL', 'Manual'), ('DEVICE', 'Device to deploy')], default='MANUAL', max_length=20, verbose_name='Source'),
+            field=models.CharField(
+                choices=[
+                    ('ALWAYS', 'Always'),
+                    ('LIKELY', 'Likely'),
+                    ('ALERT', 'Alert'),
+                    ('MANUAL', 'Manual'),
+                    ('DEVICE', 'Device to deploy'),
+                ],
+                default='MANUAL',
+                max_length=20,
+                verbose_name='Source',
+            ),
         ),
     ]

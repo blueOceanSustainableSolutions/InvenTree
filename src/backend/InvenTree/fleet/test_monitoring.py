@@ -443,8 +443,7 @@ class PositionTest(MonitoringTestBase):
 
         self.assertEqual(self.dep.health, HealthStatus.CRITICAL.value)
         self.assertTrue(
-            self
-            .open_alerts()
+            self.open_alerts()
             .filter(alert_type=Alert.AlertType.GEOFENCE_BREACH)
             .exists()
         )
@@ -731,8 +730,7 @@ class DeviceStateMonitoringTest(MonitoringTestBase):
         self.poll(minutes_later=5)
 
         self.assertTrue(
-            self
-            .open_alerts()
+            self.open_alerts()
             .filter(alert_type=Alert.AlertType.GEOFENCE_BREACH)
             .exists()
         )
@@ -858,19 +856,21 @@ class HttpClientTest(MonitoringTestBase):
 
     def test_parse_device(self):
         """A device of the API response is parsed."""
-        status = parse_device({
-            'id': 'AUR-0161',
-            'streams': [
-                {'key': 'hydrophone', 'last_seen': '2026-10-08T10:00:00Z'},
-                {'key': 'battery', 'last_seen': None},
-                {'bad': 'entry'},
-            ],
-            'position': {
-                'latitude': 37.01,
-                'longitude': -7.93,
-                'timestamp': '2026-10-08T10:00:00Z',
-            },
-        })
+        status = parse_device(
+            {
+                'id': 'AUR-0161',
+                'streams': [
+                    {'key': 'hydrophone', 'last_seen': '2026-10-08T10:00:00Z'},
+                    {'key': 'battery', 'last_seen': None},
+                    {'bad': 'entry'},
+                ],
+                'position': {
+                    'latitude': 37.01,
+                    'longitude': -7.93,
+                    'timestamp': '2026-10-08T10:00:00Z',
+                },
+            }
+        )
 
         self.assertEqual(status.platform_id, 'AUR-0161')
         self.assertEqual(len(status.streams), 2)

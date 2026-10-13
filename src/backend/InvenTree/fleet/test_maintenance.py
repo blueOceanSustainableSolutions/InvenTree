@@ -490,8 +490,7 @@ class Scenario6Test(MaintenanceTestBase):
         monitoring.poll_all(force=True)
 
         self.assertFalse(
-            Alert.objects
-            .filter(stream=stream)
+            Alert.objects.filter(stream=stream)
             .exclude(status=AlertStatus.RESOLVED.value)
             .exists()
         )
@@ -664,8 +663,7 @@ class PlanningTest(MaintenanceTestBase):
 
         planning.pm_alerts()
         self.assertFalse(
-            Alert.objects
-            .filter(deployment=dep)
+            Alert.objects.filter(deployment=dep)
             .exclude(status=AlertStatus.RESOLVED.value)
             .exists()
         )

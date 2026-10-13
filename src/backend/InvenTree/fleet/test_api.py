@@ -1,6 +1,7 @@
 """API tests for the fleet app (phases P1, P2 and P2b)."""
 
 from datetime import timedelta
+from decimal import Decimal
 from unittest import mock
 
 from django.urls import NoReverseMatch, include, path, reverse
@@ -188,6 +189,48 @@ class SiteAPITest(FleetAPITestBase):
 
         response = self.get(url, {'search': 'madeira'})
         self.assertEqual(len(response.data), 1)
+
+    def test_coordinate_formats(self):
+        """Coordinates are accepted as DD, DDM or DMS, and stored as decimal degrees."""
+        url = reverse('api-fleet-site-list')
+
+        response = self.post(
+            url,
+            {
+                'name': 'Lisbon DMS',
+                'latitude': '38°43\'20.12"N',
+                'longitude': 'W 9 8.3583',
+            },
+        )
+
+        site = Site.objects.get(pk=response.data['pk'])
+        self.assertEqual(site.latitude, Decimal('38.7222555556'))
+        self.assertEqual(site.longitude, Decimal('-9.1393050000'))
+
+        # Plain numbers still work, rounded to the stored precision
+        detail = reverse('api-fleet-site-detail', kwargs={'pk': site.pk})
+        self.patch(detail, {'latitude': 38.722255555555555, 'longitude': '-9,5'})
+        site.refresh_from_db()
+        self.assertEqual(site.latitude, Decimal('38.7222555556'))
+        self.assertEqual(site.longitude, Decimal('-9.5'))
+
+        # Invalid values are rejected with a clear message
+        response = self.patch(detail, {'latitude': '38 75 N'}, expected_code=400)
+        self.assertIn('below 60', str(response.data['latitude']))
+        self.patch(detail, {'latitude': '38 E'}, expected_code=400)
+        self.patch(detail, {'longitude': '181'}, expected_code=400)
+
+        # Empty clears the position
+        self.patch(detail, {'latitude': '', 'longitude': None})
+        site.refresh_from_db()
+        self.assertIsNone(site.latitude)
+        self.assertIsNone(site.longitude)
+
+        # The form renders a coordinate input
+        fields = self.options(url).data['actions']['POST']
+        self.assertEqual(fields['latitude']['type'], 'coordinate')
+        self.assertEqual(fields['latitude']['axis'], 'latitude')
+        self.assertEqual(fields['longitude']['axis'], 'longitude')
 
     def test_delete(self):
         """Sites with deployments cannot be deleted."""
@@ -423,7 +466,9 @@ class DeploymentAPITest(FleetAPITestBase):
 
         # Recover: a return order brings the device to the office
         response = self.post(
-            self.action_url(dep, 'recover'), {'notes': 'Campaign over'}, expected_code=200
+            self.action_url(dep, 'recover'),
+            {'notes': 'Campaign over'},
+            expected_code=200,
         )
         self.assertEqual(response.data['status'], DeploymentStatus.RECOVERED.value)
 
@@ -483,12 +528,21 @@ class DeploymentAPITest(FleetAPITestBase):
         sold = Build.objects.create(
             part=self.part, quantity=1, title='Sold', sales_order=order
         )
-        Build.objects.create(part=self.part, quantity=1, title='Sold', sales_order=order)
+        Build.objects.create(
+            part=self.part, quantity=1, title='Sold', sales_order=order
+        )
         pipeline.new_deployment(
-            sold.fleet_deployment, site=self.site, target_date=today + timedelta(days=10)
+            sold.fleet_deployment,
+            site=self.site,
+            target_date=today + timedelta(days=10),
         )
 
-        ready = plan_unit(self.make_device('AUR-0600'), self.device_type, site=Site.objects.create(name='Algarve #2'), target_date=today + timedelta(days=100))
+        ready = plan_unit(
+            self.make_device('AUR-0600'),
+            self.device_type,
+            site=Site.objects.create(name='Algarve #2'),
+            target_date=today + timedelta(days=100),
+        )
 
         MaintenanceTask.objects.create(
             device=ready.device,
@@ -525,7 +579,10 @@ class DeploymentAPITest(FleetAPITestBase):
         def planned(serial, days=None, site=None):
             target = today + timedelta(days=days) if days is not None else None
             return plan_unit(
-                self.make_device(serial), self.device_type, site=site, target_date=target
+                self.make_device(serial),
+                self.device_type,
+                site=site,
+                target_date=target,
             )
 
         later = planned('AUR-1001', days=100)
@@ -563,7 +620,9 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(len(self.get(url, {'kind': 'maintenance'}).data), 1)
         self.assertEqual(len(self.get(url, {'kind': 'deployment'}).data), 3)
         self.assertEqual(len(self.get(url, {'site': self.site.pk}).data), 1)
-        self.assertEqual(self.get(url, {'search': 'AUR-1002'}).data[0]['pk'], undated.pk)
+        self.assertEqual(
+            self.get(url, {'search': 'AUR-1002'}).data[0]['pk'], undated.pk
+        )
 
         page = self.get(url, {'limit': 2, 'offset': 1}).data
         self.assertEqual(page['count'], 4)
@@ -655,7 +714,9 @@ class MonitoringAPITest(FleetAPITestBase):
         )
 
         self.now = timezone.now()
-        self.dep = plan_unit(self.make_device('AUR-0161'), self.device_type, site=self.site)
+        self.dep = plan_unit(
+            self.make_device('AUR-0161'), self.device_type, site=self.site
+        )
         deployment_service.deploy(self.dep, deployed_at=self.now - timedelta(days=1))
         DeviceLink.objects.update(platform_id='AUR-0161')
         self.dep.refresh_from_db()

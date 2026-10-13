@@ -13,6 +13,7 @@ import {
   userDisplayName,
   userListNames
 } from '../components/FleetBadges';
+import { CoordinateValue } from '../coordinates';
 
 /**
  * Detail field definitions of the fleet models, shared by the detail pages
@@ -250,16 +251,20 @@ export function deploymentDetailFields(
       name: 'latitude',
       label: t`Latitude`,
       icon: 'location',
-      copy: true,
-      hidden: deployment.latitude == null
+      hidden: deployment.latitude == null,
+      value_formatter: () => (
+        <CoordinateValue value={deployment.latitude} axis='latitude' />
+      )
     },
     {
       type: 'string',
       name: 'longitude',
       label: t`Longitude`,
       icon: 'location',
-      copy: true,
-      hidden: deployment.longitude == null
+      hidden: deployment.longitude == null,
+      value_formatter: () => (
+        <CoordinateValue value={deployment.longitude} axis='longitude' />
+      )
     },
     {
       type: 'number',
@@ -622,16 +627,20 @@ export function siteDetailFields(site: any): FleetDetailFields {
       name: 'latitude',
       label: t`Latitude`,
       icon: 'location',
-      copy: true,
-      hidden: site.latitude == null
+      hidden: site.latitude == null,
+      value_formatter: () => (
+        <CoordinateValue value={site.latitude} axis='latitude' />
+      )
     },
     {
       type: 'string',
       name: 'longitude',
       label: t`Longitude`,
       icon: 'location',
-      copy: true,
-      hidden: site.longitude == null
+      hidden: site.longitude == null,
+      value_formatter: () => (
+        <CoordinateValue value={site.longitude} axis='longitude' />
+      )
     },
     {
       type: 'number',

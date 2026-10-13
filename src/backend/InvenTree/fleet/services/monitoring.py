@@ -141,8 +141,7 @@ def open_or_update_alert(
         (alert, event): event is 'opened', 'escalated' or None
     """
     alert = (
-        Alert.objects
-        .filter(dedupe_key=dedupe_key)
+        Alert.objects.filter(dedupe_key=dedupe_key)
         .exclude(status=AlertStatus.RESOLVED.value)
         .first()
     )
@@ -163,8 +162,7 @@ def open_or_update_alert(
         except IntegrityError:
             # Opened at the same time by another worker
             alert = (
-                Alert.objects
-                .filter(dedupe_key=dedupe_key)
+                Alert.objects.filter(dedupe_key=dedupe_key)
                 .exclude(status=AlertStatus.RESOLVED.value)
                 .first()
             )
@@ -660,8 +658,7 @@ def monitored_deployments():
     Docked (and decommissioned) devices are not polled.
     """
     return (
-        Deployment.objects
-        .filter(status=DeploymentStatus.DEPLOYED.value)
+        Deployment.objects.filter(status=DeploymentStatus.DEPLOYED.value)
         .filter(device__fleet_link__isnull=False)
         .exclude(device__fleet_link__platform_id='')
         .exclude(device_state.hidden_q())
@@ -763,12 +760,14 @@ def poll_all(
         failures = 0
         notified = False
 
-    set_poll_state({
-        'last_poll': now.isoformat(),
-        'failures': failures,
-        'notified': notified,
-        'last_error': summary['error'],
-    })
+    set_poll_state(
+        {
+            'last_poll': now.isoformat(),
+            'failures': failures,
+            'notified': notified,
+            'last_error': summary['error'],
+        }
+    )
 
     return summary
 
@@ -827,13 +826,15 @@ def verify_now(
         ]
         last_seen = max(candidates) if candidates else None
 
-        streams.append({
-            'key': stream.key,
-            'name': stream.name,
-            'essential': stream.essential,
-            'last_seen': last_seen,
-            'fresh': last_seen is not None and last_seen >= since,
-        })
+        streams.append(
+            {
+                'key': stream.key,
+                'name': stream.name,
+                'essential': stream.essential,
+                'last_seen': last_seen,
+                'fresh': last_seen is not None and last_seen >= since,
+            }
+        )
 
     position = None
 

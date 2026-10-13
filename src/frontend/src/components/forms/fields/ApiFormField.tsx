@@ -10,6 +10,7 @@ import type { NavigateFunction } from 'react-router-dom';
 import DateTimeField from '../DateTimeField';
 import { BooleanField } from './BooleanField';
 import { ChoiceField } from './ChoiceField';
+import CoordinateField from './CoordinateField';
 import DateField from './DateField';
 import { DependentField } from './DependentField';
 import IconField from './IconField';
@@ -196,6 +197,15 @@ export function ApiFormField({
             onChange={(value: any) => {
               onChange(value);
             }}
+          />
+        );
+      case 'coordinate':
+        return (
+          <CoordinateField
+            controller={controller}
+            fieldName={fieldName}
+            definition={fieldDefinition}
+            onChange={onChange}
           />
         );
       case 'choice':

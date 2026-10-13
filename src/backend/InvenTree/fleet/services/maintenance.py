@@ -280,8 +280,7 @@ def visit_tasks(deployment: Deployment) -> list[MaintenanceTask]:
     tasks; when it has none, a new PREVENTIVE task due on the next PM date.
     """
     tasks = list(
-        deployment.tasks
-        .filter(
+        deployment.tasks.filter(
             status__in=[TaskStatus.PROPOSED.value, TaskStatus.SCHEDULED.value],
             trip__isnull=True,
         )
@@ -504,16 +503,18 @@ def start(task: MaintenanceTask, user=None) -> MaintenanceTask:
     if device_type is not None and not task.checklist.exists():
         items = device_type.checklist_items.filter(task_type__in=['', task.task_type])
 
-        ChecklistResult.objects.bulk_create([
-            ChecklistResult(
-                task=task,
-                template_item=item,
-                sequence=item.sequence,
-                text=item.text,
-                required=item.required,
-            )
-            for item in items.order_by('sequence', 'pk')
-        ])
+        ChecklistResult.objects.bulk_create(
+            [
+                ChecklistResult(
+                    task=task,
+                    template_item=item,
+                    sequence=item.sequence,
+                    text=item.text,
+                    required=item.required,
+                )
+                for item in items.order_by('sequence', 'pk')
+            ]
+        )
 
     trigger_status_event(task)
 
@@ -523,9 +524,9 @@ def start(task: MaintenanceTask, user=None) -> MaintenanceTask:
 def get_checklist_result(task: MaintenanceTask, result) -> ChecklistResult | None:
     """Check that a checklist result belongs to the task."""
     if result is not None and result.task_id != task.pk:
-        raise ValidationError({
-            'checklist_result': _('This checklist item belongs to another task')
-        })
+        raise ValidationError(
+            {'checklist_result': _('This checklist item belongs to another task')}
+        )
 
     return result
 
@@ -567,14 +568,14 @@ def component_action(task: MaintenanceTask, user, data: dict) -> MaintenanceActi
 
     if stream is not None:
         if action not in ['remove', 'destroy']:
-            raise ValidationError({
-                'disable_stream': _('Only a removal can disable a data stream')
-            })
+            raise ValidationError(
+                {'disable_stream': _('Only a removal can disable a data stream')}
+            )
 
         if task.deployment is None or stream.deployment_id != task.deployment_id:
-            raise ValidationError({
-                'disable_stream': _('This stream belongs to another deployment')
-            })
+            raise ValidationError(
+                {'disable_stream': _('This stream belongs to another deployment')}
+            )
 
     request = {
         'action': action,
@@ -591,16 +592,18 @@ def component_action(task: MaintenanceTask, user, data: dict) -> MaintenanceActi
         location = data.get('location') or get_removed_location(task)
 
         if location is None:
-            raise ValidationError({
-                'location': _(
-                    'Select a location, or set the fleet workshop location setting'
-                )
-            })
+            raise ValidationError(
+                {
+                    'location': _(
+                        'Select a location, or set the fleet workshop location setting'
+                    )
+                }
+            )
 
         if location.structural:
-            raise ValidationError({
-                'location': _('Stock items cannot be located in structural locations')
-            })
+            raise ValidationError(
+                {'location': _('Stock items cannot be located in structural locations')}
+            )
 
         request['location'] = location
 
@@ -693,9 +696,9 @@ def consume(
     stock_item.refresh_from_db()
 
     if stock_item.serialized:
-        raise ValidationError({
-            'stock_item': _('Install serialized items as components instead')
-        })
+        raise ValidationError(
+            {'stock_item': _('Install serialized items as components instead')}
+        )
 
     if not stock_item.in_stock:
         raise ValidationError({'stock_item': _('This stock item is not in stock')})
@@ -709,9 +712,9 @@ def consume(
         allowed = kit.get_descendants(include_self=True)
 
         if stock_item.location not in allowed:
-            raise ValidationError({
-                'stock_item': _('Take consumables from the trip kit')
-            })
+            raise ValidationError(
+                {'stock_item': _('Take consumables from the trip kit')}
+            )
 
     part = stock_item.part
     after = last_tracking_pk()
@@ -970,11 +973,13 @@ def complete(
     passed = bool((task.verification or {}).get('passed'))
 
     if needs_verification(task) and not passed and not override_reason:
-        raise ValidationError({
-            'override_reason': _(
-                'The data check has not passed. Run "Verify data", or give a reason to close anyway'
-            )
-        })
+        raise ValidationError(
+            {
+                'override_reason': _(
+                    'The data check has not passed. Run "Verify data", or give a reason to close anyway'
+                )
+            }
+        )
 
     now = timezone.now()
 

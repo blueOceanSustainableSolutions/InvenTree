@@ -110,8 +110,9 @@ def kit_stock(trip: FieldTrip):
     removed = get_removed_location(trip)
 
     return (
-        StockItem.objects
-        .filter(location__in=trip.kit_location.get_descendants(include_self=True))
+        StockItem.objects.filter(
+            location__in=trip.kit_location.get_descendants(include_self=True)
+        )
         .exclude(location=removed)
         .filter(StockItem.IN_STOCK_FILTER)
     )
@@ -382,24 +383,24 @@ def prepare_kit(trip: FieldTrip, items: list[dict], user=None) -> list[StockItem
         quantity = entry.get('quantity') or item.quantity
 
         if item.location_id in kit_ids:
-            raise ValidationError({
-                'items': _('This stock is already in the kit') + f' ({item})'
-            })
+            raise ValidationError(
+                {'items': _('This stock is already in the kit') + f' ({item})'}
+            )
 
         if not item.in_stock or item.is_building:
-            raise ValidationError({
-                'items': _('This stock item is not in stock') + f' ({item})'
-            })
+            raise ValidationError(
+                {'items': _('This stock item is not in stock') + f' ({item})'}
+            )
 
         if quantity <= 0 or quantity > item.quantity:
-            raise ValidationError({
-                'items': _('Quantity exceeds the available stock') + f' ({item})'
-            })
+            raise ValidationError(
+                {'items': _('Quantity exceeds the available stock') + f' ({item})'}
+            )
 
         if item.serialized and quantity != item.quantity:
-            raise ValidationError({
-                'items': _('Take serialized items whole') + f' ({item})'
-            })
+            raise ValidationError(
+                {'items': _('Take serialized items whole') + f' ({item})'}
+            )
 
         if quantity < item.quantity:
             # A split (as StockItem.move() does): the new item goes into the kit
@@ -411,9 +412,9 @@ def prepare_kit(trip: FieldTrip, items: list[dict], user=None) -> list[StockItem
             continue
 
         if not item.move(location, notes, user, quantity=quantity):
-            raise ValidationError({
-                'items': _('The stock could not be moved') + f' ({item})'
-            })
+            raise ValidationError(
+                {'items': _('The stock could not be moved') + f' ({item})'}
+            )
 
         moved.append(item)
 
@@ -523,9 +524,9 @@ def reconcile(trip: FieldTrip, user=None, returns=None) -> dict:
 
     for location in returns.values():
         if location is not None and location.structural:
-            raise ValidationError({
-                'returns': _('Stock items cannot be located in structural locations')
-            })
+            raise ValidationError(
+                {'returns': _('Stock items cannot be located in structural locations')}
+            )
 
     set_status(trip, TripStatus.RECONCILING.value)
 

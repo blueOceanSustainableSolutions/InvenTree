@@ -22,6 +22,7 @@ import InvenTree.models
 import report.mixins
 import stock.models
 import users.models
+from fleet.geo import COORDINATE_DECIMAL_PLACES
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -103,22 +104,22 @@ class KitMode(models.TextChoices):
 
 
 def latitude_field(verbose_name, **kwargs):
-    """Return a decimal field for a latitude value."""
+    """Return a decimal field for a latitude value (signed decimal degrees)."""
     return models.DecimalField(
         verbose_name=verbose_name,
-        max_digits=9,
-        decimal_places=6,
+        max_digits=2 + COORDINATE_DECIMAL_PLACES,
+        decimal_places=COORDINATE_DECIMAL_PLACES,
         validators=[MinValueValidator(-90), MaxValueValidator(90)],
         **kwargs,
     )
 
 
 def longitude_field(verbose_name, **kwargs):
-    """Return a decimal field for a longitude value."""
+    """Return a decimal field for a longitude value (signed decimal degrees)."""
     return models.DecimalField(
         verbose_name=verbose_name,
-        max_digits=9,
-        decimal_places=6,
+        max_digits=3 + COORDINATE_DECIMAL_PLACES,
+        decimal_places=COORDINATE_DECIMAL_PLACES,
         validators=[MinValueValidator(-180), MaxValueValidator(180)],
         **kwargs,
     )
@@ -796,16 +797,18 @@ class Deployment(
 
         if self.replaces_id is not None:
             if self.pk is not None and self.replaces_id == self.pk:
-                raise ValidationError({
-                    'replaces': _('A deployment cannot replace itself')
-                })
+                raise ValidationError(
+                    {'replaces': _('A deployment cannot replace itself')}
+                )
 
             if self.deployment_type != self.DeploymentType.REPLACEMENT:
-                raise ValidationError({
-                    'replaces': _(
-                        'Only a replacement deployment can replace another one'
-                    )
-                })
+                raise ValidationError(
+                    {
+                        'replaces': _(
+                            'Only a replacement deployment can replace another one'
+                        )
+                    }
+                )
 
     # State transitions (the work is done in fleet.services)
 
@@ -1508,9 +1511,9 @@ class FieldTrip(
         super().clean()
 
         if self.start_date and self.end_date and self.end_date < self.start_date:
-            raise ValidationError({
-                'end_date': _('The end date cannot be before the start date')
-            })
+            raise ValidationError(
+                {'end_date': _('The end date cannot be before the start date')}
+            )
 
     # State transitions (the work is done in fleet.services.trips)
 
@@ -1920,9 +1923,9 @@ class MaintenanceTask(
             raise ValidationError({'device': _('Select a single serialized unit')})
 
         if deployment is not None and deployment.device_id != device.pk:
-            raise ValidationError({
-                'deployment': _('The deployment is for a different device')
-            })
+            raise ValidationError(
+                {'deployment': _('The deployment is for a different device')}
+            )
 
     def clean(self):
         """Validate the task (see validate_device)."""

@@ -5,9 +5,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    dependencies = [
-        ('fleet', '0007_inventree_conventions'),
-    ]
+    dependencies = [('fleet', '0007_inventree_conventions')]
 
     operations = [
         migrations.AlterField(

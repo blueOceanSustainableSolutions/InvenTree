@@ -27,7 +27,8 @@ def fleet_sync_pipeline():
     summary = sync_stock_deployments()
 
     if any(
-        summary[key] for key in ['opened', 'closed', 'updated', 'available', 'cancelled']
+        summary[key]
+        for key in ['opened', 'closed', 'updated', 'available', 'cancelled']
     ):
         logger.info(
             'Fleet stock sync: %s opened, %s closed, %s updated, %s available, %s cancelled',

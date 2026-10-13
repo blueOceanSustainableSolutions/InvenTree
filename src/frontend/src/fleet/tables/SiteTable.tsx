@@ -20,6 +20,7 @@ import {
 } from '../../tables/ColumnRenderers';
 import { InvenTreeTable } from '../../tables/InvenTreeTable';
 import { CoverageBadge } from '../components/FleetBadges';
+import { CoordinateText } from '../coordinates';
 
 /**
  * Table of fleet sites (the places where devices are deployed)
@@ -90,13 +91,19 @@ export function SiteTable() {
         accessor: 'latitude',
         title: t`Latitude`,
         sortable: false,
-        defaultVisible: false
+        defaultVisible: false,
+        render: (record: any) => (
+          <CoordinateText value={record.latitude} axis='latitude' />
+        )
       },
       {
         accessor: 'longitude',
         title: t`Longitude`,
         sortable: false,
-        defaultVisible: false
+        defaultVisible: false,
+        render: (record: any) => (
+          <CoordinateText value={record.longitude} axis='longitude' />
+        )
       },
       BooleanColumn({
         accessor: 'active',

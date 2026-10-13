@@ -5,6 +5,7 @@ Covers the acceptance scenarios 1 (pipeline from BO issue), 2 (cancel BO) and
 """
 
 from datetime import timedelta
+from decimal import Decimal
 from unittest import mock
 
 from django.core.exceptions import ValidationError
@@ -104,14 +105,15 @@ class FleetServiceTestBase(InvenTreeTestCase):
 
     def ready_deployment(self, serial='AUR-0200', site=None):
         """Return a READY deployment with an existing unit assigned."""
-        dep = plan_unit(self.make_device(serial), self.device_type, site=site or self.site)
+        dep = plan_unit(
+            self.make_device(serial), self.device_type, site=site or self.site
+        )
         return dep
 
     def tracking_codes(self, item):
         """Return the tracking codes of a stock item, oldest first."""
         return list(
-            StockItemTracking.objects
-            .filter(item=item)
+            StockItemTracking.objects.filter(item=item)
             .order_by('pk')
             .values_list('tracking_type', flat=True)
         )
@@ -485,7 +487,7 @@ class DeploymentServiceTest(FleetServiceTestBase):
 
         self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
         self.assertEqual(dep.deployed_at, deployed_at)
-        self.assertEqual(str(dep.latitude), '37.012400')
+        self.assertEqual(dep.latitude, Decimal('37.012400'))
         self.assertEqual(dep.depth_m, 19)
 
         # Geofence copied from the site
@@ -587,13 +589,15 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertEqual(entry.deltas, {'deployment': dep.pk, 'site': None})
 
         # With a position given, it is used
-        other = plan_unit(self.make_device('AUR-0401'), self.device_type, client=self.client_company)
+        other = plan_unit(
+            self.make_device('AUR-0401'), self.device_type, client=self.client_company
+        )
         deployment_service.deploy(
             other, latitude='38.500000', longitude='-9.100000', depth_m=12
         )
 
         other.refresh_from_db()
-        self.assertEqual(str(other.latitude), '38.500000')
+        self.assertEqual(other.latitude, Decimal('38.500000'))
         self.assertEqual(other.depth_m, 12)
         self.assertEqual(other.device.customer, self.client_company)
 
@@ -614,7 +618,7 @@ class DeploymentServiceTest(FleetServiceTestBase):
             dep, latitude='37.1', longitude='-8.2', depth_m=5, geofence_radius_m=300
         )
         dep.refresh_from_db()
-        self.assertEqual(str(dep.latitude), '37.100000')
+        self.assertEqual(dep.latitude, Decimal('37.100000'))
         self.assertEqual(dep.geofence_radius_m, 300)
         self.assertEqual(dep.depth_m, 5)
 
@@ -622,7 +626,7 @@ class DeploymentServiceTest(FleetServiceTestBase):
         deployment_service.set_position(dep, latitude='37.2', longitude='-8.3')
         dep.refresh_from_db()
         self.assertEqual(dep.geofence_radius_m, 300)
-        self.assertEqual(str(dep.longitude), '-8.300000')
+        self.assertEqual(dep.longitude, Decimal('-8.300000'))
 
         with self.assertRaises(ValidationError):
             deployment_service.set_position(dep, latitude='95', longitude='0')
@@ -716,7 +720,9 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertEqual(line.order.customer, self.customer)
         self.assertEqual(line.order.status, ReturnOrderStatus.IN_PROGRESS.value)
         self.assertIn(dep.reference, line.order.description)
-        self.assertEqual(self.tracking_codes(device)[-1], StockHistoryCode.FLEET_RECOVERED.value)
+        self.assertEqual(
+            self.tracking_codes(device)[-1], StockHistoryCode.FLEET_RECOVERED.value
+        )
 
         self.assertEqual(alert.status, AlertStatus.RESOLVED.value)
         self.assertEqual(alert.resolution, Alert.Resolution.AUTO)
@@ -778,7 +784,9 @@ class DeploymentServiceTest(FleetServiceTestBase):
         allocation.shipment = shipment
         allocation.save()
 
-        cable = StockItem.objects.create(part=self.other_part, quantity=5, location=self.store)
+        cable = StockItem.objects.create(
+            part=self.other_part, quantity=5, location=self.store
+        )
         cable_line = SalesOrderLineItem.objects.create(
             order=order, part=self.other_part, quantity=5
         )
@@ -861,7 +869,8 @@ class DeploymentServiceTest(FleetServiceTestBase):
         build = self.make_build()
         build.issue_build()
         self.assertNotIn(
-            Deployment.objects.get(build=build).pk, [row['pk'] for row in plan.plan_rows()]
+            Deployment.objects.get(build=build).pk,
+            [row['pk'] for row in plan.plan_rows()],
         )
 
     def test_replacement(self):
@@ -869,7 +878,13 @@ class DeploymentServiceTest(FleetServiceTestBase):
         old = self.ready_deployment(serial='AUR-0400')
         deployment_service.deploy(old)
 
-        new = plan_unit(self.make_device('AUR-0401'), self.device_type, site=self.site, deployment_type=Deployment.DeploymentType.REPLACEMENT, replaces=old)
+        new = plan_unit(
+            self.make_device('AUR-0401'),
+            self.device_type,
+            site=self.site,
+            deployment_type=Deployment.DeploymentType.REPLACEMENT,
+            replaces=old,
+        )
 
         deployment_service.deploy(new)
 

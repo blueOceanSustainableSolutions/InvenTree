@@ -362,10 +362,12 @@ HOLDING_STATUSES = DeploymentStatusGroups.PIPELINE + DeploymentStatusGroups.ACTI
 
 def returning_q(prefix: str = '') -> Q:
     """Q for the stock items on their way back: an open return order line, not received."""
-    return Q(**{
-        f'{prefix}return_order_lines__received_date__isnull': True,
-        f'{prefix}return_order_lines__order__status__in': ReturnOrderStatusGroups.OPEN,
-    })
+    return Q(
+        **{
+            f'{prefix}return_order_lines__received_date__isnull': True,
+            f'{prefix}return_order_lines__order__status__in': ReturnOrderStatusGroups.OPEN,
+        }
+    )
 
 
 def get_return_line(stock_item):
@@ -376,8 +378,7 @@ def get_return_line(stock_item):
         return None
 
     return (
-        ReturnOrderLineItem.objects
-        .filter(
+        ReturnOrderLineItem.objects.filter(
             item=stock_item,
             received_date__isnull=True,
             order__status__in=ReturnOrderStatusGroups.OPEN,
@@ -399,8 +400,7 @@ def undeployed_units(part_ids):
     from stock.models import StockItem
 
     return (
-        StockItem.objects
-        .filter(
+        StockItem.objects.filter(
             part__in=list(part_ids),
             serial__isnull=False,
             quantity=1,
@@ -498,16 +498,19 @@ def sold_q(prefix: str = '') -> Q:
     )
 
     shipped = (
-        Q(**{
-            f'{prefix}device__customer__isnull': False,
-            f'{prefix}device__sales_order__isnull': False,
-        })
+        Q(
+            **{
+                f'{prefix}device__customer__isnull': False,
+                f'{prefix}device__sales_order__isnull': False,
+            }
+        )
         & ~returning
     )
 
-    for_sale = Q(**{
-        f'{prefix}build__sales_order__status__in': SalesOrderStatusGroups.OPEN
-    }) & ~ever_shipped
+    for_sale = (
+        Q(**{f'{prefix}build__sales_order__status__in': SalesOrderStatusGroups.OPEN})
+        & ~ever_shipped
+    )
 
     return allocated | shipped | for_sale
 
@@ -525,8 +528,7 @@ def ensure_unit_deployment(stock_item, device_type: FleetDeviceType | None = Non
     plans it.
     """
     deployment = (
-        Deployment.objects
-        .filter(device=stock_item, status__in=HOLDING_STATUSES)
+        Deployment.objects.filter(device=stock_item, status__in=HOLDING_STATUSES)
         .order_by('-status', 'pk')
         .first()
     )
@@ -615,22 +617,26 @@ def readiness_risks(deployment: Deployment, today: date | None = None) -> list[d
         and (deployment.target_date - today).days
         <= get_global_setting('FLEET_READY_LEAD_DAYS', cache=False)
     ):
-        risks.append({
-            'code': Alert.AlertType.NOT_READY.value,
-            'severity': AlertSeverity.CRITICAL.value
-            if deployment.target_date < today
-            else AlertSeverity.WARNING.value,
-            'message': str(_('Device is not ready for the deployment date')),
-        })
+        risks.append(
+            {
+                'code': Alert.AlertType.NOT_READY.value,
+                'severity': AlertSeverity.CRITICAL.value
+                if deployment.target_date < today
+                else AlertSeverity.WARNING.value,
+                'message': str(_('Device is not ready for the deployment date')),
+            }
+        )
 
     if deployment.target_date is None and deployment.creation_date:
         age = (today - deployment.creation_date).days
 
         if age > get_global_setting('FLEET_UNSCHEDULED_REMINDER_DAYS', cache=False):
-            risks.append({
-                'code': Alert.AlertType.NO_DEPLOY_DATE.value,
-                'severity': AlertSeverity.INFO.value,
-                'message': str(_('No deployment date has been set')),
-            })
+            risks.append(
+                {
+                    'code': Alert.AlertType.NO_DEPLOY_DATE.value,
+                    'severity': AlertSeverity.INFO.value,
+                    'message': str(_('No deployment date has been set')),
+                }
+            )
 
     return risks

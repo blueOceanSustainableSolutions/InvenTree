@@ -61,8 +61,7 @@ class MockDataPlatformClient(DataPlatformClient):
         from fleet.status_codes import DeploymentStatus
 
         deployment = (
-            Deployment.objects
-            .filter(
+            Deployment.objects.filter(
                 device__fleet_link__platform_id=platform_id,
                 status=DeploymentStatus.DEPLOYED.value,
             )

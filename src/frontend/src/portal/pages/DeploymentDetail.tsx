@@ -60,6 +60,7 @@ import {
   StreamStatusList,
   formatAge
 } from '../../fleet/components/StreamStatusList';
+import { PositionValue } from '../../fleet/coordinates';
 import {
   deploymentDetailFields,
   detailFieldsByName
@@ -307,11 +308,15 @@ export default function DeploymentDetail(): ReactNode {
                 label: t`Position`,
                 value_formatter: () =>
                   state.hasPosition ? (
-                    `${deployment.latitude}, ${deployment.longitude}${
-                      deployment.depth_m != null
-                        ? ` (${deployment.depth_m} m)`
-                        : ''
-                    }`
+                    <PositionValue
+                      latitude={deployment.latitude}
+                      longitude={deployment.longitude}
+                      suffix={
+                        deployment.depth_m != null
+                          ? ` (${deployment.depth_m} m)`
+                          : ''
+                      }
+                    />
                   ) : state.isClosed ? undefined : (
                     <Text size='sm' c='orange'>{t`Not set`}</Text>
                   )

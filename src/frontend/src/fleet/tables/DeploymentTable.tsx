@@ -37,6 +37,7 @@ import {
 } from '../components/FleetBadges';
 import { formatAge } from '../components/StreamStatusList';
 import { useTripSelectionActions } from '../components/TripSelection';
+import { PositionValue } from '../coordinates';
 import {
   useDeploymentActions,
   useNewDeploymentForm
@@ -216,10 +217,11 @@ export function DeploymentTable({
         hidden: mode == 'pipeline',
         render: (record: any) =>
           record.latitude != null && record.longitude != null ? (
-            <Text size='sm'>
-              {Number(record.latitude).toFixed(4)},{' '}
-              {Number(record.longitude).toFixed(4)}
-            </Text>
+            <PositionValue
+              latitude={record.latitude}
+              longitude={record.longitude}
+              compact
+            />
           ) : (
             <Badge color='orange' variant='light'>{t`Not set`}</Badge>
           )

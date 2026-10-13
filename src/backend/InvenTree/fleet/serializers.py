@@ -1,15 +1,17 @@
 """JSON serializers for the fleet app."""
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db.models import Count, OuterRef, Q, Subquery
 from django.utils.translation import gettext_lazy as _
 
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
+from rest_framework.fields import empty
 
 import company.serializers
 import part.serializers as part_serializers
+from fleet import geo
 from fleet.models import (
     Alert,
     ChecklistResult,
@@ -44,6 +46,7 @@ from fleet.status_codes import (
 from generic.states.fields import InvenTreeCustomStatusSerializerMixin
 from importer.registry import register_importer
 from InvenTree.helpers import current_date
+from InvenTree.metadata import InvenTreeMetadata
 from InvenTree.mixins import DataImportExportSerializerMixin
 from InvenTree.serializers import (
     CustomStatusSerializerMixin,
@@ -58,6 +61,57 @@ from order.status_codes import ReturnOrderStatusGroups
 from stock.components import ComponentActionSerializer
 from stock.models import StockItem, StockLocation
 from users.serializers import OwnerSerializer, UserSerializer
+
+
+class CoordinateField(serializers.DecimalField):
+    """A latitude or longitude, stored as signed decimal degrees.
+
+    Accepts decimal degrees, degrees and decimal minutes, or degrees, minutes
+    and seconds (see geo.parse_coordinate). The form renders it as a
+    coordinate input, which shows the value in any of the three formats.
+    """
+
+    def __init__(self, axis: str, **kwargs):
+        """Create a coordinate field for the given axis ('latitude' or 'longitude')."""
+        self.axis = axis
+        limit = geo.COORDINATE_LIMITS[axis]
+
+        kwargs.setdefault(
+            'label', _('Latitude') if axis == 'latitude' else _('Longitude')
+        )
+
+        super().__init__(
+            max_digits=len(str(limit)) + geo.COORDINATE_DECIMAL_PLACES,
+            decimal_places=geo.COORDINATE_DECIMAL_PLACES,
+            min_value=-limit,
+            max_value=limit,
+            rounding=ROUND_HALF_UP,
+            **kwargs,
+        )
+
+    def run_validation(self, data=empty):
+        """Treat an empty text as no value (when the field allows it)."""
+        if isinstance(data, str) and data.strip() == '' and self.allow_null:
+            data = None
+
+        return super().run_validation(data)
+
+    def to_internal_value(self, data):
+        """Convert a coordinate in any accepted format to decimal degrees."""
+        try:
+            data = geo.parse_coordinate(data, self.axis)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+
+        return super().to_internal_value(data)
+
+    def get_field_info(self, field, field_info):
+        """Tell the form which axis the coordinate is."""
+        field_info['axis'] = self.axis
+        return field_info
+
+
+InvenTreeMetadata.label_lookup[CoordinateField] = 'coordinate'
 
 
 class FleetDeviceBriefSerializer(InvenTreeModelSerializer):
@@ -192,6 +246,10 @@ class SiteSerializer(
     InvenTreeModelSerializer,
 ):
     """Serializer for the Site model."""
+
+    latitude = CoordinateField('latitude', required=False, allow_null=True)
+
+    longitude = CoordinateField('longitude', required=False, allow_null=True)
 
     class Meta:
         """Metaclass options."""
@@ -368,6 +426,10 @@ class DeploymentSerializer(
     InvenTreeModelSerializer,
 ):
     """Serializer for the Deployment model."""
+
+    latitude = CoordinateField('latitude', required=False, allow_null=True)
+
+    longitude = CoordinateField('longitude', required=False, allow_null=True)
 
     class Meta:
         """Metaclass options."""
@@ -636,17 +698,20 @@ class DeploymentSerializer(
             and self.instance.status == DeploymentStatus.DEPLOYED.value
         ):
             active = (
-                Deployment.objects
-                .filter(site=site, status=DeploymentStatus.DEPLOYED.value)
+                Deployment.objects.filter(
+                    site=site, status=DeploymentStatus.DEPLOYED.value
+                )
                 .exclude(pk=self.instance.pk)
                 .first()
             )
 
             if active is not None:
-                raise serializers.ValidationError({
-                    'site': _('The site already has an active deployment')
-                    + f' ({active.reference})'
-                })
+                raise serializers.ValidationError(
+                    {
+                        'site': _('The site already has an active deployment')
+                        + f' ({active.reference})'
+                    }
+                )
 
         return data
 
@@ -795,28 +860,16 @@ class DeploymentNewSerializer(DeploymentActionSerializer):
 class DeployFieldsSerializer(serializers.Serializer):
     """The inputs of a deploy action (the site is optional)."""
 
-    latitude = serializers.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        min_value=-90,
-        max_value=90,
+    latitude = CoordinateField(
+        'latitude',
         required=False,
         allow_null=True,
-        label=_('Latitude'),
         help_text=_(
             'Actual position (defaults to the deployment position, then the site position; may stay empty)'
         ),
     )
 
-    longitude = serializers.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        min_value=-180,
-        max_value=180,
-        required=False,
-        allow_null=True,
-        label=_('Longitude'),
-    )
+    longitude = CoordinateField('longitude', required=False, allow_null=True)
 
     depth_m = serializers.DecimalField(
         max_digits=8,
@@ -855,17 +908,9 @@ class DeploymentDeploySerializer(DeploymentActionSerializer, DeployFieldsSeriali
 class DeploymentSetPositionSerializer(DeploymentActionSerializer):
     """Set the nominal position of a device."""
 
-    latitude = serializers.DecimalField(
-        max_digits=9, decimal_places=6, min_value=-90, max_value=90, label=_('Latitude')
-    )
+    latitude = CoordinateField('latitude')
 
-    longitude = serializers.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        min_value=-180,
-        max_value=180,
-        label=_('Longitude'),
-    )
+    longitude = CoordinateField('longitude')
 
     depth_m = serializers.DecimalField(
         max_digits=8,
@@ -1061,9 +1106,9 @@ class DataStreamSerializer(InvenTreeModelSerializer):
         if self.instance:
             for field in ['deployment', 'key']:
                 if field in data and data[field] != getattr(self.instance, field):
-                    raise serializers.ValidationError({
-                        field: _('This field cannot be changed')
-                    })
+                    raise serializers.ValidationError(
+                        {field: _('This field cannot be changed')}
+                    )
 
         return data
 
@@ -1265,9 +1310,9 @@ class DeploymentVerifySerializer(DeploymentActionSerializer):
         from fleet.services import monitoring
 
         if self.target.status != DeploymentStatus.DEPLOYED.value:
-            raise serializers.ValidationError({
-                'non_field_errors': [_('Only a deployed device can be verified')]
-            })
+            raise serializers.ValidationError(
+                {'non_field_errors': [_('Only a deployed device can be verified')]}
+            )
 
         return monitoring.verify_now(
             self.target, since=self.validated_data.get('since')
@@ -1644,9 +1689,9 @@ class MaintenanceTaskSerializer(
         ]:
             for field in self.LOCKED_FIELDS:
                 if field in data and data[field] != getattr(instance, field):
-                    raise serializers.ValidationError({
-                        field: _('This field cannot be changed once work has started')
-                    })
+                    raise serializers.ValidationError(
+                        {field: _('This field cannot be changed once work has started')}
+                    )
 
         return data
 
@@ -1728,9 +1773,9 @@ class ChecklistResultSerializer(InvenTreeModelSerializer):
         data = super().validate(data)
 
         if self.instance and self.instance.task.status != TaskStatus.IN_PROGRESS.value:
-            raise serializers.ValidationError({
-                'non_field_errors': [_('The task is not in progress')]
-            })
+            raise serializers.ValidationError(
+                {'non_field_errors': [_('The task is not in progress')]}
+            )
 
         return data
 
@@ -1927,17 +1972,9 @@ class TaskConsumeSerializer(TaskActionSerializer):
 class TaskRepositionSerializer(TaskActionSerializer):
     """Move the nominal position of the deployed device."""
 
-    latitude = serializers.DecimalField(
-        max_digits=9, decimal_places=6, min_value=-90, max_value=90, label=_('Latitude')
-    )
+    latitude = CoordinateField('latitude')
 
-    longitude = serializers.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        min_value=-180,
-        max_value=180,
-        label=_('Longitude'),
-    )
+    longitude = CoordinateField('longitude')
 
     note = serializers.CharField(
         required=False, allow_blank=True, max_length=500, label=_('Note')
@@ -2328,9 +2365,9 @@ class FieldTripSerializer(
         data = super().validate(data)
 
         if self.instance is not None and (data.get('tasks') or data.get('deployments')):
-            raise serializers.ValidationError({
-                'tasks': _('Use "Add tasks" to add tasks to an existing trip')
-            })
+            raise serializers.ValidationError(
+                {'tasks': _('Use "Add tasks" to add tasks to an existing trip')}
+            )
 
         return data
 
@@ -2410,14 +2447,14 @@ class TripKitLineSerializer(FilterableSerializerMixin, InvenTreeModelSerializer)
         trip = data.get('trip', getattr(instance, 'trip', None))
 
         if trip is not None and trip.status not in TripStatusGroups.OPEN:
-            raise serializers.ValidationError({
-                'trip': _('The kit of a closed trip cannot be changed')
-            })
+            raise serializers.ValidationError(
+                {'trip': _('The kit of a closed trip cannot be changed')}
+            )
 
         if instance is not None and 'trip' in data and data['trip'] != instance.trip:
-            raise serializers.ValidationError({
-                'trip': _('A kit line cannot move to another trip')
-            })
+            raise serializers.ValidationError(
+                {'trip': _('A kit line cannot move to another trip')}
+            )
 
         if (
             instance is not None
@@ -2425,9 +2462,9 @@ class TripKitLineSerializer(FilterableSerializerMixin, InvenTreeModelSerializer)
             and 'part' in data
             and data['part'] != instance.part
         ):
-            raise serializers.ValidationError({
-                'part': _('The part of a device line cannot change')
-            })
+            raise serializers.ValidationError(
+                {'part': _('The part of a device line cannot change')}
+            )
 
         return data
 
@@ -2505,9 +2542,9 @@ class TripAddTasksSerializer(TripActionSerializer):
     def validate(self, data):
         """Something must be selected."""
         if not data.get('tasks') and not data.get('deployments'):
-            raise serializers.ValidationError({
-                'non_field_errors': [_('Select tasks or deployments to add')]
-            })
+            raise serializers.ValidationError(
+                {'non_field_errors': [_('Select tasks or deployments to add')]}
+            )
 
         return data
 
@@ -2544,9 +2581,9 @@ class TripSuggestKitSerializer(TripActionSerializer):
         from fleet.services import planning
 
         if self.target.status not in TripStatusGroups.OPEN:
-            raise serializers.ValidationError({
-                'non_field_errors': [_('The kit of a closed trip cannot be changed')]
-            })
+            raise serializers.ValidationError(
+                {'non_field_errors': [_('The kit of a closed trip cannot be changed')]}
+            )
 
         planning.suggest_kit(self.target)
 

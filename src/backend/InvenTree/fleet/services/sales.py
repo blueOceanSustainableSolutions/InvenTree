@@ -41,8 +41,7 @@ class Sale:
 def pending_allocation(device) -> SalesOrderAllocation | None:
     """The allocation of a unit on an open sales order, not shipped yet."""
     return (
-        SalesOrderAllocation.objects
-        .filter(
+        SalesOrderAllocation.objects.filter(
             item=device,
             shipment__shipment_date__isnull=True,
             line__order__status__in=SalesOrderStatusGroups.OPEN,
@@ -64,10 +63,8 @@ def open_line(order: SalesOrder, part) -> SalesOrderLineItem | None:
     """The first line of an order for a part (or a template of it) with quantity left to ship."""
     parts = part.get_ancestors(include_self=True)
 
-    for line in (
-        order.lines
-        .filter(part__in=parts, quantity__gt=F('shipped'))
-        .order_by('pk')
+    for line in order.lines.filter(part__in=parts, quantity__gt=F('shipped')).order_by(
+        'pk'
     ):
         if line.quantity - line.shipped - line.allocated_quantity() >= 1:
             return line

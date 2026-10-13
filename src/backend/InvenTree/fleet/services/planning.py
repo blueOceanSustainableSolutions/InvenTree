@@ -55,10 +55,7 @@ PIPELINE_ALERT_TYPES = [Alert.AlertType.NOT_READY, Alert.AlertType.NO_DEPLOY_DAT
 # Retired pipeline alert types: the fleet no longer looks inside the build
 # order (manufacturing owns it). They are never raised, and open ones are
 # resolved by the next pipeline_alerts() run.
-RETIRED_PIPELINE_ALERT_TYPES = [
-    Alert.AlertType.BUILD_LATE,
-    Alert.AlertType.PARTS_SHORT,
-]
+RETIRED_PIPELINE_ALERT_TYPES = [Alert.AlertType.BUILD_LATE, Alert.AlertType.PARTS_SHORT]
 
 # Pipeline alerts which are notified (Teams, email, in-app) when they open
 NOTIFIED_PIPELINE_TYPES = [Alert.AlertType.NOT_READY]
@@ -93,8 +90,7 @@ def pm_deployments():
     Docked (and decommissioned) devices are left out.
     """
     return (
-        Deployment.objects
-        .filter(
+        Deployment.objects.filter(
             status=DeploymentStatus.DEPLOYED.value,
             coverage=Coverage.FULL,
             device__isnull=False,
@@ -213,8 +209,7 @@ def pm_alerts(today: date | None = None) -> dict:
     active_keys = set()
 
     deployments = (
-        Deployment.objects
-        .filter(
+        Deployment.objects.filter(
             status=DeploymentStatus.DEPLOYED.value,
             next_pm_date__isnull=False,
             next_pm_date__lte=warning,
@@ -279,8 +274,7 @@ def pipeline_alerts(today: date | None = None) -> dict:
 
     # Only the units in the plan list: those which belong to a sale
     deployments = (
-        Deployment.objects
-        .filter(status__in=DeploymentStatusGroups.PIPELINE)
+        Deployment.objects.filter(status__in=DeploymentStatusGroups.PIPELINE)
         .filter(sold_q())
         .select_related('site', 'device', 'build')
     )
@@ -346,8 +340,9 @@ def failed_parts(device_type) -> dict:
         {part: number of tasks} for parts with at least FAILURE_MIN_TASKS
     """
     recent = list(
-        MaintenanceTask.objects
-        .filter(status=TaskStatus.COMPLETED.value, deployment__device_type=device_type)
+        MaintenanceTask.objects.filter(
+            status=TaskStatus.COMPLETED.value, deployment__device_type=device_type
+        )
         .order_by('-completed_at', '-pk')
         .values_list('pk', flat=True)[:FAILURE_HISTORY_TASKS]
     )
@@ -355,8 +350,7 @@ def failed_parts(device_type) -> dict:
     counts = {}
 
     for part, _task in (
-        MaintenanceAction.objects
-        .filter(
+        MaintenanceAction.objects.filter(
             task__in=recent,
             action__in=FAILURE_ACTIONS,
             fault_code__isnull=False,
@@ -393,8 +387,7 @@ def suggest_kit(trip, apply: bool = True) -> list[dict]:
     device_types = {}
 
     tasks = (
-        trip.tasks
-        .filter(status__in=TaskStatusGroups.OPEN)
+        trip.tasks.filter(status__in=TaskStatusGroups.OPEN)
         .select_related('device__part', 'deployment__device_type', 'site')
         .order_by('reference_int')
     )
