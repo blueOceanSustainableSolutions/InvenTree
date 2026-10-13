@@ -5,6 +5,7 @@ import {
   IconAlertTriangle,
   IconFlag,
   IconInfoCircle,
+  IconListCheck,
   IconMap,
   IconTimeline,
   IconTool
@@ -52,6 +53,7 @@ import {
 } from '../../fleet/hooks/DeploymentActions';
 import { ReturningAlert } from '../../fleet/components/ReturningAlert';
 import { DeploymentHealthPanel } from '../../fleet/panels/DeploymentHealthPanel';
+import { DeviceMaterialsPanel } from '../../fleet/panels/DeviceMaterialsPanel';
 import { AlertTable } from '../../fleet/tables/AlertTable';
 import { TaskTable } from '../../fleet/tables/TaskTable';
 import { useInstance } from '../../hooks/UseInstance';
@@ -193,6 +195,15 @@ export default function DeploymentDetail() {
         icon: <IconTimeline />,
         hidden: !isPipeline,
         content: risksPanel
+      },
+      // What the device is made of, to prepare the deployment (read only)
+      {
+        name: 'device-materials',
+        label: t`Device Materials`,
+        icon: <IconListCheck />,
+        content: deployment.pk ? (
+          <DeviceMaterialsPanel deployment={deployment} />
+        ) : null
       },
       {
         name: 'health',

@@ -816,8 +816,12 @@ class Deployment(
 
     @property
     def can_schedule(self) -> bool:
-        """Return True if this deployment can be scheduled on a field trip."""
-        return self.status in DeploymentStatusGroups.DEPLOYABLE
+        """Return True if this deployment can be scheduled on a field trip.
+
+        A device which is not built yet (planned, in production) can be put on
+        a trip too; it can only be deployed once it is READY.
+        """
+        return self.status in DeploymentStatusGroups.SCHEDULABLE
 
     @property
     def can_recover(self) -> bool:
@@ -1212,6 +1216,7 @@ class Alert(
         PM_DUE = 'PM_DUE', _('Maintenance due')
         PM_OVERDUE = 'PM_OVERDUE', _('Maintenance overdue')
         NOT_READY = 'NOT_READY', _('Not ready')
+        BUILD_CANCELLED = 'BUILD_CANCELLED', _('Build order cancelled')
         # Retired: kept so that old alerts still display (no longer raised)
         BUILD_LATE = 'BUILD_LATE', _('Build late')
         NO_DEPLOY_DATE = 'NO_DEPLOY_DATE', _('No deployment date')
@@ -1936,6 +1941,23 @@ class MaintenanceTask(
         return self.status in TaskStatusGroups.STARTABLE
 
     @property
+    def awaiting_device(self) -> bool:
+        """Return True if the device of this task is not built yet.
+
+        A deployment can be scheduled on a trip while it is planned or in
+        production; its task waits for the unit before it can start.
+        """
+        if self.device_id is None:
+            return True
+
+        return (
+            self.task_type
+            in [MaintenanceTask.TaskType.DEPLOYMENT, MaintenanceTask.TaskType.SWAP]
+            and self.deployment is not None
+            and self.deployment.status in DeploymentStatusGroups.UNBUILT
+        )
+
+    @property
     def can_complete(self) -> bool:
         """Return True if this task can be completed."""
         return self.status == TaskStatus.IN_PROGRESS.value
@@ -2016,7 +2038,9 @@ class MaintenanceTask(
             'device': self.device,
             'deployment': self.deployment,
             'site': site,
-            'display_name': site.name if site else (self.device.serial or ''),
+            'display_name': site.name
+            if site
+            else (self.device.serial or '' if self.device else ''),
             'checklist': self.checklist.all(),
             'actions': self.actions.all(),
             'alerts': self.alerts.all(),
@@ -2059,9 +2083,13 @@ class MaintenanceTask(
     device = models.ForeignKey(
         'stock.StockItem',
         on_delete=models.PROTECT,
+        blank=True,
+        null=True,
         related_name='fleet_tasks',
         verbose_name=_('Device'),
-        help_text=_('Serialized device worked on'),
+        help_text=_(
+            'Serialized device worked on (empty while the unit of a deployment task is not built yet)'
+        ),
     )
 
     deployment = models.ForeignKey(

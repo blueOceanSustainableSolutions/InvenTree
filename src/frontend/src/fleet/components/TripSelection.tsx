@@ -33,7 +33,7 @@ export type TripSelectionKind = 'tasks' | 'deployments';
 
 /**
  * Form to create a field trip, optionally with a selection of tasks or
- * ready deployments (sent as the write-only `tasks` / `deployments` fields).
+ * deployments (sent as the write-only `tasks` / `deployments` fields).
  */
 export function useNewTripForm({
   selection,
@@ -83,7 +83,7 @@ export function useNewTripForm({
 }
 
 /**
- * Modal to add a selection of tasks or ready deployments to an open trip
+ * Modal to add a selection of tasks or deployments to an open trip
  */
 export function AddToTripModal({
   opened,
@@ -177,7 +177,7 @@ export function AddToTripModal({
 /**
  * Plan selection: table actions "Create field trip" and "Add to trip" for
  * the selected rows of a task table (open tasks) or of the pipeline table
- * (ready deployments).
+ * (deployments, built or not, and deployed devices).
  */
 export function useTripSelectionActions({
   table,

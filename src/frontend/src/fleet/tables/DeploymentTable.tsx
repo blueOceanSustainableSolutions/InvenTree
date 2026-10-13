@@ -96,9 +96,15 @@ export function DeploymentTable({
 
   const deploymentStatus = useStatusCodes({ modelType: ModelType.deployment });
 
-  // A deployment which can be put on a field trip: ready (built)
+  // A deployment which can be put on a field trip: built or not (it is
+  // deployed once ready)
   const canPlanDeployment = useCallback(
-    (record: any): boolean => record.status == deploymentStatus.READY,
+    (record: any): boolean =>
+      [
+        deploymentStatus.PLANNED,
+        deploymentStatus.IN_PRODUCTION,
+        deploymentStatus.READY
+      ].includes(record.status),
     [deploymentStatus]
   );
 

@@ -90,6 +90,8 @@ export function deploymentDetailFields(
       icon: 'fleet_device_type',
       model: ModelType.fleetdevicetype
     },
+    // The device: the unit when it is built, else the build order which
+    // makes it (its material is on the Device Materials panel)
     {
       type: 'link',
       name: 'device',
@@ -97,6 +99,28 @@ export function deploymentDetailFields(
       icon: 'serial',
       model: ModelType.stockitem,
       hidden: !deployment.device
+    },
+    {
+      type: 'link',
+      name: 'build_detail.pk',
+      label: t`Device`,
+      icon: 'serial',
+      model: ModelType.build,
+      model_formatter: (build: any) =>
+        [build?.reference, build?.title, t`in production`]
+          .filter(Boolean)
+          .join(' · '),
+      hidden: !!deployment.device || !deployment.build
+    },
+    {
+      type: 'string',
+      name: 'device_missing',
+      label: t`Device`,
+      icon: 'serial',
+      hidden: !!deployment.device || !!deployment.build,
+      value_formatter: () => (
+        <Text size='sm' c='orange'>{t`Not built yet, no build order`}</Text>
+      )
     },
     {
       type: 'string',
@@ -317,13 +341,21 @@ export function taskDetailFields(task: any): FleetDetailFields {
       icon: 'description',
       hidden: !task.description
     },
-    {
-      type: 'link',
-      name: 'device',
-      label: t`Device`,
-      icon: 'serial',
-      model: ModelType.stockitem
-    },
+    task.device
+      ? {
+          type: 'link',
+          name: 'device',
+          label: t`Device`,
+          icon: 'serial',
+          model: ModelType.stockitem
+        }
+      : {
+          type: 'string',
+          name: 'device',
+          label: t`Device`,
+          icon: 'serial',
+          value_formatter: () => t`Not built yet`
+        },
     {
       type: 'link',
       name: 'deployment',

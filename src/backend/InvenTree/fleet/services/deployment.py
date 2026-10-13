@@ -4,8 +4,9 @@ A device is "deployed" only through the fleet Deploy action (directly, or by
 completing its deployment task). Shipping it to a customer is not deploying
 it: a shipped unit is out of stock, but still waits to be deployed.
 
-Deploying a unit from stock assigns it to a customer; a shipped unit keeps
-the customer it was shipped to. Recovering a device creates a return order
+Every deployed unit goes through a sale: deploying a unit which is not
+shipped yet ships it on its own from its sales order (see
+fleet.services.sales); a shipped unit keeps the customer it was shipped to. Recovering a device creates a return order
 to the office: the device stays with the customer until the office receives
 it, but it is no longer deployed, and it can be planned for its next
 deployment straight away. A deployed device cannot be returned through the
@@ -20,7 +21,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from fleet.events import trigger_status_event, trigger_status_events
-from fleet.helpers import get_model_setting, to_local_date
+from fleet.helpers import to_local_date
 from fleet.models import (
     Alert,
     Coverage,
@@ -29,12 +30,18 @@ from fleet.models import (
     MaintenanceTask,
     TripKitLine,
 )
+from fleet.services import sales
 from fleet.services.device_state import (
     check_not_decommissioned,
     clear_on_close,
     is_decommissioned,
 )
-from fleet.services.pipeline import ensure_device_link, get_return_line, is_shipped
+from fleet.services.pipeline import (
+    ensure_device_link,
+    get_return_line,
+    is_shipped,
+    is_sold,
+)
 from fleet.status_codes import (
     AlertStatus,
     AlertStatusGroups,
@@ -55,20 +62,6 @@ PM_BASE_TASK_TYPES = [
     MaintenanceTask.TaskType.DEPLOYMENT,
     MaintenanceTask.TaskType.SWAP,
 ]
-
-
-def get_customer(deployment: Deployment):
-    """Return the customer to assign a deployed device to.
-
-    The deployment client, else the site client, else FLEET_DEFAULT_CUSTOMER.
-    """
-    if deployment.client:
-        return deployment.client
-
-    if deployment.site and deployment.site.client:
-        return deployment.site.client
-
-    return get_model_setting('FLEET_DEFAULT_CUSTOMER')
 
 
 def copy_streams(deployment: Deployment) -> None:
@@ -102,8 +95,8 @@ def deploy(
 
     - Records the nominal position and copies the site geofence if empty
     - Copies the stream templates into data streams
-    - Assigns a unit in stock to a customer (tracking code 100); a unit
-      already shipped keeps its customer. Adds a FLEET_DEPLOYED tracking entry
+    - Ships a unit in stock on its own from its sales order; a unit already
+      shipped keeps its customer. Adds a FLEET_DEPLOYED tracking entry
     - Recovers the deployment it replaces, if any (a return order brings
       that device to the office)
     - Computes the next preventive maintenance date
@@ -137,14 +130,14 @@ def deploy(
 
     check_not_decommissioned(device)
 
-    # A shipped unit stays with the customer it was shipped to
-    customer = device.customer if shipped else get_customer(deployment)
+    # A shipped unit stays with the customer it was shipped to; any other is
+    # shipped from its sales order
+    sale = None if shipped else sales.get_sale(deployment)
+    customer = device.customer if shipped else sale.order.customer
 
     if customer is None:
         raise ValidationError(
-            _(
-                'No customer: set a client on the deployment or its site, or the default fleet customer setting'
-            )
+            _('Sales order') + f' {sale.order.reference} ' + _('has no customer')
         )
 
     # Recover the device being replaced first: a site has one active deployment
@@ -204,9 +197,8 @@ def deploy(
     if site is not None:
         notes += f' at {site.reference}'
 
-    if not shipped:
-        device.allocateToCustomer(customer, user=user, notes=notes)
-        device.refresh_from_db()
+    if sale is not None:
+        sales.ship(sale, deployment, user=user)
 
     device.add_tracking_entry(
         StockHistoryCode.FLEET_DEPLOYED,
@@ -378,12 +370,17 @@ def deployment_task_type(deployment: Deployment) -> str:
 
 @transaction.atomic
 def schedule(deployment: Deployment, trip) -> MaintenanceTask:
-    """Schedule a READY deployment on a field trip.
+    """Schedule a deployment on a field trip.
 
-    The deployment becomes SCHEDULED, and gets a DEPLOYMENT task on the trip
-    (a SWAP task when it replaces a deployed device at its site). The device
-    is added to the trip kit. An open deployment task which already exists
-    (e.g. from an earlier trip) is reused.
+    The deployment gets a DEPLOYMENT task on the trip (a SWAP task when it
+    replaces a deployed device at its site). An open deployment task which
+    already exists (e.g. from an earlier trip) is reused.
+
+    - A READY device: the deployment becomes SCHEDULED, and the device is
+      added to the trip kit.
+    - A device which is not built yet (PLANNED, IN_PRODUCTION): the
+      deployment keeps its status (so NOT_READY still warns). The task has no
+      device until the build output exists; see attach_unit().
 
     Returns:
         The deployment (or swap) task
@@ -393,19 +390,29 @@ def schedule(deployment: Deployment, trip) -> MaintenanceTask:
 
     if not deployment.can_schedule:
         raise ValidationError(
-            _('Only a ready deployment can be scheduled on a trip')
+            _('Only a deployment which is not deployed can be scheduled on a trip')
             + f' ({deployment.reference})'
         )
 
-    device = deployment.device
+    # Deploying ships the unit from its sale: plan only the units sold
+    if not is_sold(deployment):
+        raise ValidationError(
+            _('The device is not on a sales order')
+            + f' ({deployment.reference}). '
+            + _('Allocate it to a sales order before planning its deployment')
+        )
 
-    if device is None:
+    device = deployment.device
+    built = deployment.status not in DeploymentStatusGroups.UNBUILT
+
+    if device is None and built:
         raise ValidationError(
             _('No device has been assigned to this deployment')
             + f' ({deployment.reference})'
         )
 
-    check_not_decommissioned(device)
+    if device is not None:
+        check_not_decommissioned(device)
 
     task = (
         deployment.tasks
@@ -460,29 +467,77 @@ def schedule(deployment: Deployment, trip) -> MaintenanceTask:
     task.status = TaskStatus.SCHEDULED.value
     task.save()
 
-    deployment.status = DeploymentStatus.SCHEDULED.value
-    deployment.save()
-
     trigger_status_event(task)
-    trigger_status_event(deployment)
+
+    if built:
+        deployment.status = DeploymentStatus.SCHEDULED.value
+        deployment.save()
+        trigger_status_event(deployment)
 
     TripKitLine.objects.filter(task=task, source=TripKitLine.Source.DEVICE).exclude(
         trip=trip
     ).delete()
 
+    add_device_kit_line(task)
+
+    return task
+
+
+def add_device_kit_line(task: MaintenanceTask) -> None:
+    """Put the device of a deployment task in its trip kit (once it has one)."""
+    if task.trip is None or task.device is None:
+        return
+
     TripKitLine.objects.update_or_create(
-        trip=trip,
+        trip=task.trip,
         task=task,
         source=TripKitLine.Source.DEVICE,
         defaults={
-            'part': device.part,
-            'stock_item': device,
+            'part': task.device.part,
+            'stock_item': task.device,
             'quantity_planned': 1,
-            'note': deployment.reference,
+            'note': task.deployment.reference if task.deployment else '',
         },
     )
 
-    return task
+
+def open_deploy_tasks(deployment: Deployment):
+    """The deployment (or swap) tasks of a deployment which have not started."""
+    return deployment.tasks.filter(
+        status__in=[TaskStatus.PROPOSED.value, TaskStatus.SCHEDULED.value],
+        task_type__in=[
+            MaintenanceTask.TaskType.DEPLOYMENT,
+            MaintenanceTask.TaskType.SWAP,
+        ],
+    )
+
+
+def attach_unit(deployment: Deployment) -> None:
+    """Catch up the tasks of a deployment which was scheduled before it was built.
+
+    Called when the build output is linked, and when the device is READY:
+    - its open deployment tasks get the device, and the device goes in the
+      trip kit
+    - a READY deployment with a task on an open trip is SCHEDULED
+    """
+    if deployment.device is None:
+        return
+
+    on_trip = False
+
+    for task in open_deploy_tasks(deployment).select_related('trip'):
+        if task.device_id is None:
+            task.device = deployment.device
+            task.save()
+
+        if task.trip is not None and task.trip.status in TripStatusGroups.OPEN:
+            on_trip = True
+            add_device_kit_line(task)
+
+    if on_trip and deployment.status == DeploymentStatus.READY.value:
+        deployment.status = DeploymentStatus.SCHEDULED.value
+        deployment.save()
+        trigger_status_event(deployment)
 
 
 def unschedule(deployment: Deployment) -> Deployment:

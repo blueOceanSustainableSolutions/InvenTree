@@ -32,7 +32,7 @@ from fleet.models import (
     TripKitLine,
 )
 from fleet.services.device_state import annotate_device_state
-from fleet.services.pipeline import readiness_risks
+from fleet.services.pipeline import readiness_risks, sold_q
 from fleet.status_codes import (
     AlertStatusGroups,
     DeploymentStatus,
@@ -76,6 +76,7 @@ class FleetDeviceBriefSerializer(InvenTreeModelSerializer):
             'customer',
             'location',
             'is_building',
+            'build',
         ]
         read_only_fields = fields
 
@@ -341,6 +342,7 @@ class BuildBriefSerializer(serializers.Serializer):
 
     pk = serializers.IntegerField(read_only=True)
     reference = serializers.CharField(read_only=True)
+    title = serializers.CharField(read_only=True)
     status = serializers.IntegerField(read_only=True)
     status_text = serializers.CharField(source='get_status_display', read_only=True)
     status_custom_key = serializers.IntegerField(read_only=True, allow_null=True)
@@ -738,9 +740,11 @@ class DeploymentNewSerializer(DeploymentActionSerializer):
     """
 
     deployment = serializers.PrimaryKeyRelatedField(
-        queryset=Deployment.objects.filter(status__in=DeploymentStatusGroups.PIPELINE),
+        queryset=Deployment.objects.filter(
+            status__in=DeploymentStatusGroups.PIPELINE
+        ).filter(sold_q()),
         label=_('Device'),
-        help_text=_('A device which is not deployed'),
+        help_text=_('A device which is not deployed, and belongs to a sale'),
     )
 
     site = serializers.PrimaryKeyRelatedField(
@@ -975,6 +979,9 @@ class PlanRowSerializer(serializers.Serializer):
     client_name = serializers.CharField(read_only=True, allow_null=True)
     build = serializers.IntegerField(read_only=True, allow_null=True)
     build_reference = serializers.CharField(read_only=True, allow_null=True)
+    build_title = serializers.CharField(
+        read_only=True, allow_null=True, help_text='Description of the build order'
+    )
     build_status = serializers.IntegerField(read_only=True, allow_null=True)
     build_target_date = serializers.DateField(read_only=True, allow_null=True)
     return_order = serializers.IntegerField(read_only=True, allow_null=True)
@@ -1447,6 +1454,7 @@ class MaintenanceTaskSerializer(
             'checklist_count',
             'checklist_pending',
             'action_count',
+            'awaiting_device',
             'barcode_hash',
             'notes',
         ]
@@ -1567,6 +1575,12 @@ class MaintenanceTaskSerializer(
 
     action_count = serializers.IntegerField(read_only=True, label=_('Actions'))
 
+    awaiting_device = serializers.BooleanField(
+        read_only=True,
+        label=_('Awaiting Device'),
+        help_text=_('The device is not built yet: the task cannot start'),
+    )
+
     @staticmethod
     def annotate_queryset(queryset):
         """Annotate the checklist and action counts."""
@@ -1599,6 +1613,9 @@ class MaintenanceTaskSerializer(
 
         if site is not None:
             return site.name
+
+        if task.device is None:
+            return task.deployment.reference if task.deployment else ''
 
         return task.device.serial or str(task.device)
 
@@ -2240,15 +2257,15 @@ class FieldTripSerializer(
 
     deployments = serializers.PrimaryKeyRelatedField(
         queryset=Deployment.objects.filter(
-            status__in=DeploymentStatusGroups.DEPLOYABLE
-            + DeploymentStatusGroups.ACTIVE
+            Q(status__in=DeploymentStatusGroups.ACTIVE)
+            | (Q(status__in=DeploymentStatusGroups.SCHEDULABLE) & sold_q())
         ),
         many=True,
         required=False,
         write_only=True,
         label=_('Deployments'),
         help_text=_(
-            'Ready deployments to deploy, and deployed devices to maintain, on the new trip'
+            'Deployments to deploy (built or not), and deployed devices to maintain, on the new trip'
         ),
     )
 
@@ -2466,7 +2483,7 @@ class TripKitSerializer(serializers.Serializer):
 
 
 class TripAddTasksSerializer(TripActionSerializer):
-    """Add tasks, and ready deployments (as deployment tasks), to a trip."""
+    """Add tasks, and deployments (as deployment tasks), to a trip."""
 
     tasks = serializers.PrimaryKeyRelatedField(
         queryset=MaintenanceTask.objects.all(),
@@ -2481,7 +2498,7 @@ class TripAddTasksSerializer(TripActionSerializer):
         required=False,
         label=_('Deployments'),
         help_text=_(
-            'Ready deployments (a deployment or swap task each), and deployed devices (their maintenance tasks)'
+            'Deployments to deploy, built or not (a deployment or swap task each), and deployed devices (their maintenance tasks)'
         ),
     )
 

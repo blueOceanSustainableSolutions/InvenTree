@@ -148,8 +148,10 @@ function MyWorkSection(): ReactNode {
  * devices to maintain, marked Deployment or Maintenance.
  *
  * Order: the next planning-horizon days (overdue first) by date, then the
- * rows without a date, then the later dates. Tick rows to group them into a
- * field trip ("Create Field Trip" / "Add to Trip").
+ * rows without a date, then the later dates; on the same date (or without
+ * one) by readiness: ready, in production, planned, then build target date.
+ * Tick rows to group them into a field trip ("Create Field Trip" / "Add to
+ * Trip").
  */
 function PlanSection(): ReactNode {
   const isPhone = useIsPhone();
@@ -164,7 +166,7 @@ function PlanSection(): ReactNode {
         <FleetMapView height={isPhone ? 240 : 320} />
       </Paper>
       <Text size='sm' c='dimmed'>
-        {t`Deployments and maintenance: the next ${horizon} days first, then the rows without a date, then the later dates. Tick rows to group them into a field trip.`}
+        {t`Deployments and maintenance: the next ${horizon} days first, then the rows without a date, then the later dates. On the same date (or without one): ready devices first, then in production, then planned, by build target date. Tick rows to group them into a field trip.`}
       </Text>
       <PlanTable />
     </Stack>

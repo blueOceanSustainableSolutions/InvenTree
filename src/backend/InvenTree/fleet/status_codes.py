@@ -34,8 +34,14 @@ class DeploymentStatusGroups:
     # Deployments which are finished
     CLOSED = [DeploymentStatus.RECOVERED.value, DeploymentStatus.CANCELLED.value]
 
-    # Deployments whose device can be deployed (or scheduled on a trip)
+    # Deployments whose device can be deployed
     DEPLOYABLE = [DeploymentStatus.READY.value, DeploymentStatus.SCHEDULED.value]
+
+    # Deployments whose device is not built yet
+    UNBUILT = [DeploymentStatus.PLANNED.value, DeploymentStatus.IN_PRODUCTION.value]
+
+    # Deployments which can be scheduled on a field trip (built or not)
+    SCHEDULABLE = PIPELINE
 
 
 class TaskStatus(StatusCode):

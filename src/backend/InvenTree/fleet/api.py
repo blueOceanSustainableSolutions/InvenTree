@@ -45,7 +45,7 @@ from fleet.models import (
     StreamTemplate,
     TripKitLine,
 )
-from fleet.services import device_state, monitoring, plan, trips
+from fleet.services import device_state, monitoring, pipeline, plan, trips
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -1241,11 +1241,16 @@ class FleetCalendar(FleetReadView):
 
         events = []
 
-        for dep in Deployment.objects.filter(
-            status__in=DeploymentStatusGroups.PIPELINE,
-            target_date__gte=start,
-            target_date__lte=end,
-        ).select_related('site'):
+        for dep in (
+            Deployment.objects
+            .filter(
+                status__in=DeploymentStatusGroups.PIPELINE,
+                target_date__gte=start,
+                target_date__lte=end,
+            )
+            .filter(pipeline.sold_q())
+            .select_related('site')
+        ):
             title = dep.reference
 
             if dep.site:
@@ -1371,7 +1376,10 @@ class FleetOverview(FleetReadView):
         """Return the KPI counts."""
         today = current_date()
         deployments = Deployment.objects.all()
-        pipeline_qs = deployments.filter(status__in=DeploymentStatusGroups.PIPELINE)
+        # The units in the plan list: those which belong to a sale
+        pipeline_qs = deployments.filter(
+            status__in=DeploymentStatusGroups.PIPELINE
+        ).filter(pipeline.sold_q())
         deployed = deployments.filter(status__in=DeploymentStatusGroups.ACTIVE)
 
         # Docked (and decommissioned) devices are not counted as deployed
@@ -1382,7 +1390,7 @@ class FleetOverview(FleetReadView):
         def by_status(value):
             return Count('pk', filter=Q(status=value))
 
-        data = deployments.aggregate(
+        data = pipeline_qs.aggregate(
             planned=by_status(DeploymentStatus.PLANNED.value),
             in_production=by_status(DeploymentStatus.IN_PRODUCTION.value),
             ready=by_status(DeploymentStatus.READY.value),

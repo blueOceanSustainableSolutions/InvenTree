@@ -37,7 +37,7 @@ from fleet.status_codes import (
     HealthStatus,
     TaskStatus,
 )
-from fleet.test_support import plan_unit
+from fleet.test_support import plan_unit, sell_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeAPITestCase
 from order.models import ReturnOrderLineItem, SalesOrder
@@ -279,6 +279,21 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(row.status, DeploymentStatus.READY.value)
         self.assertIsNone(row.target_date)
 
+        # Only a unit on a sales order is in the plan, and can be planned
+        plan_url = reverse('api-fleet-plan')
+        self.assertNotIn(row.pk, [r['pk'] for r in self.get(plan_url).data])
+        self.post(
+            reverse('api-fleet-deployment-new'),
+            {'deployment': row.pk, 'site': self.site.pk},
+            expected_code=400,
+        )
+
+        sell_unit(unit)
+        self.assertIn(row.pk, [r['pk'] for r in self.get(plan_url).data])
+
+        sold = self.get(url, {'sold': True}).data
+        self.assertIn(row.pk, [r['pk'] for r in sold])
+
         # New deployment: choose the unit, plan its site
         response = self.post(
             reverse('api-fleet-deployment-new'),
@@ -301,8 +316,13 @@ class DeploymentAPITest(FleetAPITestBase):
             Deployment.objects.get(pk=row.pk).status, DeploymentStatus.READY.value
         )
 
-        # A BO issued for the device type enters the pipeline unscheduled
-        build = Build.objects.create(part=self.part, quantity=1, title='Aurora')
+        # A BO issued for a sale of the device type enters the pipeline unscheduled
+        build = Build.objects.create(
+            part=self.part,
+            quantity=1,
+            title='Aurora',
+            sales_order=SalesOrder.objects.create(customer=self.customer),
+        )
         build.issue_build()
 
         response = self.get(url, {'unscheduled': True})
@@ -375,6 +395,7 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(dep.status, DeploymentStatus.CANCELLED.value)
 
         unit = self.make_device('AUR-0500')
+        sell_unit(unit)
         sync_stock_deployments()
 
         dep = Deployment.objects.get(device=unit, status=DeploymentStatus.READY.value)
@@ -420,11 +441,12 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(response.data['return_order'], line.order.pk)
         self.assertEqual(response.data['return_order_reference'], line.order.reference)
 
-        # It can be planned, but not deployed before the office receives it
+        # Its old sale does not count: it cannot be planned without a new
+        # one, nor deployed before the office receives it
         self.post(
             reverse('api-fleet-deployment-new'),
             {'deployment': nxt.pk, 'target_date': current_date().isoformat()},
-            expected_code=200,
+            expected_code=400,
         )
         response = self.post(self.action_url(nxt, 'deploy'), {}, expected_code=400)
         self.assertIn(line.order.reference, str(response.data))
@@ -436,6 +458,14 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertIsNone(unit.customer)
         self.assertEqual(unit.location, self.workshop)
         self.assertIsNone(self.get(detail).data['return_order'])
+
+        # Sold again, it can be planned
+        sell_unit(unit)
+        self.post(
+            reverse('api-fleet-deployment-new'),
+            {'deployment': nxt.pk, 'target_date': current_date().isoformat()},
+            expected_code=200,
+        )
 
         # Only cancelled deployments can be deleted
         self.delete(
@@ -545,6 +575,41 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(
             [row['pk'] for row in rows], [deployed.pk, undated.pk, soon.pk, later.pk]
         )
+
+    def test_plan_undated_order(self):
+        """Rows without a date: ready, in production, planned, by build target date."""
+        today = current_date()
+        order = SalesOrder.objects.create(customer=self.customer)
+
+        def sold_build(title, target_days=None, status=None):
+            build = Build.objects.create(
+                part=self.part,
+                quantity=1,
+                title=title,
+                sales_order=order,
+                target_date=today + timedelta(days=target_days)
+                if target_days is not None
+                else None,
+            )
+            deployment = build.fleet_deployment
+
+            if status is not None:
+                Deployment.objects.filter(pk=deployment.pk).update(status=status)
+
+            return deployment
+
+        planned = sold_build('Planned unit')
+        late = sold_build('Late unit', 60, DeploymentStatus.IN_PRODUCTION.value)
+        early = sold_build('Early unit', 20, DeploymentStatus.IN_PRODUCTION.value)
+        ready = plan_unit(self.make_device('AUR-1101'), self.device_type)
+
+        rows = self.get(reverse('api-fleet-plan'), {'kind': 'deployment'}).data
+
+        self.assertEqual(
+            [row['pk'] for row in rows], [ready.pk, early.pk, late.pk, planned.pk]
+        )
+        self.assertEqual(rows[1]['build_title'], 'Early unit')
+        self.assertIsNone(rows[0]['build_title'])
 
     def test_schema(self):
         """The fleet endpoints publish a valid OpenAPI schema."""

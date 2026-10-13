@@ -1,13 +1,15 @@
 """The fleet plan: one list of deployments and maintenance, in date order.
 
-- Deployment rows: the devices which are not deployed (in production, built,
-  or on their way back), from the pipeline deployments
+- Deployment rows: the devices which are not deployed (in production or
+  built) and belong to a sale, from the pipeline deployments
 - Maintenance rows: the deployed devices which the fleet team services
   (FULL coverage; not docked or decommissioned)
 
 The rows are ordered in three groups: first the next FLEET_PLAN_HORIZON_DAYS
 days (overdue included) by date, then the rows without a date, then the
-later dates.
+later dates. Rows on the same date (and all the rows without a date) are
+ordered by readiness: ready devices first, then in production, then planned,
+then maintenance; within each, by the build order target date.
 """
 
 from datetime import date, timedelta
@@ -18,7 +20,7 @@ from common.settings import get_global_setting
 from fleet.models import Coverage, Deployment, MaintenanceTask
 from fleet.services import device_state
 from fleet.services.maintenance import DEPLOY_TASK_TYPES
-from fleet.services.pipeline import readiness_risks
+from fleet.services.pipeline import readiness_risks, sold_q
 from fleet.status_codes import (
     DeploymentStatus,
     DeploymentStatusGroups,
@@ -35,6 +37,16 @@ GROUP_UNDATED = 'undated'
 GROUP_LATER = 'later'
 
 GROUP_ORDER = {GROUP_SOON: 0, GROUP_UNDATED: 1, GROUP_LATER: 2}
+
+# Readiness order of the deployment rows (a scheduled device is built, as a
+# ready one); maintenance rows come after them
+READINESS_ORDER = {
+    DeploymentStatus.READY.value: 0,
+    DeploymentStatus.SCHEDULED.value: 0,
+    DeploymentStatus.IN_PRODUCTION.value: 1,
+    DeploymentStatus.PLANNED.value: 2,
+}
+MAINTENANCE_ORDER = 3
 
 # Tasks which are still to be done
 OPEN_TASK_STATUSES = [
@@ -103,6 +115,7 @@ def deployment_row(deployment: Deployment, today: date) -> dict:
         **common_fields(deployment),
         'build': build.pk if build else None,
         'build_reference': build.reference if build else None,
+        'build_title': build.title if build else None,
         'build_status': build.status if build else None,
         'build_target_date': build.target_date if build else None,
         'return_order': getattr(deployment, 'return_order', None),
@@ -134,6 +147,7 @@ def maintenance_row(deployment: Deployment) -> dict:
         **common_fields(deployment),
         'build': None,
         'build_reference': None,
+        'build_title': None,
         'build_status': None,
         'build_target_date': None,
         'return_order': None,
@@ -189,7 +203,7 @@ def plan_rows(
 
     if kind in [None, '', KIND_DEPLOYMENT]:
         pipeline = DeploymentSerializer.annotate_queryset(
-            queryset.filter(status__in=DeploymentStatusGroups.PIPELINE)
+            queryset.filter(status__in=DeploymentStatusGroups.PIPELINE).filter(sold_q())
         )
         rows += [deployment_row(deployment, today) for deployment in pipeline]
 
@@ -205,13 +219,22 @@ def plan_rows(
     for row in rows:
         row['group'] = get_group(row['date'], today, horizon)
 
-    rows.sort(
-        key=lambda row: (
-            GROUP_ORDER[row['group']],
-            row['date'] or date.max,
-            row['kind'],
-            row['reference'],
-        )
-    )
+    rows.sort(key=sort_key)
 
     return rows
+
+
+def sort_key(row: dict) -> tuple:
+    """The plan order of a row: group, date, readiness, build target date."""
+    if row['kind'] == KIND_DEPLOYMENT:
+        readiness = READINESS_ORDER.get(row['status'], MAINTENANCE_ORDER)
+    else:
+        readiness = MAINTENANCE_ORDER
+
+    return (
+        GROUP_ORDER[row['group']],
+        row['date'] or date.max,
+        readiness,
+        row['build_target_date'] or date.max,
+        row['reference'],
+    )

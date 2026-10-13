@@ -174,11 +174,11 @@ export function AddTasksModal({
             </Tabs.Panel>
             <Tabs.Panel value='deployments' pt='xs'>
               <Text size='sm' c='dimmed'>
-                {t`Each ready deployment gets a deployment task (a swap task when it replaces a deployed device); its device is added to the kit.`}
+                {t`Only devices on a sales order are listed. Each ready deployment gets a deployment task (a swap task when it replaces a deployed device); its device is added to the kit.`}
               </Text>
               <DeploymentTable
                 mode='pipeline'
-                params={{ status: deploymentStatus.READY }}
+                params={{ status: deploymentStatus.READY, sold: true }}
                 tableName='fleet-trip-pick-deployments'
                 selection='picker'
                 tableState={deploymentTable}

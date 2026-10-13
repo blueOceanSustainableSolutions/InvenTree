@@ -214,7 +214,7 @@ export function newDeploymentFields({
     deployment: {
       value: deployment,
       filters: {
-        pipeline: true,
+        sold: true,
         device_detail: true,
         site_detail: true
       }

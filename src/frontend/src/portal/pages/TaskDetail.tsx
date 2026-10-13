@@ -93,7 +93,12 @@ export default function TaskDetail(): ReactNode {
             {task.verification_override_reason}
           </Alert>
         )}
-        {state.isProposed && (
+        {state.isProposed && task.awaiting_device && (
+          <Alert color='yellow' icon={<IconInfoCircle />}>
+            {t`The device is not built yet. The task can start once it is ready.`}
+          </Alert>
+        )}
+        {state.isProposed && !task.awaiting_device && (
           <Alert color='blue' icon={<IconInfoCircle />}>
             {t`Start the task to fill in the checklist and record the work.`}
           </Alert>
@@ -119,7 +124,9 @@ export default function TaskDetail(): ReactNode {
                           ? `${task.device_detail.part_name} #${task.device_detail.serial}`
                           : task.device}
                       </Anchor>
-                    ) : undefined
+                    ) : (
+                      t`Not built yet`
+                    )
                 },
                 {
                   ...fields.deployment,

@@ -13,7 +13,8 @@ real unit.
   fleet Deploy action puts a device in the water.
 
 "New deployment" means choosing one of these units and planning its site,
-date and trip (new_deployment).
+date and trip (new_deployment). The plan list shows only the units which
+belong to a sale (sold_q): deploying a unit ships it from its sales order.
 
 The fleet has an outside view of the build order: it follows its status and
 target date, but never creates or changes it. Manufacturing owns the build.
@@ -22,7 +23,7 @@ target date, but never creates or changes it. Manufacturing owns the build.
 from datetime import date
 
 from django.core.exceptions import ValidationError
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils.translation import gettext_lazy as _
 
 import structlog
@@ -131,14 +132,73 @@ def on_build_saved(build) -> Deployment | None:
 
     elif build.status == BuildStatus.CANCELLED.value:
         if deployment.status in SYNC_STATUSES:
-            deployment.status = DeploymentStatus.CANCELLED.value
-            deployment.save()
-            trigger_status_event(deployment)
+            cancel_build_deployment(deployment)
 
     elif build.status == BuildStatus.COMPLETE.value:
         sync_build_output(deployment)
 
     return deployment
+
+
+def cancel_build_deployment(deployment: Deployment) -> Alert:
+    """Cancel the deployment of a cancelled build order, and raise an alert.
+
+    Its deployment tasks which have not started are taken off their trips
+    (PROPOSED again, kit lines removed) but kept, linked to the alert, so the
+    team decides what to do with them. The BUILD_CANCELLED alert is notified
+    and stays open until someone resolves it.
+    """
+    from fleet.services import maintenance
+    from fleet.services.deployment import open_deploy_tasks
+    from fleet.services.monitoring import open_or_update_alert
+    from fleet.services.planning import notify_pipeline_alert
+
+    deployment.status = DeploymentStatus.CANCELLED.value
+    deployment.save()
+    trigger_status_event(deployment)
+
+    tasks = list(open_deploy_tasks(deployment).select_related('trip'))
+    trips = sorted({task.trip.reference for task in tasks if task.trip is not None})
+
+    for task in tasks:
+        if task.trip is not None:
+            maintenance.unschedule_task(task)
+
+    reference = deployment.build.reference
+
+    message = (
+        str(_('Build order'))
+        + f' {reference} '
+        + str(_('was cancelled: deployment'))
+        + f' {deployment.reference} '
+        + str(_('is cancelled'))
+    )
+
+    if trips:
+        message += (
+            '. '
+            + str(_('Its task was taken off trip'))
+            + f' {", ".join(trips)} '
+            + str(_('and kept open'))
+        )
+
+    alert, event = open_or_update_alert(
+        f'dp:{deployment.pk}:{Alert.AlertType.BUILD_CANCELLED.value}',
+        Alert.AlertType.BUILD_CANCELLED,
+        AlertSeverity.WARNING.value,
+        message,
+        deployment=deployment,
+        site=deployment.site,
+        data={'build': reference, 'trips': trips},
+    )
+
+    for task in tasks:
+        task.alerts.add(alert)
+
+    if event == 'opened':
+        notify_pipeline_alert(alert)
+
+    return alert
 
 
 def get_build_output(build):
@@ -198,10 +258,15 @@ def sync_build_output(deployment: Deployment) -> bool:
             changed = True
 
     if changed:
+        from fleet.services.deployment import attach_unit
+
         deployment.save()
 
         if deployment.status != previous_status:
             trigger_status_event(deployment)
+
+        # Scheduled on a trip before it was built: the trip gets the device
+        attach_unit(deployment)
 
     return changed
 
@@ -258,9 +323,7 @@ def sync_missed_builds() -> int:
     for deployment in Deployment.objects.filter(
         status__in=SYNC_STATUSES, build__status=BuildStatus.CANCELLED.value
     ):
-        deployment.status = DeploymentStatus.CANCELLED.value
-        deployment.save()
-        trigger_status_event(deployment)
+        cancel_build_deployment(deployment)
         count += 1
 
     return count
@@ -393,6 +456,65 @@ def is_shipped(stock_item) -> bool:
         and stock_item.consumed_by_id is None
         and stock_item.status not in GONE_STOCK_STATUSES
     )
+
+
+def sold_q(prefix: str = '') -> Q:
+    """Q for the pipeline deployments whose unit belongs to a sale.
+
+    Only these appear in the plan list: deploying a unit ships it from its
+    sales order (see fleet.services.sales). A unit belongs to a sale when:
+
+    - it is allocated to an open sales order, and not shipped yet
+    - it has been shipped on a sales order, and is not coming back
+    - its build order is for an open sales order, and it was never shipped
+
+    A recovered device needs a new sale: its old order does not count.
+    """
+    from order.models import ReturnOrderLineItem, SalesOrderAllocation
+    from order.status_codes import SalesOrderStatusGroups
+
+    device = OuterRef(f'{prefix}device')
+
+    allocated = Exists(
+        SalesOrderAllocation.objects.filter(
+            item=device,
+            shipment__shipment_date__isnull=True,
+            line__order__status__in=SalesOrderStatusGroups.OPEN,
+        )
+    )
+
+    ever_shipped = Exists(
+        SalesOrderAllocation.objects.filter(
+            item=device, shipment__shipment_date__isnull=False
+        )
+    )
+
+    returning = Exists(
+        ReturnOrderLineItem.objects.filter(
+            item=device,
+            received_date__isnull=True,
+            order__status__in=ReturnOrderStatusGroups.OPEN,
+        )
+    )
+
+    shipped = (
+        Q(**{
+            f'{prefix}device__customer__isnull': False,
+            f'{prefix}device__sales_order__isnull': False,
+        })
+        & ~returning
+    )
+
+    for_sale = Q(**{
+        f'{prefix}build__sales_order__status__in': SalesOrderStatusGroups.OPEN
+    }) & ~ever_shipped
+
+    return allocated | shipped | for_sale
+
+
+def is_sold(deployment: Deployment) -> bool:
+    """True if the unit of a deployment belongs to a sale (see sold_q)."""
+    return Deployment.objects.filter(pk=deployment.pk).filter(sold_q()).exists()
 
 
 def ensure_unit_deployment(stock_item, device_type: FleetDeviceType | None = None):

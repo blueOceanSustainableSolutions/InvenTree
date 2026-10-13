@@ -47,7 +47,8 @@ export function useTaskState(task: any): TaskState {
       isProposed,
       inProgress,
       isOpen,
-      canStart: isProposed && canChange,
+      // A deployment task waits for its device to be built
+      canStart: isProposed && canChange && !task?.awaiting_device,
       canEdit: isOpen && canChange,
       canCancel: isOpen && canChange,
       canDelete:

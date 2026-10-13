@@ -30,7 +30,7 @@ from fleet.services import pipeline, planning
 from fleet.services.stock_sync import sync_stock_deployments
 from fleet.status_codes import AlertSeverity, AlertStatus, DeploymentStatus, TaskStatus
 from fleet.tasks import fleet_sync_pipeline
-from fleet.test_support import plan_unit
+from fleet.test_support import plan_unit, sales_order, sell_unit
 from InvenTree.helpers import current_date
 from InvenTree.unit_test import InvenTreeTestCase
 from order.status_codes import ReturnOrderStatus
@@ -160,6 +160,13 @@ class PipelineTest(FleetServiceTestBase):
         # Close to the deployment date and the device is not ready yet
         dep.target_date = current_date() + timedelta(days=3)
         dep.save()
+
+        # Only a unit sold is in the plan: no alert until the BO is for a sale
+        planning.pipeline_alerts()
+        self.assertFalse(Alert.objects.filter(deployment=dep).exists())
+
+        build.sales_order = sales_order(self.part)
+        build.save()
 
         codes = [risk['code'] for risk in pipeline.readiness_risks(dep)]
         self.assertEqual(codes, ['NOT_READY'])
@@ -489,8 +496,9 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertIsNone(device.location)
         self.assertFalse(device.in_stock)
 
+        # Shipped from its sales order (tracking 60), not just sent (100)
         codes = self.tracking_codes(device)
-        self.assertIn(StockHistoryCode.SENT_TO_CUSTOMER.value, codes)
+        self.assertIn(StockHistoryCode.SHIPPED_AGAINST_SALES_ORDER.value, codes)
         self.assertEqual(codes[-1], StockHistoryCode.FLEET_DEPLOYED.value)
 
         entry = StockItemTracking.objects.filter(
@@ -539,14 +547,15 @@ class DeploymentServiceTest(FleetServiceTestBase):
         with self.assertRaises(ValidationError):
             deployment_service.deploy(build.fleet_deployment)
 
+        # Not on a sales order: it cannot be deployed (shipping needs a sale)
+        unsold = plan_unit(
+            self.make_device('AUR-0299'), self.device_type, site=self.site, sold=False
+        )
+
+        with self.assertRaisesMessage(ValidationError, 'not on a sales order'):
+            deployment_service.deploy(unsold)
+
         dep = self.ready_deployment(serial='AUR-0300')
-
-        set_global_setting('FLEET_DEFAULT_CUSTOMER', '')
-
-        with self.assertRaises(ValidationError):
-            deployment_service.deploy(dep)
-
-        set_global_setting('FLEET_DEFAULT_CUSTOMER', self.customer.pk)
         deployment_service.deploy(dep)
 
         # The site is now occupied
@@ -739,6 +748,15 @@ class DeploymentServiceTest(FleetServiceTestBase):
         nxt.refresh_from_db()
         self.assertEqual(nxt.status, DeploymentStatus.READY.value)
 
+        # Its old sale does not count: it needs a new one to go out again
+        self.assertFalse(pipeline.is_sold(nxt))
+
+        with self.assertRaisesMessage(ValidationError, 'not on a sales order'):
+            deployment_service.deploy(nxt)
+
+        sell_unit(device)
+        self.assertTrue(pipeline.is_sold(nxt))
+
         deployment_service.deploy(nxt)
         nxt.refresh_from_db()
         self.assertEqual(nxt.status, DeploymentStatus.DEPLOYED.value)
@@ -746,6 +764,105 @@ class DeploymentServiceTest(FleetServiceTestBase):
         # Only deployed devices can be recovered
         with self.assertRaises(ValidationError):
             deployment_service.recover(dep)
+
+    def test_deploy_ships_from_sale(self):
+        """Deploying an allocated unit ships it alone; the other items wait."""
+        from order.models import SalesOrderLineItem, SalesOrderShipment
+
+        unit = self.make_device('AUR-0600')
+        allocation = sell_unit(unit, self.client_company)
+        order = allocation.line.order
+
+        # The unit sits on a pending shipment with a cable
+        shipment = SalesOrderShipment.objects.create(order=order, reference='1')
+        allocation.shipment = shipment
+        allocation.save()
+
+        cable = StockItem.objects.create(part=self.other_part, quantity=5, location=self.store)
+        cable_line = SalesOrderLineItem.objects.create(
+            order=order, part=self.other_part, quantity=5
+        )
+        cable_allocation = cable_line.allocations.create(
+            item=cable, quantity=5, shipment=shipment
+        )
+
+        dep = plan_unit(unit, self.device_type, site=self.site)
+        self.assertTrue(pipeline.is_sold(dep))
+
+        deployment_service.deploy(dep, user=self.user)
+
+        unit.refresh_from_db()
+        allocation.refresh_from_db()
+        cable_allocation.refresh_from_db()
+        dep.refresh_from_db()
+
+        # The unit went out on a shipment of its own, named after the deployment
+        self.assertEqual(unit.customer, self.client_company)
+        self.assertEqual(unit.sales_order, order)
+        self.assertEqual(dep.client, self.client_company)
+        self.assertEqual(allocation.shipment.reference, dep.reference)
+        self.assertIsNotNone(allocation.shipment.shipment_date)
+        self.assertEqual(allocation.line.shipped, 1)
+
+        # The cable stays on the pending shipment for the office
+        self.assertEqual(cable_allocation.shipment, shipment)
+        shipment.refresh_from_db()
+        self.assertIsNone(shipment.shipment_date)
+        self.assertTrue(cable.in_stock)
+
+        # Shipped and deployed: still sold (with the customer), not in the pipeline
+        self.assertEqual(dep.status, DeploymentStatus.DEPLOYED.value)
+
+    def test_deploy_ships_from_build_sale(self):
+        """A unit whose build order is for a sale is allocated and shipped on deploy."""
+        order = sales_order(self.part, self.client_company)
+        build = self.make_build(sales_order=order)
+        build.issue_build()
+
+        output = build.create_build_output(1, serials=['AUR-0610']).first()
+        build.complete_build_output(output, None)
+        fleet_sync_pipeline()
+
+        dep = Deployment.objects.get(build=build)
+        self.assertEqual(dep.status, DeploymentStatus.READY.value)
+        self.assertTrue(pipeline.is_sold(dep))
+
+        deployment_service.deploy(dep, user=self.user)
+
+        output.refresh_from_db()
+        line = order.lines.get()
+
+        self.assertEqual(output.customer, self.client_company)
+        self.assertEqual(output.sales_order, order)
+        self.assertEqual(line.shipped, 1)
+        self.assertEqual(order.shipments.get().reference, dep.reference)
+
+    def test_unsold_not_planned(self):
+        """A unit which is not on a sales order is not in the plan, nor on a trip."""
+        from fleet.services import plan, trips
+
+        dep = plan_unit(
+            self.make_device('AUR-0620'), self.device_type, site=self.site, sold=False
+        )
+
+        self.assertFalse(pipeline.is_sold(dep))
+        self.assertNotIn(dep.pk, [row['pk'] for row in plan.plan_rows()])
+
+        trip = trips.create_trip(title='Sagres', start_date=current_date())
+
+        with self.assertRaisesMessage(ValidationError, 'not on a sales order'):
+            deployment_service.schedule(dep, trip)
+
+        # Allocated to a sales order: in the plan
+        sell_unit(dep.device)
+        self.assertIn(dep.pk, [row['pk'] for row in plan.plan_rows()])
+
+        # A build order which is not for a sale is not in the plan either
+        build = self.make_build()
+        build.issue_build()
+        self.assertNotIn(
+            Deployment.objects.get(build=build).pk, [row['pk'] for row in plan.plan_rows()]
+        )
 
     def test_replacement(self):
         """Deploying a replacement recovers the device it replaces."""
@@ -825,3 +942,173 @@ class DeploymentServiceTest(FleetServiceTestBase):
         self.assertIsNone(deployment_service.compute_next_pm(dep))
         dep.refresh_from_db()
         self.assertIsNone(dep.next_pm_date)
+
+
+class UnbuiltTripTest(FleetServiceTestBase):
+    """A device which is not built yet can be scheduled on a field trip."""
+
+    def issued_deployment(self):
+        """Issue a fleet build order for a sale: an IN_PRODUCTION deployment, no unit yet."""
+        build = self.make_build(sales_order=sales_order(self.part))
+        build.issue_build()
+
+        dep = Deployment.objects.get(build=build)
+        dep.site = self.site
+        dep.target_date = current_date() + timedelta(days=3)
+        dep.save()
+
+        return build, dep
+
+    def test_schedule_before_built(self):
+        """The task waits for the unit; completing the build schedules it."""
+        from fleet.models import TripKitLine
+        from fleet.services import maintenance, trips
+
+        build, dep = self.issued_deployment()
+        self.assertTrue(dep.can_schedule)
+        self.assertFalse(dep.can_deploy)
+
+        trip = trips.create_trip(
+            title='Algarve', start_date=current_date(), deployments=[dep]
+        )
+
+        # The deployment keeps its status: it still warns it is not ready
+        dep.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.IN_PRODUCTION.value)
+        self.assertEqual(
+            [risk['code'] for risk in pipeline.readiness_risks(dep)], ['NOT_READY']
+        )
+
+        task = MaintenanceTask.objects.get(deployment=dep)
+        self.assertEqual(task.trip, trip)
+        self.assertEqual(task.status, TaskStatus.SCHEDULED.value)
+        self.assertIsNone(task.device)
+        self.assertTrue(task.awaiting_device)
+        self.assertFalse(TripKitLine.objects.filter(task=task).exists())
+
+        # The kit suggestion skips the device which is not built
+        planning.suggest_kit(trip, apply=False)
+
+        with self.assertRaises(ValidationError):
+            maintenance.start(task)
+
+        # The output is created: the task gets the device, and the kit line
+        output = build.create_build_output(1, serials=['AUR-0170']).first()
+        fleet_sync_pipeline()
+
+        task.refresh_from_db()
+        self.assertEqual(task.device, output)
+        self.assertTrue(task.awaiting_device)
+        self.assertTrue(
+            TripKitLine.objects.filter(task=task, stock_item=output).exists()
+        )
+
+        # Completing the build makes the deployment SCHEDULED (not READY)
+        build.complete_build_output(output, None)
+        build.complete_build(None)
+
+        dep.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.SCHEDULED.value)
+
+        task.refresh_from_db()
+        self.assertFalse(task.awaiting_device)
+
+        maintenance.start(task)
+        task.refresh_from_db()
+        self.assertEqual(task.status, TaskStatus.IN_PROGRESS.value)
+
+    def test_unschedule_before_built(self):
+        """Taken off the trip, an unbuilt deployment keeps its status."""
+        from fleet.services import trips
+
+        _build, dep = self.issued_deployment()
+        trip = trips.create_trip(
+            title='Algarve', start_date=current_date(), deployments=[dep]
+        )
+        task = MaintenanceTask.objects.get(deployment=dep)
+
+        trips.remove_task(trip, task)
+
+        task.refresh_from_db()
+        dep.refresh_from_db()
+        self.assertIsNone(task.trip)
+        self.assertEqual(task.status, TaskStatus.PROPOSED.value)
+        self.assertEqual(dep.status, DeploymentStatus.IN_PRODUCTION.value)
+
+    def test_cancel_build_alerts_and_releases_task(self):
+        """A cancelled build order raises an alert; its task leaves the trip, kept."""
+        from fleet.models import TripKitLine
+        from fleet.services import trips
+
+        build, dep = self.issued_deployment()
+        trip = trips.create_trip(
+            title='Algarve', start_date=current_date(), deployments=[dep]
+        )
+        task = MaintenanceTask.objects.get(deployment=dep)
+
+        # The unit exists, so the trip kit has its device line
+        build.create_build_output(1, serials=['AUR-0171'])
+        fleet_sync_pipeline()
+        self.assertTrue(TripKitLine.objects.filter(task=task).exists())
+
+        set_global_setting(
+            'FLEET_TEAMS_WEBHOOK_URL', 'https://example.webhook.office.com/fleet'
+        )
+
+        with (
+            mock.patch('fleet.notify.requests.post') as teams,
+            mock.patch('fleet.notify.on_commit', side_effect=lambda func: func()),
+        ):
+            build.cancel_build(None)
+
+        dep.refresh_from_db()
+        task.refresh_from_db()
+        self.assertEqual(dep.status, DeploymentStatus.CANCELLED.value)
+
+        # The task is kept, off the trip, without kit lines
+        self.assertEqual(task.status, TaskStatus.PROPOSED.value)
+        self.assertIsNone(task.trip)
+        self.assertFalse(TripKitLine.objects.filter(task=task).exists())
+
+        alert = Alert.objects.get(
+            deployment=dep, alert_type=Alert.AlertType.BUILD_CANCELLED
+        )
+        self.assertEqual(alert.status, AlertStatus.OPEN.value)
+        self.assertEqual(alert.severity, AlertSeverity.WARNING.value)
+        self.assertIn(build.reference, alert.message)
+        self.assertIn(trip.reference, alert.message)
+        self.assertEqual(list(task.alerts.all()), [alert])
+        self.assertEqual(teams.call_count, 1)
+
+        # The daily planning does not resolve it
+        planning.pipeline_alerts()
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, AlertStatus.OPEN.value)
+
+    def test_trip_api_accepts_unbuilt(self):
+        """The trip form accepts a deployment which is in production."""
+        from django.urls import reverse
+
+        _build, dep = self.issued_deployment()
+        self.assignRole('fleet.add')
+        self.assignRole('fleet.change')
+
+        response = self.client.post(
+            reverse('api-fleet-trip-list'),
+            {
+                'title': 'Sagres',
+                'start_date': str(current_date()),
+                'deployments': [dep.pk],
+            },
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+
+        task = MaintenanceTask.objects.get(deployment=dep)
+        self.assertEqual(task.trip_id, response.json()['pk'])
+
+        detail = self.client.get(
+            reverse('api-fleet-task-detail', kwargs={'pk': task.pk})
+        ).json()
+        self.assertTrue(detail['awaiting_device'])
+        self.assertIsNone(detail['device'])

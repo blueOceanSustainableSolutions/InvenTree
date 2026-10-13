@@ -98,6 +98,9 @@ def task_name(task: MaintenanceTask) -> str:
     if site is not None:
         return site.name
 
+    if task.device is None:
+        return task.deployment.reference if task.deployment else task.reference
+
     return task.device.serial or str(task.device)
 
 
@@ -483,6 +486,11 @@ def start(task: MaintenanceTask, user=None) -> MaintenanceTask:
 
     if not task.can_start:
         raise ValidationError(_('Only a proposed or scheduled task can be started'))
+
+    if task.awaiting_device:
+        raise ValidationError(
+            _('The device is not built yet: the task can start once it is ready')
+        )
 
     task.status = TaskStatus.IN_PROGRESS.value
     task.started_at = timezone.now()

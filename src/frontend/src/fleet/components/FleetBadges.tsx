@@ -169,6 +169,8 @@ export function alertTypeLabel(alertType: string): string {
       return t`Maintenance due`;
     case 'PM_OVERDUE':
       return t`Maintenance overdue`;
+    case 'BUILD_CANCELLED':
+      return t`Build order cancelled`;
     // Retired types (no longer raised), kept for older alerts
     case 'BUILD_LATE':
       return t`Build late`;
@@ -189,6 +191,7 @@ export function alertTypeChoices() {
     'PM_DUE',
     'PM_OVERDUE',
     'NOT_READY',
+    'BUILD_CANCELLED',
     'BUILD_LATE',
     'NO_DEPLOY_DATE',
     'PARTS_SHORT'

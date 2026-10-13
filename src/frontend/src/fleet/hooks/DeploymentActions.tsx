@@ -194,7 +194,7 @@ export function useDeploymentActions({
     },
     preFormContent: (
       <Alert color='blue' icon={<IconInfoCircle />}>
-        {t`A device in stock is assigned to the client of the deployment or site (or the default fleet customer) and leaves stock. A device already shipped to a customer stays with that customer. Shipping alone never deploys a device. The site and the position are optional and can be set later.`}
+        {t`A device in stock is shipped on its own from its sales order (in a shipment of its own) and leaves stock. A device already shipped to a customer stays with that customer. Shipping alone never deploys a device. The site and the position are optional and can be set later.`}
       </Alert>
     ),
     successMessage: t`Device deployed`,

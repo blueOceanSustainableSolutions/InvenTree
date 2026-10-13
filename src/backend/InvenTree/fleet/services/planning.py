@@ -33,7 +33,7 @@ from fleet.services.monitoring import (
     open_or_update_alert,
     resolve_alert,
 )
-from fleet.services.pipeline import readiness_risks
+from fleet.services.pipeline import readiness_risks, sold_q
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatusGroups,
@@ -277,9 +277,13 @@ def pipeline_alerts(today: date | None = None) -> dict:
     active_keys = set()
     notified = 0
 
-    deployments = Deployment.objects.filter(
-        status__in=DeploymentStatusGroups.PIPELINE
-    ).select_related('site', 'device', 'build')
+    # Only the units in the plan list: those which belong to a sale
+    deployments = (
+        Deployment.objects
+        .filter(status__in=DeploymentStatusGroups.PIPELINE)
+        .filter(sold_q())
+        .select_related('site', 'device', 'build')
+    )
 
     for deployment in deployments:
         for risk in readiness_risks(deployment, today=today):
@@ -404,6 +408,10 @@ def suggest_kit(trip, apply: bool = True) -> list[dict]:
             and deployment is not None
             and deployment.status in DeploymentStatusGroups.PIPELINE
         ):
+            if task.device is None:
+                # Not built yet: its device line comes with the unit
+                continue
+
             trips.add_line(
                 lines,
                 task.device.part,

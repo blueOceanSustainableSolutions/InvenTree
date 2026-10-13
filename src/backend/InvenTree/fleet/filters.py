@@ -16,6 +16,7 @@ from fleet.models import (
     Site,
 )
 from fleet.services.device_state import decommissioned_q
+from fleet.services.pipeline import sold_q
 from fleet.status_codes import (
     AlertStatusGroups,
     DeploymentStatus,
@@ -102,6 +103,16 @@ class DeploymentFilter(FilterSet):
         if str2bool(value):
             return queryset.filter(status__in=DeploymentStatusGroups.PIPELINE)
         return queryset.exclude(status__in=DeploymentStatusGroups.PIPELINE)
+
+    sold = rest_filters.BooleanFilter(label=_('Sold'), method='filter_sold')
+
+    def filter_sold(self, queryset, name, value):
+        """Pipeline deployments whose unit belongs to a sale (the plan list)."""
+        sold = Q(status__in=DeploymentStatusGroups.PIPELINE) & sold_q()
+
+        if str2bool(value):
+            return queryset.filter(sold)
+        return queryset.exclude(sold)
 
     active = rest_filters.BooleanFilter(label=_('Active'), method='filter_active')
 

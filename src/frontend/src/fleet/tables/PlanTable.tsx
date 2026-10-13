@@ -44,8 +44,10 @@ function KindBadge({ kind }: Readonly<{ kind: string }>) {
  *
  * The order comes from the server: first the next planning-horizon days
  * (overdue first) by date, then the rows without a date, then the later
- * dates. Rows can be ticked and grouped into a field trip ("Create Field
- * Trip" / "Add to Trip").
+ * dates. Rows on the same date (and the rows without a date) go by
+ * readiness: ready, in production, planned, then by build target date.
+ * Rows can be ticked and grouped into a field trip ("Create Field Trip" /
+ * "Add to Trip").
  */
 export function PlanTable({
   params = {},
@@ -77,12 +79,18 @@ export function PlanTable({
     onUpdate: () => table.refreshTable()
   });
 
-  // A row which can be put on a trip: a ready device, or a deployed device
-  // (its maintenance), not already on a trip
+  // A row which can be put on a trip, if not already on one: a deployed
+  // device (its maintenance), or a device to deploy, built or not (a device
+  // which is not built yet can only be deployed once it is ready)
   const canSelect = useCallback(
     (record: any): boolean =>
       !record.trip &&
-      (record.kind == 'maintenance' || record.status == deploymentStatus.READY),
+      (record.kind == 'maintenance' ||
+        [
+          deploymentStatus.PLANNED,
+          deploymentStatus.IN_PRODUCTION,
+          deploymentStatus.READY
+        ].includes(record.status)),
     [deploymentStatus]
   );
 
@@ -199,6 +207,12 @@ export function PlanTable({
           )
       },
       {
+        accessor: 'build_title',
+        title: t`Device Info`,
+        sortable: false,
+        render: (record: any) => record.build_title || '-'
+      },
+      {
         accessor: 'trip_reference',
         title: t`Trip`,
         sortable: false,
@@ -246,7 +260,7 @@ export function PlanTable({
       <AddItemButton
         key='new-deployment'
         hidden={!user.hasChangeRole(UserRoles.fleet)}
-        tooltip={t`Choose a device which is not deployed, and plan where and when it goes`}
+        tooltip={t`Choose a device on a sales order which is not deployed, and plan where and when it goes`}
         text={t`New Deployment`}
         onClick={() => newDeployment.open()}
       />
