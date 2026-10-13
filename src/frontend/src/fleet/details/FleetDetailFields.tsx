@@ -132,27 +132,6 @@ export function deploymentDetailFields(
         <Text size='sm' c='orange'>{t`Not built yet, no build order`}</Text>
       )
     },
-    {
-      type: 'string',
-      name: 'platform_id',
-      label: t`Platform ID`,
-      icon: 'link',
-      hidden: !deployment.device,
-      value_formatter: () =>
-        deployment.platform_id ? (
-          deployment.platform_id
-        ) : (
-          <Text size='sm' c='orange'>{t`Not configured`}</Text>
-        )
-    },
-    {
-      type: 'link',
-      name: 'build',
-      label: t`Build Order`,
-      icon: 'build',
-      model: ModelType.build,
-      hidden: !deployment.build
-    },
     // Outside view of the build order (read only): is it done, and when is
     // it due. The fleet does not create or change build orders.
     {
