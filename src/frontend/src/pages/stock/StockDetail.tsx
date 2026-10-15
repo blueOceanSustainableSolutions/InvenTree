@@ -19,6 +19,7 @@ import {
   IconChecklist,
   IconHistory,
   IconInfoCircle,
+  IconListCheck,
   IconPackages,
   IconSearch,
   IconShoppingCart,
@@ -670,6 +671,25 @@ export default function StockDetail() {
         icon: <IconBoxPadding />,
         hidden: !showInstalledItems,
         content: <InstalledItemsTable stockItem={stockitem} />
+      },
+      {
+        name: 'consumed-stock',
+        label: t`Consumed Stock`,
+        icon: <IconListCheck />,
+        hidden: !stockitem.quick_build,
+        content: stockitem.quick_build ? (
+          <StockItemTable
+            allowAdd={false}
+            tableName='quick-build-consumed'
+            showLocation={false}
+            defaultInStock={null}
+            params={{
+              consumed_by_quick_build: stockitem.quick_build
+            }}
+          />
+        ) : (
+          <Skeleton />
+        )
       },
       {
         name: 'fleet',

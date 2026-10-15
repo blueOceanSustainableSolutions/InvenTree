@@ -132,6 +132,7 @@ class FleetDeviceBriefSerializer(InvenTreeModelSerializer):
             'location',
             'is_building',
             'build',
+            'quick_build',
         ]
         read_only_fields = fields
 

@@ -105,12 +105,31 @@ export function DeviceMaterialsPanel({
 }: Readonly<{ deployment: any }>) {
   const device = deployment.device_detail;
   const builtBy = device?.build;
+  const quickBuiltBy = device?.quick_build;
 
   if (device) {
+    if (quickBuiltBy) {
+      return (
+        <Stack gap='xs'>
+          <Text size='sm' c='dimmed'>
+            {t`Stock consumed by the quick build which made this device.`}
+          </Text>
+          <StockItemTable
+            tableName='fleet-device-quick-build-consumed-stock'
+            allowAdd={false}
+            showLocation={false}
+            showPricing={false}
+            defaultInStock={null}
+            params={{ consumed_by_quick_build: quickBuiltBy }}
+          />
+        </Stack>
+      );
+    }
+
     if (!builtBy) {
       return (
         <Alert color='blue' icon={<IconInfoCircle />}>
-          {t`This device has no build order, so its consumed stock is not known.`}
+          {t`This device has no build order or quick build, so its consumed stock is not known.`}
         </Alert>
       );
     }

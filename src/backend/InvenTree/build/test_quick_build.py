@@ -167,6 +167,32 @@ class QuickBuildTest(InvenTreeAPITestCase):
         response = self.get(reverse('api-quick-build-list'), expected_code=200)
         self.assertEqual(len(response.data), 2)
 
+    def test_consumed_stock_list(self):
+        """The consumed stock of a quick build output is listed via the stock API."""
+        quick_build = QuickBuild.objects.get(pk=self.quick_build().data['pk'])
+        output = quick_build.output
+
+        # The output references its quick build (used by the stock item page)
+        response = self.get(
+            reverse('api-stock-detail', kwargs={'pk': output.pk}), expected_code=200
+        )
+        self.assertEqual(response.data['quick_build'], quick_build.pk)
+
+        # Consumed (out of stock) items are listed by the quick build filter
+        response = self.get(
+            reverse('api-stock-list'),
+            {'consumed_by_quick_build': quick_build.pk},
+            expected_code=200,
+        )
+
+        self.assertEqual(
+            {item['part'] for item in response.data}, {self.rope.pk, self.thimble.pk}
+        )
+
+        for item in response.data:
+            self.assertEqual(item['consumed_by_quick_build'], quick_build.pk)
+            self.assertFalse(item['in_stock'])
+
     def test_quick_build_insufficient_stock(self):
         """Nothing is consumed when the source stock does not cover the requirement."""
         self.reel.quantity = 2
