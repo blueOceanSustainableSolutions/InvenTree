@@ -1584,23 +1584,11 @@ class BuildLineSerializer(
         data = super().validate(data)
         if self.instance is None:
             part = data.get('custom_part')
-            build = data.get('build')
             if not part:
                 raise ValidationError({'custom_part': _('A part must be selected')})
             if data.get('quantity', 0) <= 0:
                 raise ValidationError({
                     'quantity': _('Quantity must be greater than zero')
-                })
-            if (
-                BuildLine.objects
-                .filter(build=build)
-                .filter(Q(custom_part=part) | Q(bom_item__sub_part=part))
-                .exists()
-            ):
-                raise ValidationError({
-                    'custom_part': _(
-                        'This part is already required by the build order; edit that line instead.'
-                    )
                 })
         elif 'custom_part' in data and data['custom_part'] != self.instance.custom_part:
             raise ValidationError({'custom_part': _('The part cannot be changed')})

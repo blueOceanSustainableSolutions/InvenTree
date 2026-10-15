@@ -164,10 +164,23 @@ class CustomBuildRequirementTests(InvenTreeAPITestCase):
         self.assertEqual(response.data['part'], self.component.pk)
         self.assertTrue(BuildLine.objects.filter(pk=response.data['pk']).exists())
 
-    def test_duplicate_and_destructive_edits_are_rejected(self):
+    def test_duplicate_requirements_are_allowed(self):
+        """The same part can be required on multiple independent lines."""
+        line = BuildLine.objects.get(pk=self.create_requirement().data['pk'])
+        duplicate = BuildLine.objects.get(
+            pk=self.create_requirement(quantity=1).data['pk']
+        )
+        self.assertNotEqual(line.pk, duplicate.pk)
+        self.assertEqual(
+            BuildLine.objects.filter(
+                build=self.build, custom_part=self.component
+            ).count(),
+            2,
+        )
+
+    def test_destructive_edits_are_rejected(self):
         """A requirement stays consistent with its allocation and consumption."""
         line = BuildLine.objects.get(pk=self.create_requirement().data['pk'])
-        self.create_requirement(quantity=1, expected_code=400)
 
         BuildItem.objects.create(build_line=line, stock_item=self.stock, quantity=1)
         detail = reverse('api-build-line-detail', kwargs={'pk': line.pk})

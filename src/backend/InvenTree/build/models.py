@@ -2107,11 +2107,6 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
                 ),
                 name='buildline_exactly_one_part_source',
             ),
-            models.UniqueConstraint(
-                fields=['build', 'custom_part'],
-                condition=Q(custom_part__isnull=False),
-                name='buildline_unique_custom_part',
-            ),
         ]
 
     @staticmethod
