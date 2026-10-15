@@ -188,9 +188,8 @@ export default function BuildAllocatedStockTable({
 
   const [selectedItems, setSelectedItems] = useState<any[]>([]);
 
-  const itemsToConsume = useMemo(() => {
-    return selectedItems.filter((item) => !item.part_detail?.trackable);
-  }, [selectedItems]);
+  // Consuming a tracked item installs it into its build output
+  const itemsToConsume = useMemo(() => selectedItems, [selectedItems]);
 
   const [consumeTaskId, setConsumeTaskId] = useState<string>('');
 
@@ -250,16 +249,13 @@ export default function BuildAllocatedStockTable({
 
   const rowActions = useCallback(
     (record: any): RowAction[] => {
-      const part = record.part_detail ?? {};
-      const trackable: boolean = part?.trackable ?? false;
-
       return [
         {
           color: 'green',
           icon: <IconCircleDashedCheck />,
           title: t`Consume`,
           tooltip: t`Consume Stock`,
-          hidden: !buildId || trackable || !user.hasChangeRole(UserRoles.build),
+          hidden: !buildId || !user.hasChangeRole(UserRoles.build),
           onClick: () => {
             setSelectedItems([record]);
             consumeStock.open();
@@ -331,8 +327,6 @@ export default function BuildAllocatedStockTable({
           enableBulkDelete: allowEdit && user.hasDeleteRole(UserRoles.build),
           enableDownload: true,
           enableSelection: allowEdit && user.hasChangeRole(UserRoles.build),
-          // Tracked items are installed when the output is completed, not consumed
-          isRecordSelectable: (record: any) => !record.part_detail?.trackable,
           rowActions: rowActions,
           tableActions: tableActions,
           tableFilters: tableFilters,

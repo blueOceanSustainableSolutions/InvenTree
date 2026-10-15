@@ -309,6 +309,11 @@ export default function BuildOutputTable({
               allocated += allocation.quantity;
             });
 
+          // Single-unit build: consumed tracked parts are installed in this output
+          if (build.quantity == 1) {
+            allocated += item.consumed ?? 0;
+          }
+
           if (allocated >= item.bom_item_detail.quantity) {
             fullyAllocatedCount += 1;
           }
@@ -319,7 +324,7 @@ export default function BuildOutputTable({
 
       return records;
     },
-    [partId, buildId, testTemplates, trackedItems]
+    [partId, buildId, build.quantity, testTemplates, trackedItems]
   );
 
   const buildOutputFields = useBuildOrderOutputFields({

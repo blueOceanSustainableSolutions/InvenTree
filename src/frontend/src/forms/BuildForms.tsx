@@ -1130,9 +1130,8 @@ export function useConsumeBuildLinesForm({
   buildLines: any[];
   onFormSuccess: (response: any) => void;
 }) {
-  const filteredLines = useMemo(() => {
-    return buildLines.filter((line) => !line.part_detail?.trackable);
-  }, [buildLines]);
+  // Consuming a tracked line installs its stock into the build output
+  const filteredLines = useMemo(() => buildLines, [buildLines]);
 
   const consumeFields: ApiFormFieldSet = useMemo(() => {
     return {

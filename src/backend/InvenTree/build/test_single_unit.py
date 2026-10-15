@@ -179,3 +179,26 @@ class SingleUnitBuildTest(InvenTreeAPITestCase):
 
         self.assertFalse(BuildItem.objects.filter(build_line=self.tracked_line).exists())
         self.assertTrue(BuildItem.objects.filter(build_line=self.screw_line).exists())
+
+    def test_consume_tracked_installs_into_output(self):
+        """Consuming a tracked allocation installs it, and the output stays fully allocated."""
+        from build.tasks import consume_build_stock
+
+        output = self.add_output('PROD-1')
+        self.allocate(self.tracked_line, self.spotter)
+        self.allocate(self.screw_line, self.screws, quantity=4)
+
+        consume_build_stock(self.build.pk, lines=[self.tracked_line.pk])
+
+        self.spotter.refresh_from_db()
+        self.tracked_line.refresh_from_db()
+        self.assertEqual(self.spotter.belongs_to, output)
+        self.assertEqual(self.tracked_line.consumed, 1)
+        self.assertFalse(BuildItem.objects.filter(build_line=self.tracked_line).exists())
+
+        self.assertTrue(self.build.is_output_fully_allocated(output))
+
+        self.build.complete_build_output(output, None)
+        output.refresh_from_db()
+        self.assertFalse(output.is_building)
+        self.assertEqual(list(output.installed_parts.all()), [self.spotter])

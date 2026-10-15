@@ -1954,6 +1954,17 @@ class Build(
                 q=Coalesce(Sum('quantity'), 0, output_field=models.DecimalField())
             )
 
+            # Tracked stock already consumed is installed in the output
+            if output is not None:
+                installed = output.installed_parts.filter(
+                    line.bom_item.get_stock_filter()
+                    if line.bom_item_id
+                    else Q(part=line.part)
+                ).aggregate(
+                    q=Coalesce(Sum('quantity'), 0, output_field=models.DecimalField())
+                )
+                allocated['q'] += installed['q']
+
             # The amount allocated against an output must at least equal the BOM quantity
             required_per_output = (
                 line.bom_item.quantity
