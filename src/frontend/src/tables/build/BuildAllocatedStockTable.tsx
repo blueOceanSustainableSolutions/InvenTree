@@ -331,6 +331,8 @@ export default function BuildAllocatedStockTable({
           enableBulkDelete: allowEdit && user.hasDeleteRole(UserRoles.build),
           enableDownload: true,
           enableSelection: allowEdit && user.hasChangeRole(UserRoles.build),
+          // Tracked items are installed when the output is completed, not consumed
+          isRecordSelectable: (record: any) => !record.part_detail?.trackable,
           rowActions: rowActions,
           tableActions: tableActions,
           tableFilters: tableFilters,

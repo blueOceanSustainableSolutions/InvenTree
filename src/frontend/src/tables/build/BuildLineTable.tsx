@@ -557,6 +557,16 @@ export default function BuildLineTable({
         hidden: !!output?.pk,
         minWidth: 125,
         render: (record: any) => {
+          if (record.trackable) {
+            // Tracked parts are installed into the build output, not consumed
+            return (
+              <Text
+                size='sm'
+                style={{ fontStyle: 'italic' }}
+              >{t`Not applicable`}</Text>
+            );
+          }
+
           return record.consumable ? (
             <Text
               size='sm'
