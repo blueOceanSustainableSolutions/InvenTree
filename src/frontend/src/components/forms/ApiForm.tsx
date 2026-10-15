@@ -79,6 +79,10 @@ export function OptionsApiForm({
   const optionsQuery = useQuery({
     enabled: opened !== false && props.ignorePermissionCheck !== true,
     refetchOnMount: false,
+    // Discard cached options once the form closes. Reusing them renders the
+    // fields before the refetch on open, which then remounts them and drops
+    // pre-filled related values (e.g. sales_order on a new build order)
+    gcTime: 0,
     queryKey: [
       'form-options-data',
       id,
