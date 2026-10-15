@@ -88,12 +88,10 @@ function NoItems() {
  */
 function BuildLinesPanel({
   build,
-  isLoading,
-  hasItems
+  isLoading
 }: Readonly<{
   build: any;
   isLoading: boolean;
-  hasItems: boolean;
 }>) {
   const bomInformation = useInstance({
     endpoint: ApiEndpoints.bom_validate,
@@ -111,10 +109,6 @@ function BuildLinesPanel({
 
   if (isLoading || !build.pk) {
     return <Skeleton w={'100%'} h={400} animate />;
-  }
-
-  if (!hasItems) {
-    return <NoItems />;
   }
 
   return (
@@ -487,7 +481,6 @@ export default function BuildDetail() {
           <BuildLinesPanel
             build={build}
             isLoading={buildLineQuery.isFetching || buildLineQuery.isLoading}
-            hasItems={buildLineData?.count > 0}
           />
         )
       },
