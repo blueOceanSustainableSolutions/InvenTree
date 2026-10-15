@@ -232,6 +232,20 @@ class Build(
                     {'responsible': _('Responsible user or group must be specified')}
                 )
 
+        # A trackable assembly is built one serialized unit per build order
+        if (
+            self.part_id
+            and self.part.trackable
+            and self.quantity
+            and self.quantity > 1
+            and (self._state.adding or self.has_field_changed('quantity'))
+        ):
+            raise ValidationError({
+                'quantity': _(
+                    'Build orders for trackable parts are limited to a quantity of 1'
+                )
+            })
+
         # Prevent changing target part after creation
         if self.has_field_changed('part'):
             raise ValidationError({'part': _('Build order part cannot be changed')})
@@ -594,6 +608,15 @@ class Build(
         outputs = self.get_build_outputs(complete=False)
 
         return outputs
+
+    def single_incomplete_output(self):
+        """Return the only incomplete build output, or None if there is not exactly one.
+
+        Tracked stock allocated against the whole build order is installed into this output.
+        """
+        outputs = list(self.incomplete_outputs[:2])
+
+        return outputs[0] if len(outputs) == 1 else None
 
     @property
     def incomplete_count(self):

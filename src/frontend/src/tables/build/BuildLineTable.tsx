@@ -15,6 +15,7 @@ import type { TableFilter } from '@lib/types/Filters';
 import type { RowAction, TableColumn } from '@lib/types/Tables';
 import { t } from '@lingui/core/macro';
 import { Alert, Group, Paper, Text } from '@mantine/core';
+import { showNotification } from '@mantine/notifications';
 import {
   IconArrowRight,
   IconCircleCheck,
@@ -30,6 +31,7 @@ import type { DataTableRowExpansionProps } from 'mantine-datatable';
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
+import { useApi } from '../../contexts/ApiContext';
 import {
   useAllocateStockToBuildForm,
   useBuildAutoAllocateFields,
@@ -169,6 +171,7 @@ export default function BuildLineTable({
   output?: any;
   params?: any;
 }>) {
+  const api = useApi();
   const user = useUserState();
   const navigate = useNavigate();
   const buildStatus = useStatusCodes({ modelType: ModelType.build });
@@ -722,6 +725,37 @@ export default function BuildLineTable({
     }
   });
 
+  // Allocated from the build order, tracked parts go into its only incomplete
+  // output, so check there is exactly one before showing the stock picker
+  const openAllocation = useCallback(
+    async (rows: any[]) => {
+      if (!hasOutput && rows.some((r) => r.trackable)) {
+        const outputs: number = await api
+          .get(apiUrl(ApiEndpoints.stock_item_list), {
+            params: { build: build.pk, is_building: true, limit: 1 }
+          })
+          .then((response) => response.data?.count ?? 0)
+          .catch(() => 0);
+
+        if (outputs != 1) {
+          showNotification({
+            title: t`Create the build output first`,
+            message:
+              outputs == 0
+                ? t`Tracked parts are installed into the build output. Add the build output in the Incomplete Outputs tab, then allocate.`
+                : t`This build order has several incomplete outputs. Allocate tracked parts from the Incomplete Outputs tab.`,
+            color: 'orange'
+          });
+          return;
+        }
+      }
+
+      setSelectedRows(rows);
+      allocateStock.open();
+    },
+    [api, build.pk, hasOutput, allocateStock]
+  );
+
   const deallocateStock = useCreateApiFormModal({
     url: ApiEndpoints.build_order_deallocate,
     pk: build.pk,
@@ -843,15 +877,13 @@ export default function BuildLineTable({
         required > 0 &&
         (hasOutput ? trackable : true);
 
-      const disableAllocation = !hasOutput && trackable;
-
       // Can de-allocate
       const canDeallocate =
         in_production &&
         !consumable &&
         user.hasChangeRole(UserRoles.build) &&
         record.allocated > 0 &&
-        record.trackable == hasOutput;
+        (hasOutput ? trackable : true);
 
       const canOrder =
         !consumable &&
@@ -890,14 +922,9 @@ export default function BuildLineTable({
           icon: <IconArrowRight />,
           title: t`Allocate Stock`,
           hidden: !canAllocate,
-          disabled: disableAllocation,
-          tooltip: disableAllocation
-            ? t`Trackable parts must be allocated via the Build Outputs tab`
-            : t`Allocate Stock`,
           color: 'green',
           onClick: () => {
-            setSelectedRows([record]);
-            allocateStock.open();
+            openAllocation([record]);
           }
         },
         {
@@ -952,7 +979,7 @@ export default function BuildLineTable({
         })
       ];
     },
-    [user, navigate, output, build, buildStatus, isActive]
+    [user, navigate, output, build, buildStatus, isActive, openAllocation]
   );
 
   const tableActions = useMemo(() => {
@@ -1011,14 +1038,12 @@ export default function BuildLineTable({
             .filter((r) => r.allocatedQuantity < r.requiredQuantity)
             .filter((r) => !r.consumable);
 
+          // From the build order, tracked lines go into its only output
           if (hasOutput) {
             rows = rows.filter((r) => r.trackable);
-          } else {
-            rows = rows.filter((r) => !r.trackable);
           }
 
-          setSelectedRows(rows);
-          allocateStock.open();
+          openAllocation(rows);
         }}
       />,
       <ActionButton
@@ -1052,7 +1077,8 @@ export default function BuildLineTable({
     buildStatus,
     hasOutput,
     table.hasSelectedRecords,
-    table.selectedRecords
+    table.selectedRecords,
+    openAllocation
   ]);
 
   /**

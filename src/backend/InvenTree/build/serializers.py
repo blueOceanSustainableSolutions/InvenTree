@@ -911,10 +911,15 @@ class BuildUnallocationSerializer(serializers.Serializer):
         build = self.context['build']
 
         data = self.validated_data
+        build_line = data.get('build_line', None)
+        output = data.get('output', None)
 
-        build.deallocate_stock(
-            build_line=data.get('build_line', None), output=data.get('output', None)
-        )
+        if build_line and output is None and build_line.part.trackable:
+            # Tracked line deallocated from the build order: clear every output
+            build.allocated_stock.filter(build_line=build_line).delete()
+            return
+
+        build.deallocate_stock(build_line=build_line, output=output)
 
 
 class BuildAllocationItemSerializer(serializers.Serializer):
@@ -1014,13 +1019,19 @@ class BuildAllocationItemSerializer(serializers.Serializer):
 
             raise ValidationError({'quantity': _(f'Available quantity ({q}) exceeded')})
 
-        # Output *must* be set for trackable parts
+        # Tracked parts go into a build output. Allocated against the whole build
+        # order, they go into its only incomplete output.
         if output is None and build_line.part.trackable:
-            raise ValidationError({
-                'output': _(
-                    'Build output must be specified for allocation of tracked parts'
-                )
-            })
+            output = build_line.build.single_incomplete_output()
+
+            if output is None:
+                raise ValidationError({
+                    'output': _(
+                        'Tracked parts can only be allocated to a build order with exactly one incomplete build output. Create the build output first, or allocate from the build output.'
+                    )
+                })
+
+            data['output'] = output
 
         # Output *cannot* be set for un-tracked parts
         if output is not None and not build_line.part.trackable:
