@@ -17,6 +17,27 @@ _part_full_name_template = None
 _part_full_name_template_string = ''
 
 
+class _PartNameContext:
+    """Expose part fields to the name template without exposing the IPN.
+
+    The IPN is an independent purchasing / serial-number field.  It must not be
+    folded into the human-readable identifier for a part, even when an older
+    database still contains a PART_NAME_FORMAT template which references it.
+    """
+
+    def __init__(self, part):
+        self._part = part
+
+    @property
+    def IPN(self):
+        """Return no IPN when constructing a part display name."""
+        return None
+
+    def __getattr__(self, name):
+        """Delegate every other template field to the real part."""
+        return getattr(self._part, name)
+
+
 def compile_full_name_template(*args, **kwargs):
     """Recompile the template for rendering the 'full_name' attribute of a Part.
 
@@ -60,7 +81,7 @@ def render_part_full_name(part) -> str:
 
     if template:
         try:
-            return template.render(part=part)
+            return template.render(part=_PartNameContext(part))
         except Exception as e:
             logger.warning(
                 'exception while trying to create full name for part %s: %s',
@@ -69,7 +90,7 @@ def render_part_full_name(part) -> str:
             )
 
     # Fallback to the default format
-    elements = [el for el in [part.IPN, part.name, part.revision] if el]
+    elements = [el for el in [part.name, part.revision] if el]
     return ' | '.join(elements)
 
 

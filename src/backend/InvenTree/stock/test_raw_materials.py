@@ -29,7 +29,7 @@ class RawMaterialsTests(InvenTreeAPITestCase):
         def part(name, **kwargs):
             return Part.objects.create(name=name, component=True, **kwargs)
 
-        cls.screw = part('Screw', purchaseable=True)
+        cls.screw = part('Screw', purchaseable=True, IPN='SER-001')
         cls.pcb = part('PCB')
         cls.motor = part('Motor')
         cls.rope = part('Rope', units='m')
@@ -168,11 +168,12 @@ class RawMaterialsTests(InvenTreeAPITestCase):
         self.assertEqual(workbook.sheetnames, ['Summary', 'Detail'])
 
         summary = {
-            row[0]: row[3]
+            row[0]: row
             for row in workbook['Summary'].iter_rows(min_row=2, values_only=True)
         }
-        self.assertEqual(summary['Screw'], 5)
-        self.assertEqual(summary['Rope'], 1)
+        self.assertEqual(summary['Screw'][3], 5)
+        self.assertEqual(summary['Screw'][1], 'SER-001')
+        self.assertEqual(summary['Rope'][3], 1)
 
         detail = list(workbook['Detail'].iter_rows(min_row=2, values_only=True))
         screw = next(row for row in detail if row[6] == 'SCR-1')

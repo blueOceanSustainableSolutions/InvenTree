@@ -113,10 +113,10 @@ def explode(item: StockItem) -> list[dict]:
 def _label(item: StockItem) -> str:
     """Short description of a stock item for the 'via' column."""
     if item.serial:
-        return f'{item.part.full_name} #{item.serial}'
+        return f'{item.part.name} #{item.serial}'
     if item.batch:
-        return f'{item.part.full_name} ({item.batch})'
-    return item.part.full_name
+        return f'{item.part.name} ({item.batch})'
+    return item.part.name
 
 
 def summarize(rows: list[dict]) -> list[dict]:
@@ -132,7 +132,7 @@ def summarize(rows: list[dict]) -> list[dict]:
         if row['note']:
             entry['notes'].add(row['note'])
 
-    return sorted(totals.values(), key=lambda entry: entry['part'].full_name.lower())
+    return sorted(totals.values(), key=lambda entry: entry['part'].name.lower())
 
 
 XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -182,7 +182,7 @@ def build_workbook(item: StockItem, rows: list[dict]) -> bytes:
         [_('Part'), _('IPN'), _('Description'), _('Quantity'), _('Units'), _('Note')],
         [
             [
-                entry['part'].full_name,
+                entry['part'].name,
                 entry['part'].IPN or '',
                 entry['part'].description or '',
                 float(normalize(entry['quantity'])),
@@ -216,7 +216,7 @@ def build_workbook(item: StockItem, rows: list[dict]) -> bytes:
         ],
         [
             [
-                row['item'].part.full_name,
+                row['item'].part.name,
                 row['item'].part.IPN or '',
                 row['item'].pk,
                 row['item'].serial or '',

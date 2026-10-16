@@ -38,7 +38,7 @@ class BomItemTest(TestCase):
     def test_str(self):
         """Test the string representation of a BOMItem."""
         b = BomItem.objects.get(id=1)
-        self.assertEqual(str(b), '10 x M2x4 LPHS to make BOB | Bob | A2')
+        self.assertEqual(str(b), '10 x M2x4 LPHS to make Bob | A2')
 
     def test_has_bom(self):
         """Test the has_bom attribute."""

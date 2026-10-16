@@ -994,23 +994,23 @@ test('Parts - 404', async ({ browser }) => {
 test('Parts - Revisions', async ({ browser }) => {
   const page = await doCachedLogin(browser, { url: 'part/917/details' });
 
-  await page.getByText('ENCAB | Encabulator | C').first().waitFor();
+  await page.getByText('Encabulator | C').first().waitFor();
   await page.getByText('Select Part Revision').waitFor();
 
   // Link to the "revision_of" part
-  await page.getByRole('cell', { name: 'ENCAB | Encabulator | B' }).waitFor();
+  await page.getByRole('cell', { name: 'Encabulator | B' }).waitFor();
 
   // Select a revision
-  await page.getByText('ENCAB | Encabulator | CNo').click();
+  await page.getByText('Encabulator | CNo').click();
   await page
     .getByRole('option', {
-      name: 'Thumbnail ENCAB | Encabulator | C4 No stock'
+      name: 'Thumbnail Encabulator | C4 No stock'
     })
     .click();
 
   await page.waitForURL('**/web/part/920/**');
-  await page.getByText('Part: ENCAB | Encabulator | C4').first().waitFor();
-  await page.getByRole('link', { name: 'ENCAB | Encabulator | C' }).waitFor();
+  await page.getByText('Part: Encabulator | C4').first().waitFor();
+  await page.getByRole('link', { name: 'Encabulator | C' }).waitFor();
 });
 
 test('Parts - Bulk Edit', async ({ browser }) => {

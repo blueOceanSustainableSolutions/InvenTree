@@ -165,7 +165,7 @@ class PartTest(TestCase):
     def test_str(self):
         """Test string representation of a Part."""
         p = Part.objects.get(pk=100)
-        self.assertEqual(str(p), 'BOB | Bob | A2 - Can we build it? Yes we can!')
+        self.assertEqual(str(p), 'Bob | A2 - Can we build it? Yes we can!')
 
     def test_duplicate(self):
         """Test that we cannot create a "duplicate" Part."""
@@ -747,6 +747,22 @@ class PartSettingsTest(InvenTreeTestCase):
         self.assertTrue(part.purchaseable)
         self.assertFalse(part.salable)
         self.assertFalse(part.trackable)
+
+    def test_full_name_does_not_include_ipn(self):
+        """IPN remains separate from the human-readable part identifier."""
+        part = self.make_part()
+        part.revision = 'A'
+
+        # Simulate the historical value already stored in an existing database.
+        set_global_setting(
+            'PART_NAME_FORMAT',
+            "{{ part.IPN if part.IPN }}{{ ' | ' if part.IPN }}"
+            "{{ part.name }}{{ ' | ' if part.revision }}"
+            '{{ part.revision if part.revision }}',
+            self.user,
+        )
+
+        self.assertEqual(part.full_name, 'Test Part | A')
 
     def test_custom(self):
         """Update some of the part values and re-test."""

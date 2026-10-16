@@ -33,7 +33,7 @@ class RawMaterialsTests(InvenTreeAPITestCase):
         def part(name, **kwargs):
             return Part.objects.create(name=name, component=True, **kwargs)
 
-        part('Screw', purchaseable=True)
+        part('Screw', purchaseable=True, IPN='SER-001')
         part('PCB')
         part('Glue')
         part('Rope', units='m')
@@ -122,6 +122,7 @@ class RawMaterialsTests(InvenTreeAPITestCase):
             for row in workbook['Summary'].iter_rows(min_row=2, values_only=True)
         }
         self.assertEqual(summary['Screw'][3], 27)
+        self.assertEqual(summary['Screw'][1], 'SER-001')
         self.assertEqual(summary['Screw'][5:7], ('Acme', 'SCR-1'))
         self.assertEqual(summary['Rope'][4], 'm')
 

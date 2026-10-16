@@ -148,7 +148,7 @@ test('Build Order - Tags', async ({ browser }) => {
 
   // Check for expected results
   await page.getByRole('cell', { name: 'BO0026' }).click();
-  await page.getByText('100 x 002.01-PCBA | Widget').waitFor();
+  await page.getByText('100 x Widget').waitFor();
 
   // Check for tags displayed on BuildOrder detail page
   await page.getByText('Electronics', { exact: true }).first().waitFor();
@@ -684,7 +684,7 @@ test('Build Order - Tracked Outputs', async ({ browser }) => {
     .waitFor();
 
   // The stock item should be pre-filled based on serial number
-  await page.getByRole('cell', { name: 'Thumbnail 002.01-PCBA |' }).waitFor();
+  await page.getByRole('cell', { name: 'Thumbnail Widget' }).waitFor();
   await page.getByRole('button', { name: 'Submit' }).isEnabled();
   await page.getByRole('button', { name: 'Submit' }).click();
 

@@ -282,6 +282,17 @@ class ManufacturerPartSimpleTest(TestCase):
         manufacturer_parts = ManufacturerPart.objects.filter(manufacturer=1)
         self.assertEqual(manufacturer_parts.count(), 1)
 
+    def test_supplier_part_name_uses_part_name(self):
+        """Supplier-part identifiers do not fold in the part IPN."""
+        supplier_part = SupplierPart.objects.get(SKU='SKU_TEST')
+        self.part.IPN = 'SER-001'
+
+        self.assertEqual(
+            str(supplier_part),
+            f'{self.part.name} | {supplier_part.supplier.name} | SKU_TEST',
+        )
+        self.assertNotIn(self.part.IPN, str(supplier_part))
+
     def test_delete(self):
         """Test deletion of a ManufacturerPart."""
         part = Part.objects.get(pk=self.part.id)

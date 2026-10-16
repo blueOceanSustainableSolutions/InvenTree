@@ -37,7 +37,7 @@ def _expandable(part: Part) -> bool:
 
 def _label(part: Part, quantity: Decimal) -> str:
     """Short description of an assembly for the 'via' column."""
-    return f'{part.full_name} x{normalize(quantity)}'
+    return f'{part.name} x{normalize(quantity)}'
 
 
 def _required(bom_item, quantity: Decimal) -> Decimal:
@@ -139,7 +139,7 @@ def summarize(rows: list[dict]) -> list[dict]:
         if row['note']:
             entry['notes'].add(row['note'])
 
-    return sorted(totals.values(), key=lambda entry: entry['part'].full_name.lower())
+    return sorted(totals.values(), key=lambda entry: entry['part'].name.lower())
 
 
 def build_workbook(rows: list[dict]) -> bytes:
@@ -168,7 +168,7 @@ def build_workbook(rows: list[dict]) -> bytes:
         ],
         [
             [
-                entry['part'].full_name,
+                entry['part'].name,
                 entry['part'].IPN or '',
                 entry['part'].description or '',
                 float(normalize(entry['quantity'])),
@@ -194,7 +194,7 @@ def build_workbook(rows: list[dict]) -> bytes:
         ],
         [
             [
-                row['part'].full_name,
+                row['part'].name,
                 row['part'].IPN or '',
                 float(normalize(row['quantity'])),
                 units(row['part']),

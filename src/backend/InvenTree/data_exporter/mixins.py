@@ -419,7 +419,7 @@ class DataExportSerializerMixin:
                             line.line,
                             line.description
                             if is_extra
-                            else (part.full_name if part else ''),
+                            else (part.name if part else ''),
                             part.IPN if part else '',
                             supplier_part.SKU if supplier_part else '',
                             supplier_part.manufacturer_part.MPN
