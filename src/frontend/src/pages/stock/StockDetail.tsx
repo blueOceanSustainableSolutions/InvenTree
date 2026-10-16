@@ -17,6 +17,7 @@ import {
   IconBoxPadding,
   IconBuildingLighthouse,
   IconChecklist,
+  IconFileSpreadsheet,
   IconHistory,
   IconInfoCircle,
   IconListCheck,
@@ -949,6 +950,33 @@ export default function StockDetail() {
     }
   });
 
+  // Download the raw materials consumed to build this item, as Excel
+  const downloadRawMaterials = () => {
+    api
+      .get(apiUrl(ApiEndpoints.stock_raw_materials, stockitem.pk), {
+        responseType: 'blob'
+      })
+      .then((response) => {
+        const name =
+          response.headers['content-disposition']?.match(
+            /filename="?([^"]+)"?/
+          )?.[1] ?? 'raw_materials.xlsx';
+        const url = URL.createObjectURL(response.data);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = name;
+        link.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => {
+        notifications.show({
+          title: t`Error`,
+          message: t`Could not export the raw materials`,
+          color: 'red'
+        });
+      });
+  };
+
   const stockActions = useMemo(() => {
     const serial = stockitem.serial;
     const serialized =
@@ -1031,6 +1059,13 @@ export default function StockDetail() {
             hidden: !user.hasChangeRole(UserRoles.stock) || !canConvert,
             icon: <IconTransform color='blue' />,
             onClick: () => convertStockItem.open()
+          },
+          {
+            name: t`Raw Materials`,
+            tooltip: t`Export the raw materials consumed to build this item`,
+            hidden: !stockitem.build && !stockitem.quick_build,
+            icon: <IconFileSpreadsheet color='green' />,
+            onClick: downloadRawMaterials
           },
           {
             name: t`Disassemble`,

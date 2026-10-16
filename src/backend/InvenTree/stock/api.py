@@ -72,6 +72,7 @@ from stock.models import (
     StockLocation,
     StockLocationType,
 )
+from stock.raw_materials import StockItemRawMaterials
 from stock.status_codes import StockHistoryCode, StockStatus
 
 
@@ -1812,6 +1813,11 @@ stock_api_urls = [
                 name='api-stock-item-components',
             ),
             path('install/', StockItemInstall.as_view(), name='api-stock-item-install'),
+            path(
+                'raw-materials/',
+                StockItemRawMaterials.as_view(),
+                name='api-stock-item-raw-materials',
+            ),
             meta_path(StockItem),
             path(
                 'serialize/',
