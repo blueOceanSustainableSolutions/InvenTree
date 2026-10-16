@@ -135,36 +135,50 @@ def summarize(rows: list[dict]) -> list[dict]:
     return sorted(totals.values(), key=lambda entry: entry['part'].full_name.lower())
 
 
-def build_workbook(item: StockItem, rows: list[dict]) -> bytes:
-    """Create the Excel workbook with a summary and a detail sheet."""
-    import openpyxl
+XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+def write_sheet(sheet, title, headers, data):
+    """Fill a worksheet with a bold, frozen header row and sized columns."""
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
 
+    sheet.title = str(title)
+    sheet.append([str(header) for header in headers])
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    for values in data:
+        sheet.append(values)
+    sheet.freeze_panes = 'A2'
+    for idx, _header in enumerate(headers, start=1):
+        letter = get_column_letter(idx)
+        width = max(
+            (len(str(cell.value)) for cell in sheet[letter] if cell.value), default=8
+        )
+        sheet.column_dimensions[letter].width = min(max(width + 2, 10), 60)
+
+
+def units(part) -> str:
+    """The part's units, or blank."""
+    return str(part.units) if part.units else ''
+
+
+def save_workbook(workbook) -> bytes:
+    """Return the workbook as file data."""
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def build_workbook(item: StockItem, rows: list[dict]) -> bytes:
+    """Create the Excel workbook with a summary and a detail sheet."""
+    import openpyxl
+
     workbook = openpyxl.Workbook()
 
-    def write(sheet, title, headers, data):
-        sheet.title = title
-        sheet.append([str(header) for header in headers])
-        for cell in sheet[1]:
-            cell.font = Font(bold=True)
-        for values in data:
-            sheet.append(values)
-        sheet.freeze_panes = 'A2'
-        for idx, _header in enumerate(headers, start=1):
-            letter = get_column_letter(idx)
-            width = max(
-                (len(str(cell.value)) for cell in sheet[letter] if cell.value),
-                default=8,
-            )
-            sheet.column_dimensions[letter].width = min(max(width + 2, 10), 60)
-
-    def units(part):
-        return str(part.units) if part.units else ''
-
-    write(
+    write_sheet(
         workbook.active,
-        str(_('Summary')),
+        _('Summary'),
         [_('Part'), _('IPN'), _('Description'), _('Quantity'), _('Units'), _('Note')],
         [
             [
@@ -184,9 +198,9 @@ def build_workbook(item: StockItem, rows: list[dict]) -> bytes:
             return stock.supplier_part.supplier.name, stock.supplier_part.SKU
         return '', ''
 
-    write(
+    write_sheet(
         workbook.create_sheet(),
-        str(_('Detail')),
+        _('Detail'),
         [
             _('Part'),
             _('IPN'),
@@ -217,9 +231,7 @@ def build_workbook(item: StockItem, rows: list[dict]) -> bytes:
         ],
     )
 
-    output = BytesIO()
-    workbook.save(output)
-    return output.getvalue()
+    return save_workbook(workbook)
 
 
 class StockItemRawMaterials(GenericAPIView):
@@ -236,8 +248,4 @@ class StockItemRawMaterials(GenericAPIView):
         data = build_workbook(item, explode(item))
         name = item.serial or item.batch or str(item.pk)
         filename = f'raw_materials_{item.part.name}_{name}.xlsx'.replace(' ', '_')
-        return DownloadFile(
-            data,
-            filename,
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        )
+        return DownloadFile(data, filename, content_type=XLSX_CONTENT_TYPE)

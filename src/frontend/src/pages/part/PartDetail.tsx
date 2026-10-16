@@ -21,6 +21,7 @@ import {
   IconClipboardList,
   IconCurrencyDollar,
   IconExclamationCircle,
+  IconFileSpreadsheet,
   IconInfoCircle,
   IconLayersLinked,
   IconListDetails,
@@ -70,6 +71,7 @@ import {
   EditItemAction,
   OptionsActionDropdown
 } from '../../components/items/ActionDropdown';
+import { usePartRawMaterialsDialog } from '../../components/modals/RawMaterialsDialog';
 import InstanceDetail from '../../components/nav/InstanceDetail';
 import NavigationTree from '../../components/nav/NavigationTree';
 import { PageDetail } from '../../components/nav/PageDetail';
@@ -1094,6 +1096,8 @@ export default function PartDetail() {
 
   const findBySerialNumber = useFindSerialNumberForm({ partId: part.pk });
 
+  const rawMaterials = usePartRawMaterialsDialog({ partId: part.pk });
+
   const partActions = useMemo(() => {
     return [
       <AdminButton model={ModelType.part} id={part.pk} />,
@@ -1156,6 +1160,13 @@ export default function PartDetail() {
             hidden: !user.hasChangeRole(UserRoles.part),
             onClick: () => editPart.open()
           }),
+          {
+            name: t`Raw Materials`,
+            tooltip: t`Export the raw materials required to build this part`,
+            hidden: !part.assembly,
+            icon: <IconFileSpreadsheet color='green' />,
+            onClick: rawMaterials.open
+          },
           DeleteItemAction({
             hidden: !user.hasDeleteRole(UserRoles.part),
             disabled: part.active,
@@ -1173,6 +1184,7 @@ export default function PartDetail() {
       {duplicatePart.modal}
       {orderPartsWizard.wizard}
       {findBySerialNumber.modal}
+      {rawMaterials.dialog}
       {stockAdjustActions.modals.map((modal) => modal.modal)}
       <InstanceDetail query={instanceQuery} requiredRole={UserRoles.part}>
         <Stack gap='xs'>

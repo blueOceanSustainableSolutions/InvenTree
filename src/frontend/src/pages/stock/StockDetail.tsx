@@ -81,6 +81,7 @@ import {
   useStockFields,
   useStockItemSerializeFields
 } from '../../forms/StockForms';
+import { downloadApiFile } from '../../functions/download';
 import { InvenTreeIcon } from '../../functions/icons';
 import {
   useCreateApiFormModal,
@@ -951,31 +952,12 @@ export default function StockDetail() {
   });
 
   // Download the raw materials consumed to build this item, as Excel
-  const downloadRawMaterials = () => {
-    api
-      .get(apiUrl(ApiEndpoints.stock_raw_materials, stockitem.pk), {
-        responseType: 'blob'
-      })
-      .then((response) => {
-        const name =
-          response.headers['content-disposition']?.match(
-            /filename="?([^"]+)"?/
-          )?.[1] ?? 'raw_materials.xlsx';
-        const url = URL.createObjectURL(response.data);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = name;
-        link.click();
-        URL.revokeObjectURL(url);
-      })
-      .catch(() => {
-        notifications.show({
-          title: t`Error`,
-          message: t`Could not export the raw materials`,
-          color: 'red'
-        });
-      });
-  };
+  const downloadRawMaterials = () =>
+    downloadApiFile({
+      api: api,
+      url: apiUrl(ApiEndpoints.stock_raw_materials, stockitem.pk),
+      fallbackName: 'raw_materials.xlsx'
+    });
 
   const stockActions = useMemo(() => {
     const serial = stockitem.serial;

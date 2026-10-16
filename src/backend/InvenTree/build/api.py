@@ -44,6 +44,7 @@ from InvenTree.mixins import (
     RetrieveUpdateDestroyAPI,
     SerializerContextMixin,
 )
+from part.raw_materials import BuildRawMaterials
 from stock.status_codes import StockStatus
 from users.models import Owner
 
@@ -1579,6 +1580,11 @@ build_api_urls = [
             path('finish/', BuildFinish.as_view(), name='api-build-finish'),
             path('cancel/', BuildCancel.as_view(), name='api-build-cancel'),
             path('unallocate/', BuildUnallocate.as_view(), name='api-build-unallocate'),
+            path(
+                'raw-materials/',
+                BuildRawMaterials.as_view(),
+                name='api-build-raw-materials',
+            ),
             meta_path(Build),
             path('', BuildDetail.as_view(), name='api-build-detail'),
         ]),

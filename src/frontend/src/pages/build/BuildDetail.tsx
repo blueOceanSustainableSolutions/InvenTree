@@ -7,6 +7,7 @@ import {
   IconClipboardCheck,
   IconClipboardList,
   IconExclamationCircle,
+  IconFileSpreadsheet,
   IconInfoCircle,
   IconList,
   IconListCheck,
@@ -55,7 +56,9 @@ import {
   BuildDeploymentPanel,
   useBuildDeployment
 } from '../../fleet/panels/BuildDeploymentPanel';
+import { useApi } from '../../contexts/ApiContext';
 import { useBuildOrderFields } from '../../forms/BuildForms';
+import { downloadApiFile } from '../../functions/download';
 import {
   useCreateApiFormModal,
   useEditApiFormModal
@@ -159,6 +162,7 @@ function BuildAllocationsPanel({
 export default function BuildDetail() {
   const { id } = useParams();
 
+  const api = useApi();
   const user = useUserState();
   const globalSettings = useGlobalSettingsState();
 
@@ -774,6 +778,17 @@ export default function BuildDetail() {
             tooltip: t`Duplicate order`,
             hidden: !user.hasAddRole(UserRoles.build)
           }),
+          {
+            name: t`Raw Materials`,
+            tooltip: t`Export the raw materials required by this order`,
+            icon: <IconFileSpreadsheet color='green' />,
+            onClick: () =>
+              downloadApiFile({
+                api: api,
+                url: apiUrl(ApiEndpoints.build_order_raw_materials, build.pk),
+                fallbackName: 'raw_materials.xlsx'
+              })
+          },
           HoldItemAction({
             tooltip: t`Hold order`,
             hidden: !canHold,

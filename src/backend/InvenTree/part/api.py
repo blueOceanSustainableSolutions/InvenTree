@@ -62,6 +62,7 @@ from .models import (
     PartStocktake,
     PartTestTemplate,
 )
+from .raw_materials import PartRawMaterials
 
 
 class CategoryMixin:
@@ -1712,6 +1713,11 @@ part_api_urls = [
             ),
             # Endpoint for duplicating a BOM for the specific Part
             path('bom-copy/', PartCopyBOM.as_view(), name='api-part-bom-copy'),
+            path(
+                'raw-materials/',
+                PartRawMaterials.as_view(),
+                name='api-part-raw-materials',
+            ),
             # Endpoint for validating a BOM for the specific Part
             path(
                 'bom-validate/', PartValidateBOM.as_view(), name='api-part-bom-validate'
