@@ -177,6 +177,7 @@ export function deploymentDetailFields(
       label: t`Replaces`,
       icon: 'fleet_deployment',
       model: ModelType.deployment,
+      model_field: 'reference',
       hidden: !deployment.replaces
     },
     {
@@ -341,7 +342,10 @@ export function taskDetailFields(task: any): FleetDetailFields {
           name: 'device',
           label: t`Device`,
           icon: 'serial',
-          model: ModelType.stockitem
+          model: ModelType.stockitem,
+          model_formatter: (device: any) =>
+            device?.serial ?? task.device_detail?.serial,
+          backup_value: task.device_detail?.serial
         }
       : {
           type: 'string',
@@ -356,6 +360,7 @@ export function taskDetailFields(task: any): FleetDetailFields {
       label: t`Deployment`,
       icon: 'fleet_deployment',
       model: ModelType.deployment,
+      model_field: 'reference',
       hidden: !task.deployment
     },
     {
@@ -372,6 +377,8 @@ export function taskDetailFields(task: any): FleetDetailFields {
       label: t`Field Trip`,
       icon: 'fleet_trip',
       model: ModelType.fieldtrip,
+      model_formatter: (trip: any) =>
+        [trip?.reference, trip?.title].filter(Boolean).join(' · '),
       hidden: !task.trip
     },
     {
@@ -380,6 +387,7 @@ export function taskDetailFields(task: any): FleetDetailFields {
       label: t`Follow-up Of`,
       icon: 'fleet_task',
       model: ModelType.maintenancetask,
+      model_field: 'reference',
       hidden: !task.follow_up_of
     }
   ];
@@ -606,6 +614,7 @@ export function siteDetailFields(site: any): FleetDetailFields {
       label: t`Active Deployment`,
       icon: 'fleet_deployment',
       model: ModelType.deployment,
+      model_field: 'reference',
       hidden: !site.active_deployment
     }
   ];
