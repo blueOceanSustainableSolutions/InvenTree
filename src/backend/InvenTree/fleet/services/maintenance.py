@@ -34,8 +34,8 @@ from fleet.models import (
     MaintenanceTask,
     TaskType,
 )
+from fleet.services import carry_over, device_state, monitoring, pipeline
 from fleet.services import deployment as deployment_service
-from fleet.services import device_state, monitoring, pipeline
 from fleet.status_codes import (
     AlertStatusGroups,
     DataStreamStatus,
@@ -46,6 +46,7 @@ from fleet.status_codes import (
     TripStatus,
     TripStatusGroups,
 )
+from InvenTree.helpers import normalize
 from stock.components import change_components
 from stock.models import StockItem, StockItemTracking, StockLocation
 from stock.status_codes import StockHistoryCode
@@ -688,6 +689,10 @@ def consume(
     """Use a bulk consumable (e.g. O-rings, desiccant) during a task.
 
     On a trip with a kit location, the stock must come from the kit.
+
+    On a swap task the stock goes on the new device: it is consumed by the new
+    device's build order (on the matching line, else a build-specific line), as
+    the parts carried over are. Otherwise the stock is taken (removed).
     """
     lock_task(task)
     require_in_progress(task)
@@ -718,14 +723,29 @@ def consume(
 
     part = stock_item.part
     after = last_tracking_pk()
+    build = carry_over.swap_build(task)
+    metadata = None
 
-    if not stock_item.take_stock(quantity, user, notes=task_note(task, note)):
-        raise ValidationError({'quantity': _('The stock could not be taken')})
+    if build is not None:
+        consumed, line = build.consume_stock_item(
+            stock_item,
+            quantity,
+            user,
+            notes=task_note(task, note),
+            deltas={'maintenance': task.pk},
+        )
+        metadata = {'buildorder': build.reference, 'build_line': line.pk}
+        tag_tracking(task, after, [stock_item.pk, consumed.pk])
+    else:
+        if not stock_item.take_stock(quantity, user, notes=task_note(task, note)):
+            raise ValidationError({'quantity': _('The stock could not be taken')})
 
-    tag_tracking(task, after, [stock_item.pk])
+        tag_tracking(task, after, [stock_item.pk])
 
-    # The stock item may have been deleted when depleted
-    remaining = StockItem.objects.filter(pk=stock_item.pk).first()
+    # The stock item may have been deleted (or consumed whole) when depleted
+    remaining = StockItem.objects.filter(
+        pk=stock_item.pk, consumed_by__isnull=True
+    ).first()
 
     record = MaintenanceAction.objects.create(
         task=task,
@@ -734,6 +754,7 @@ def consume(
         part=part,
         quantity=quantity,
         note=note[:500],
+        metadata=metadata,
         created_by=user if user is not None and user.is_authenticated else None,
     )
 
@@ -986,6 +1007,14 @@ def complete(
             }
         )
 
+    # A swap carries the picked parts over once the new device is deployed;
+    # completing it without deploying means the swap did not happen
+    if task.task_type == TaskType.SWAP and task.deployment is not None:
+        if task.deployment.status == DeploymentStatus.DEPLOYED.value:
+            carry_over.move(task.deployment, user=user, task=task)
+        else:
+            carry_over.release(task.deployment, task=task)
+
     now = timezone.now()
 
     task.status = TaskStatus.COMPLETED.value
@@ -1124,8 +1153,11 @@ def action_summary(task: MaintenanceTask) -> list[str]:
             text = f'{label}: {describe_item(action.component_out)}'
         elif action.action == MaintenanceAction.Action.ADD:
             text = f'{label}: {describe_item(action.component_in)}'
-        elif action.action == MaintenanceAction.Action.CONSUME:
-            quantity = f'{action.quantity:g}' if action.quantity is not None else ''
+        elif action.action in [
+            MaintenanceAction.Action.CONSUME,
+            MaintenanceAction.Action.CARRY_OVER,
+        ]:
+            quantity = normalize(action.quantity) if action.quantity is not None else ''
             text = (
                 f'{label}: {quantity} x {action.part.full_name if action.part else "-"}'
             )
@@ -1176,11 +1208,17 @@ def notify_completed(task: MaintenanceTask) -> None:
 
 @transaction.atomic
 def cancel(task: MaintenanceTask, user=None, reason: str = '') -> MaintenanceTask:
-    """Cancel an open task. Stock changes already made are kept."""
+    """Cancel an open task. Stock changes already made are kept.
+
+    Cancelling a swap releases the parts picked to carry over (nothing moves).
+    """
     lock_task(task)
 
     if not task.can_cancel:
         raise ValidationError(_('This task is closed'))
+
+    if task.task_type == TaskType.SWAP and task.deployment is not None:
+        carry_over.release(task.deployment, task=task)
 
     task.status = TaskStatus.CANCELLED.value
 

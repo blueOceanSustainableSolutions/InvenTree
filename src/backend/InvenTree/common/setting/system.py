@@ -1419,6 +1419,13 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'model': 'stock.stocklocation',
         'model_filters': {'structural': False},
     },
+    'FLEET_MOORING_CATEGORY': {
+        'name': _('Mooring Category'),
+        'description': _(
+            'Part category of the mooring, which a swap carries over to the new device (All mooring)'
+        ),
+        'model': 'part.partcategory',
+    },
     'FLEET_DEFAULT_CUSTOMER': {
         'name': _('Default Fleet Customer'),
         'description': _(

@@ -347,6 +347,7 @@ export default function SystemSettings() {
                 'FLEET_DEFAULT_CUSTOMER',
                 'FLEET_WORKSHOP_LOCATION',
                 'FLEET_KIT_PARENT_LOCATION',
+                'FLEET_MOORING_CATEGORY',
                 'FLEET_READY_LEAD_DAYS',
                 'FLEET_UNSCHEDULED_REMINDER_DAYS'
               ]}

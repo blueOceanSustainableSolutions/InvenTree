@@ -148,7 +148,7 @@ def cancel_build_deployment(deployment: Deployment) -> Alert:
     team decides what to do with them. The BUILD_CANCELLED alert is notified
     and stays open until someone resolves it.
     """
-    from fleet.services import maintenance
+    from fleet.services import carry_over, maintenance
     from fleet.services.deployment import open_deploy_tasks
     from fleet.services.monitoring import open_or_update_alert
     from fleet.services.planning import notify_pipeline_alert
@@ -156,6 +156,8 @@ def cancel_build_deployment(deployment: Deployment) -> Alert:
     deployment.status = DeploymentStatus.CANCELLED.value
     deployment.save()
     trigger_status_event(deployment)
+
+    carry_over.release(deployment)
 
     tasks = list(open_deploy_tasks(deployment).select_related('trip'))
     trips = sorted({task.trip.reference for task in tasks if task.trip is not None})

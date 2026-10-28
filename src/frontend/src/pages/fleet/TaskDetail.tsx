@@ -2,6 +2,7 @@ import { t } from '@lingui/core/macro';
 import { Alert, Badge, Skeleton, Stack, Text } from '@mantine/core';
 import {
   IconAlertTriangle,
+  IconAnchor,
   IconChecklist,
   IconInfoCircle,
   IconListDetails,
@@ -33,6 +34,7 @@ import AttachmentPanel from '../../components/panels/AttachmentPanel';
 import NotesPanel from '../../components/panels/NotesPanel';
 import { PanelGroup } from '../../components/panels/PanelGroup';
 import { StatusRenderer } from '../../components/render/StatusRenderer';
+import { CarryOverPanel } from '../../fleet/components/CarryOverPanel';
 import { ChecklistEditor } from '../../fleet/components/ChecklistEditor';
 import { taskTypeLabel } from '../../fleet/components/FleetBadges';
 import { TaskExecution } from '../../fleet/components/TaskExecution';
@@ -105,7 +107,20 @@ export default function TaskDetail() {
         icon: <IconTool />,
         hidden: !inProgress,
         content: task.pk ? (
-          <TaskExecution task={task} onUpdate={refreshInstance} />
+          <TaskExecution
+            task={task}
+            onUpdate={refreshInstance}
+            showCarryOver={false}
+          />
+        ) : null
+      },
+      {
+        name: 'carry-over',
+        label: t`Carry Over`,
+        icon: <IconAnchor />,
+        hidden: task.task_type != 'SWAP',
+        content: task.pk ? (
+          <CarryOverPanel taskId={task.pk} onChange={refreshInstance} />
         ) : null
       },
       {

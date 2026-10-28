@@ -521,7 +521,15 @@ def attach_unit(deployment: Deployment) -> None:
 
 
 def unschedule(deployment: Deployment) -> Deployment:
-    """A SCHEDULED deployment whose task left its trip is READY again."""
+    """A SCHEDULED deployment whose task left its trip is READY again.
+
+    The swap will not happen on that trip: the parts picked to carry over are
+    released (they can be picked again for the next trip).
+    """
+    from fleet.services import carry_over
+
+    carry_over.release(deployment)
+
     if deployment.status == DeploymentStatus.SCHEDULED.value:
         deployment.status = DeploymentStatus.READY.value
         deployment.save()

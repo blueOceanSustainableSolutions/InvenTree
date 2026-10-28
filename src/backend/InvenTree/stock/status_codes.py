@@ -114,3 +114,4 @@ class StockHistoryCode(StatusCode):
     FLEET_DEPLOYED = 130, _('Deployed at fleet site')
     FLEET_RECOVERED = 131, _('Recovered from fleet site')
     FLEET_MAINTENANCE = 132, _('Fleet maintenance performed')
+    FLEET_CARRY_OVER = 133, _('Carried over to replacement device')

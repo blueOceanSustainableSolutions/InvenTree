@@ -174,6 +174,7 @@ def get_ruleset_models() -> dict:
         ],
         RuleSetEnum.FLEET: [
             'fleet_alert',
+            'fleet_carryoverline',
             'fleet_checklistresult',
             'fleet_checklisttemplateitem',
             'fleet_datastream',

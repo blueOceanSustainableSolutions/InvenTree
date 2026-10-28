@@ -14,6 +14,7 @@ import part.serializers as part_serializers
 from fleet import geo
 from fleet.models import (
     Alert,
+    CarryOverLine,
     ChecklistResult,
     ChecklistTemplateItem,
     Coverage,
@@ -2866,4 +2867,212 @@ class TripCancelSerializer(TripActionSerializer):
         """Cancel the trip."""
         self.target.cancel_trip(
             user=self.user, reason=self.validated_data.get('reason', '')
+        )
+
+
+# ---------------------------------------------------------------------------
+# Carry-over (swap)
+# ---------------------------------------------------------------------------
+
+
+class CarryOverLineSerializer(FilterableSerializerMixin, InvenTreeModelSerializer):
+    """A consumed part which a swap carries (or carried) over to the new device."""
+
+    class Meta:
+        """Metaclass options."""
+
+        model = CarryOverLine
+        fields = [
+            'pk',
+            'deployment',
+            'deployment_reference',
+            'stock_item',
+            'part',
+            'part_detail',
+            'quantity',
+            'target_line',
+            'target_build',
+            'target_build_reference',
+            'source_build_reference',
+            'source_device_serial',
+            'status',
+            'status_text',
+            'moved_item',
+            'task',
+            'swap_task',
+            'swap_task_reference',
+            'picked_by',
+            'picked_by_detail',
+            'picked_at',
+            'closed_at',
+            'short',
+        ]
+        read_only_fields = fields
+
+    deployment_reference = serializers.CharField(
+        source='deployment.reference', read_only=True, label=_('Deployment')
+    )
+
+    part_detail = OptionalField(
+        serializer_class=part_serializers.PartBriefSerializer,
+        serializer_kwargs={'source': 'part', 'many': False, 'read_only': True},
+        default_include=True,
+        prefetch_fields=['part'],
+    )
+
+    quantity = InvenTreeDecimalField(read_only=True)
+
+    status_text = serializers.CharField(
+        source='get_status_display', read_only=True, label=_('Status')
+    )
+
+    target_build = serializers.SerializerMethodField(label=_('Build Order'))
+
+    target_build_reference = serializers.SerializerMethodField(
+        label=_('Build Order Reference')
+    )
+
+    source_build_reference = serializers.SerializerMethodField(
+        label=_('Source Build Order')
+    )
+
+    source_device_serial = serializers.SerializerMethodField(label=_('Replaced Device'))
+
+    swap_task = serializers.SerializerMethodField(label=_('Swap Task'))
+
+    swap_task_reference = serializers.SerializerMethodField(
+        label=_('Swap Task Reference')
+    )
+
+    picked_by_detail = UserSerializer(
+        source='picked_by', read_only=True, allow_null=True, many=False
+    )
+
+    short = serializers.SerializerMethodField(
+        label=_('Short'),
+        help_text=_('Released after the build order was completed, which is now short'),
+    )
+
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
+    def get_target_build(self, obj) -> int | None:
+        """The build order of the new device."""
+        return obj.target_line.build_id if obj.target_line else None
+
+    def get_target_build_reference(self, obj) -> str:
+        """Reference of the build order of the new device."""
+        return obj.target_line.build.reference if obj.target_line else ''
+
+    def get_source_build_reference(self, obj) -> str:
+        """Reference of the build order of the replaced device."""
+        from fleet.services.carry_over import source_build
+
+        build = source_build(obj.deployment)
+        return build.reference if build else ''
+
+    def get_source_device_serial(self, obj) -> str:
+        """Serial of the replaced device."""
+        replaced = obj.deployment.replaces
+        return (replaced.device.serial or '') if replaced and replaced.device else ''
+
+    def swap_task_of(self, obj):
+        """The task which moved or released the line, else the open swap task."""
+        from fleet.services.carry_over import open_swap_task
+
+        return obj.task or open_swap_task(obj.deployment)
+
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
+    def get_swap_task(self, obj) -> int | None:
+        """The swap task."""
+        task = self.swap_task_of(obj)
+        return task.pk if task else None
+
+    def get_swap_task_reference(self, obj) -> str:
+        """Reference of the swap task."""
+        task = self.swap_task_of(obj)
+        return task.reference if task else ''
+
+    def get_short(self, obj) -> bool:
+        """Whether a released line left its completed build order short."""
+        from fleet.services.carry_over import is_short
+
+        return is_short(obj)
+
+
+class CarryOverCandidateSerializer(serializers.Serializer):
+    """A consumed stock row of the old build order, which a swap can carry over."""
+
+    stock_item = serializers.IntegerField(label=_('Stock Item'))
+    part = serializers.IntegerField(source='part.pk', label=_('Part'))
+    part_detail = part_serializers.PartBriefSerializer(source='part', read_only=True)
+    batch = serializers.CharField(allow_blank=True, allow_null=True)
+    quantity = InvenTreeDecimalField(label=_('Quantity'))
+    available = InvenTreeDecimalField(
+        label=_('Available'), help_text=_('Quantity not picked by other deployments')
+    )
+    picked = InvenTreeDecimalField(
+        label=_('Picked'), help_text=_('Quantity this deployment carries over')
+    )
+    target_line = serializers.IntegerField(allow_null=True, label=_('Build Line'))
+    target_part_name = serializers.CharField(allow_blank=True)
+    mooring = serializers.BooleanField(label=_('Mooring'))
+
+
+class CarryOverSerializer(serializers.Serializer):
+    """What a replacement deployment carries over from the device it replaces."""
+
+    deployment = serializers.IntegerField()
+    source_build = serializers.IntegerField(allow_null=True)
+    source_build_reference = serializers.CharField(allow_blank=True)
+    source_device = serializers.IntegerField(allow_null=True)
+    source_device_serial = serializers.CharField(allow_blank=True, allow_null=True)
+    target_build = serializers.IntegerField(allow_null=True)
+    target_build_reference = serializers.CharField(allow_blank=True)
+    task = serializers.IntegerField(allow_null=True)
+    task_reference = serializers.CharField(allow_blank=True)
+    editable = serializers.BooleanField()
+    reason = serializers.CharField(allow_blank=True)
+    lines = CarryOverCandidateSerializer(many=True)
+    history = CarryOverLineSerializer(many=True)
+
+
+class CarryOverPickSerializer(serializers.Serializer):
+    """One consumed stock row to carry over (all or part of it)."""
+
+    stock_item = serializers.PrimaryKeyRelatedField(
+        queryset=StockItem.objects.all(), label=_('Stock Item')
+    )
+
+    quantity = serializers.DecimalField(
+        max_digits=15, decimal_places=5, min_value=Decimal(0), label=_('Quantity')
+    )
+
+
+class DeploymentCarryOverSerializer(DeploymentActionSerializer):
+    """Set the parts which a replacement carries over (replaces every pending pick)."""
+
+    lines = CarryOverPickSerializer(many=True, allow_empty=True, label=_('Lines'))
+
+    def save(self):
+        """Set the picks."""
+        from fleet.services import carry_over
+
+        carry_over.set_picks(self.target, self.validated_data['lines'], user=self.user)
+
+
+class TaskCarryOverSerializer(TaskActionSerializer):
+    """Set the parts which a swap task carries over (until the task is closed)."""
+
+    lines = CarryOverPickSerializer(many=True, allow_empty=True, label=_('Lines'))
+
+    def save(self):
+        """Set the picks of the task's deployment."""
+        from fleet.services import carry_over
+
+        task = self.target
+
+        if task.deployment is None:
+            raise serializers.ValidationError(_('This task has no deployment'))
+
+        carry_over.set_picks(
+            task.deployment, self.validated_data['lines'], user=self.user, task=task
         )

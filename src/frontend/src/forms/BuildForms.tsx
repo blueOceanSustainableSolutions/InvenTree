@@ -643,7 +643,11 @@ function BuildAllocateLineRow({
       <Table.Td>
         <ProgressBar
           value={record.allocatedQuantity}
-          maximum={record.requiredQuantity - record.consumed}
+          maximum={
+            record.requiredQuantity -
+            record.consumed -
+            (record.carried_over ?? 0)
+          }
           progressLabel
           units={record.part_detail?.units}
         />
@@ -780,8 +784,10 @@ export function useAllocateStockToBuildForm({
             // Do not filter items for tracked outputs
             return true;
           } else {
+            // Stock carried over from another build order needs no allocation
             return (
-              item.requiredQuantity > item.allocatedQuantity + item.consumed
+              item.requiredQuantity >
+              item.allocatedQuantity + item.consumed + (item.carried_over ?? 0)
             );
           }
         })
@@ -791,7 +797,10 @@ export function useAllocateStockToBuildForm({
             stock_item: undefined,
             quantity: Math.max(
               0,
-              item.requiredQuantity - item.allocatedQuantity - item.consumed
+              item.requiredQuantity -
+                item.allocatedQuantity -
+                item.consumed -
+                (item.carried_over ?? 0)
             ),
             output: outputId
           };

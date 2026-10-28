@@ -183,7 +183,9 @@ content: "v{{ report_revision }} - {% format_date date %}";
             {% endif %}
         </td>
         <td>
-            {% if action.component_in %}
+            {% if action.action == 'CARRY_OVER' and action.part %}
+            {{ action.quantity|floatformat:"-3" }} x {{ action.part.full_name }}
+            {% elif action.component_in %}
             {{ action.component_in.part.full_name }}{% if action.component_in.serial %} #{{ action.component_in.serial }}{% endif %}
             {% elif action.action == 'CONSUME' and action.part %}
             {{ action.quantity|floatformat:"-3" }} x {{ action.part.full_name }}

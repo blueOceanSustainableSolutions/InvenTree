@@ -20,6 +20,7 @@ import fleet.serializers as fleet_serializers
 from data_exporter.mixins import DataExportViewMixin
 from fleet.filters import (
     AlertFilter,
+    CarryOverLineFilter,
     DeploymentFilter,
     FieldTripFilter,
     FleetDeviceTypeFilter,
@@ -28,6 +29,7 @@ from fleet.filters import (
 )
 from fleet.models import (
     Alert,
+    CarryOverLine,
     ChecklistResult,
     ChecklistTemplateItem,
     DataStream,
@@ -46,7 +48,7 @@ from fleet.models import (
     StreamTemplate,
     TripKitLine,
 )
-from fleet.services import device_state, monitoring, pipeline, plan, trips
+from fleet.services import carry_over, device_state, monitoring, pipeline, plan, trips
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -1067,6 +1069,108 @@ class MaintenanceActionList(ListAPI):
 
 
 # ---------------------------------------------------------------------------
+# Carry-over (swap)
+# ---------------------------------------------------------------------------
+
+
+class CarryOverLineList(FleetRoleMixin, ListAPI):
+    """The parts which swaps carry over (filter with ?deployment=, ?task=, ?build=)."""
+
+    queryset = CarryOverLine.objects.select_related(
+        'deployment__replaces__device__build',
+        'part',
+        'target_line__build',
+        'target_line__bom_item',
+        'task',
+        'picked_by',
+    )
+    serializer_class = fleet_serializers.CarryOverLineSerializer
+    filter_backends = SEARCH_ORDER_FILTER
+    filterset_class = CarryOverLineFilter
+    ordering_fields = ['picked_at', 'closed_at', 'status', 'quantity']
+    ordering = ['pk']
+    search_fields = ['part__name', 'deployment__reference', 'task__reference']
+    required_alternate_scopes = {
+        'GET': [['g:read'], ['r:view:fleet']],
+        'OPTIONS': [['g:read']],
+    }
+
+
+class CarryOverActionMixin(FleetActionMixin):
+    """Read (GET) or set (POST) the parts which a swap carries over.
+
+    Both answer with the candidates of the replacement deployment: the consumed
+    rows of the old build order, what is picked, and whether it can change.
+    Setting the picks needs the same roles as the other task actions (fleet
+    change + stock change).
+    """
+
+    rolemap = {'GET': 'view', 'POST': 'change'}
+    extra_roles = [('stock', 'change')]
+
+    @property
+    def required_alternate_scopes(self) -> dict:
+        """Reading needs the fleet view role only."""
+        return {
+            **super().required_alternate_scopes,
+            'GET': [['g:read'], ['r:view:fleet']],
+        }
+
+    def get_deployment(self) -> Deployment:
+        """The replacement deployment."""
+        return self.get_target()
+
+    def candidates(self) -> Response:
+        """The carry-over of the deployment."""
+        return Response(
+            fleet_serializers.CarryOverSerializer(
+                carry_over.candidates(self.get_deployment())
+            ).data
+        )
+
+    @extend_schema(responses={200: fleet_serializers.CarryOverSerializer})
+    def get(self, request, *args, **kwargs):
+        """Return the candidates and the picks."""
+        return self.candidates()
+
+    @extend_schema(responses={200: fleet_serializers.CarryOverSerializer})
+    def post(self, request, *args, **kwargs):
+        """Set the picks, and return the candidates."""
+        return super().post(request, *args, **kwargs)
+
+    def get_response(self, target, extra) -> Response:
+        """Answer with the candidates."""
+        return self.candidates()
+
+
+class DeploymentCarryOver(CarryOverActionMixin, CreateAPI):
+    """The parts which a replacement deployment carries over from the old device."""
+
+    queryset = Deployment.objects.all()
+    model = Deployment
+    context_key = 'deployment'
+    serializer_class = fleet_serializers.DeploymentCarryOverSerializer
+
+
+class TaskCarryOver(CarryOverActionMixin, CreateAPI):
+    """The parts which a swap task carries over (editable until it is closed)."""
+
+    queryset = MaintenanceTask.objects.all()
+    model = MaintenanceTask
+    context_key = 'task'
+    serializer_class = fleet_serializers.TaskCarryOverSerializer
+
+    def get_deployment(self) -> Deployment:
+        """The deployment of the swap task."""
+        task = self.get_target()
+
+        if task.deployment is None:
+            raise ValidationError(_('This task has no deployment'))
+
+        return task.deployment
+
+
+# ---------------------------------------------------------------------------
 # Calendar and overview
 # ---------------------------------------------------------------------------
 
@@ -1793,6 +1897,11 @@ fleet_api_urls = [
                                 DeploymentSetPMDate.as_view(),
                                 name='api-fleet-deployment-set-pm-date',
                             ),
+                            path(
+                                'carry-over/',
+                                DeploymentCarryOver.as_view(),
+                                name='api-fleet-deployment-carry-over',
+                            ),
                             meta_path(Deployment),
                             path(
                                 '',
@@ -1917,6 +2026,11 @@ fleet_api_urls = [
                                 TaskDeploy.as_view(),
                                 name='api-fleet-task-deploy',
                             ),
+                            path(
+                                'carry-over/',
+                                TaskCarryOver.as_view(),
+                                name='api-fleet-task-carry-over',
+                            ),
                             meta_path(MaintenanceTask),
                             path(
                                 '',
@@ -2019,6 +2133,7 @@ fleet_api_urls = [
             ]
         ),
     ),
+    path('carry-over/', CarryOverLineList.as_view(), name='api-fleet-carry-over-list'),
     path('calendar/', FleetCalendar.as_view(), name='api-fleet-calendar'),
     path('overview/', FleetOverview.as_view(), name='api-fleet-overview'),
     path('plan/', FleetPlan.as_view(), name='api-fleet-plan'),

@@ -1237,6 +1237,167 @@ class Build(
 
         return None
 
+    def get_consuming_line(self, sub_part, quantity, lines=None):
+        """Return the line which takes consumed stock of a part.
+
+        The matching line (see match_build_line), else a build-specific line for
+        the part, created with the consumed quantity as its requirement.
+        A line created by an earlier call (passing the same lines) grows instead.
+        """
+        if lines is None:
+            lines = list(self.build_lines.select_related('bom_item', 'custom_part'))
+
+        line = self.match_build_line(sub_part, lines)
+
+        if line is None:
+            line = BuildLine.objects.create(
+                build=self, custom_part=sub_part, quantity=0
+            )
+            line.created_for_consumption = True
+            lines.append(line)
+
+        if getattr(line, 'created_for_consumption', False):
+            line.quantity += quantity
+
+        return line
+
+    @transaction.atomic
+    def consume_stock_item(
+        self, item, quantity, user=None, notes='', deltas=None, lines=None
+    ):
+        """Consume stock against this build order without allocating it first.
+
+        Part of the item is split off when the quantity is lower. The consumed
+        quantity is added to the matching line, else to a new build-specific
+        line (see get_consuming_line).
+
+        Arguments:
+            item: The stock item (in stock, not serialized)
+            quantity: The quantity to consume
+            user: The user consuming the stock
+            notes: Notes recorded against the consumed stock
+            deltas: Extra tracking deltas ('buildorder' and 'quantity' are added)
+            lines: The lines of this build order (optional)
+
+        Returns:
+            (consumed StockItem, BuildLine)
+        """
+        if quantity <= 0 or quantity > item.quantity:
+            raise ValidationError({'quantity': _('Invalid quantity')})
+
+        if quantity < item.quantity:
+            item = item.splitStock(quantity, None, user, notes=notes)
+
+        item.consumed_by = self
+        item.location = None
+        item.save(add_note=False)
+
+        item.add_tracking_entry(
+            StockHistoryCode.BUILD_CONSUMED,
+            user,
+            notes=notes,
+            deltas={
+                **(deltas or {}),
+                'buildorder': self.pk,
+                'quantity': float(quantity),
+            },
+        )
+
+        line = self.get_consuming_line(item.part, quantity, lines)
+        line.consumed += quantity
+        line.save()
+
+        return item, line
+
+    @transaction.atomic
+    def move_consumed_stock(
+        self,
+        target,
+        moves,
+        user=None,
+        notes='',
+        tracking_code=StockHistoryCode.BUILD_ORDER_SPLIT,
+        deltas=None,
+        source_lines=None,
+        create_lines=False,
+    ):
+        """Move stock consumed by this build order to another build order.
+
+        Arguments:
+            target: The build order which takes the stock
+            moves: [(StockItem, quantity, target BuildLine or None)]. Part of a
+                stock item is split off when the quantity is lower.
+            user: The user moving the stock
+            notes: Notes recorded against the moved stock items
+            tracking_code: Stock history code of the move
+            deltas: Extra tracking deltas ('buildorder' and 'quantity' are added)
+            source_lines: The lines of this build order (optional; pass them to
+                keep working on the same instances)
+            create_lines: Without a target line, use the matching line of the
+                target build order, else create a build-specific line there
+
+        The consumed quantity moves with the stock: it goes down on the matching
+        line of this build order and up on the target line. Consumed quantities
+        are not always in BOM units, so the stock quantity is moved.
+
+        Returns:
+            [(moved StockItem, quantity, target BuildLine or None)]
+        """
+        if source_lines is None:
+            source_lines = list(
+                self.build_lines.select_related('bom_item', 'custom_part')
+            )
+
+        target_lines = None
+        moved = []
+
+        for item, quantity, line in moves:
+            if quantity <= 0:
+                continue
+
+            if item.consumed_by_id != self.pk or quantity > item.quantity:
+                raise ValidationError(
+                    _('Invalid consumed quantity for stock item {item}').format(
+                        item=item
+                    )
+                )
+
+            if quantity < item.quantity:
+                item = item.splitStock(quantity, None, user, notes=notes)
+
+            item.consumed_by = target
+            item.save(add_note=False)
+            item.add_tracking_entry(
+                tracking_code,
+                user,
+                notes=notes,
+                deltas={
+                    **(deltas or {}),
+                    'buildorder': target.pk,
+                    'quantity': float(quantity),
+                },
+            )
+
+            if source := self.match_build_line(item.part, source_lines):
+                source.consumed = max(0, source.consumed - quantity)
+                source.save()
+
+            if line is None and create_lines:
+                if target_lines is None:
+                    target_lines = list(
+                        target.build_lines.select_related('bom_item', 'custom_part')
+                    )
+
+                line = target.get_consuming_line(item.part, quantity, target_lines)
+
+            if line is not None:
+                line.consumed += quantity
+                line.save()
+
+            moved.append((item, quantity, line))
+
+        return moved
+
     def validate_split_build_output(self, output):
         """Validate that a completed output can be moved into a new build order."""
         if self.status != BuildStatus.COMPLETE.value:
@@ -1407,47 +1568,31 @@ class Build(
         )
         self.save()
 
-        moved_consumed = {line.pk: decimal.Decimal(0) for line in source_lines}
-        deltas = {'buildorder': new_build.pk}
-
-        def record_consumed(item, q):
-            if line := self.match_build_line(item.part, source_lines):
-                moved_consumed[line.pk] += q
-
         output.build = new_build
         output.save(add_note=False)
         output.add_tracking_entry(
-            StockHistoryCode.BUILD_ORDER_SPLIT, user, notes=notes, deltas=deltas
+            StockHistoryCode.BUILD_ORDER_SPLIT,
+            user,
+            notes=notes,
+            deltas={'buildorder': new_build.pk},
         )
 
-        for item in output.installed_parts.filter(consumed_by=self).select_related(
+        def new_line_for(item):
+            line = self.match_build_line(item.part, source_lines)
+            return new_lines[line.pk] if line else None
+
+        # Installed components move whole, consumed stock as chosen
+        installed = output.installed_parts.filter(consumed_by=self).select_related(
             'part'
-        ):
-            item.consumed_by = new_build
-            item.save(add_note=False)
-            item.add_tracking_entry(
-                StockHistoryCode.BUILD_ORDER_SPLIT, user, notes=notes, deltas=deltas
-            )
-            record_consumed(item, item.quantity)
+        )
+        moves = [(item, item.quantity, new_line_for(item)) for item in installed]
+        moves += [
+            (item, consumed[item.pk], new_line_for(item)) for item in consumed_items
+        ]
 
-        for item in consumed_items:
-            q = consumed[item.pk]
-
-            if q <= 0:
-                continue
-
-            if q < item.quantity:
-                item = item.splitStock(q, None, user, notes=notes)
-
-            item.consumed_by = new_build
-            item.save(add_note=False)
-            item.add_tracking_entry(
-                StockHistoryCode.BUILD_ORDER_SPLIT,
-                user,
-                notes=notes,
-                deltas={**deltas, 'quantity': float(q)},
-            )
-            record_consumed(item, q)
+        self.move_consumed_stock(
+            new_build, moves, user=user, notes=notes, source_lines=source_lines
+        )
 
         for alloc in movable_allocations:
             q = allocations.get(alloc.pk, 0)
@@ -1475,14 +1620,7 @@ class Build(
                 )
 
         for line in source_lines:
-            moved = moved_consumed[line.pk]
-            new_line = new_lines[line.pk]
-
-            new_line.consumed = moved
-            new_line.save()
-
-            line.quantity -= new_line.quantity
-            line.consumed = max(0, line.consumed - moved)
+            line.quantity -= new_lines[line.pk].quantity
             line.save()
 
         return new_build
@@ -2126,6 +2264,7 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
         custom_part: Optional build-specific part which does not modify the BOM
         quantity: Number of units required for the Build
         consumed: Number of units which have been consumed against this line item
+        carried_over: Quantity which stock consumed by another build order will cover once it is moved here (counts as allocated)
     """
 
     class Meta:
@@ -2217,6 +2356,17 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
         help_text=_('Quantity of consumed stock'),
     )
 
+    carried_over = models.DecimalField(
+        decimal_places=5,
+        max_digits=15,
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name=_('Carried Over'),
+        help_text=_(
+            'Quantity covered by stock consumed by another build order, which will be moved to this build order'
+        ),
+    )
+
     @property
     def part(self):
         """Return the sub_part reference from the link bom_item."""
@@ -2270,31 +2420,34 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
 
         return allocated['q']
 
+    def required_quantity(self):
+        """Return the quantity which still needs stock allocated.
+
+        The required quantity, less what is consumed and what is carried over.
+        """
+        return max(0, self.quantity - self.consumed - self.carried_over)
+
     def unallocated_quantity(self):
         """Return the unallocated quantity for this BuildLine.
 
         - Start with the required quantity
-        - Subtract the consumed quantity
+        - Subtract the consumed and carried over quantities
         - Subtract the allocated quantity
 
         Return the remaining quantity (or zero if negative)
         """
-        return max(self.quantity - self.consumed - self.allocated_quantity(), 0)
+        return max(self.required_quantity() - self.allocated_quantity(), 0)
 
     def is_fully_allocated(self) -> bool:
         """Return True if this BuildLine is fully allocated."""
         if self.consumable:
             return True
 
-        required = max(0, self.quantity - self.consumed)
-
-        return self.allocated_quantity() >= required
+        return self.allocated_quantity() >= self.required_quantity()
 
     def is_overallocated(self):
         """Return True if this BuildLine is over-allocated."""
-        required = max(0, self.quantity - self.consumed)
-
-        return self.allocated_quantity() > required
+        return self.allocated_quantity() > self.required_quantity()
 
     def is_fully_consumed(self) -> bool:
         """Return True if this BuildLine is fully consumed."""

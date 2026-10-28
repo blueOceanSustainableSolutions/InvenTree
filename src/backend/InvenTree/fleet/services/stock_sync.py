@@ -233,8 +233,12 @@ def sync_changes(summary: dict) -> None:
 
 def cancel_gone(deployment: Deployment) -> Deployment:
     """Cancel the READY deployment of a unit which is no longer a fleet unit."""
+    from fleet.services import carry_over
+
     deployment.status = DeploymentStatus.CANCELLED.value
     deployment.save()
+
+    carry_over.release(deployment)
 
     trigger_status_event(deployment)
 

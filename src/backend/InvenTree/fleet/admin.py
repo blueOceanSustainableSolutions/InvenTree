@@ -214,3 +214,21 @@ class MaintenanceTaskAdmin(admin.ModelAdmin):
         'alerts',
     ]
     inlines = [ChecklistResultInline, MaintenanceActionInline]
+
+
+@admin.register(models.CarryOverLine)
+class CarryOverLineAdmin(admin.ModelAdmin):
+    """Admin class for the CarryOverLine model."""
+
+    list_display = ('deployment', 'part', 'quantity', 'status', 'task', 'picked_at')
+    list_filter = ('status',)
+    search_fields = ('deployment__reference', 'part__name', 'task__reference')
+    raw_id_fields = [
+        'deployment',
+        'stock_item',
+        'part',
+        'target_line',
+        'moved_item',
+        'task',
+        'picked_by',
+    ]

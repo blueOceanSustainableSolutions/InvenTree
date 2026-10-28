@@ -55,6 +55,7 @@ import {
 import { InvenTreeTable } from '../../tables/InvenTreeTable';
 import { VerifyResult } from '../panels/DeploymentHealthPanel';
 import { MaintenanceActionTable } from '../tables/MaintenanceActionTable';
+import { CarryOverPanel } from './CarryOverPanel';
 import { ChecklistEditor } from './ChecklistEditor';
 import { StreamStatusList } from './StreamStatusList';
 
@@ -173,10 +174,13 @@ function TaskComponents({
  */
 export function TaskExecution({
   task,
-  onUpdate
+  onUpdate,
+  showCarryOver = true
 }: Readonly<{
   task: any;
   onUpdate: () => void;
+  // Show the carry-over of a swap (the main UI has it in a panel of its own)
+  showCarryOver?: boolean;
 }>): ReactNode {
   const api = useApi();
   const user = useUserState();
@@ -472,6 +476,11 @@ export function TaskExecution({
             </Paper>
           </Stack>
         </SimpleGrid>
+        {isSwap && showCarryOver && (
+          <Paper withBorder p='sm'>
+            <CarryOverPanel taskId={task.pk} onChange={onUpdate} />
+          </Paper>
+        )}
         <Title order={5}>{t`Installed Components`}</Title>
         {!canService && (
           <Alert color='gray'>

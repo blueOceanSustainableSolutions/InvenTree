@@ -924,10 +924,17 @@ class Deployment(
         )
 
     def _action_deploy(self, *args, **kwargs):
-        """Action to be taken when the device is deployed."""
-        from fleet.services import deployment
+        """Action to be taken when the device is deployed.
 
-        return deployment.deploy(self, **kwargs)
+        Deployed without a task: the parts picked to carry over move at once
+        (a swap task moves them when it is completed).
+        """
+        from fleet.services import carry_over, deployment
+
+        result = deployment.deploy(self, **kwargs)
+        carry_over.move(self, user=kwargs.get('user'))
+
+        return result
 
     def recover(self, user=None, **kwargs):
         """Recover the device into stock (see fleet.services.deployment.recover)."""
@@ -2376,6 +2383,7 @@ class MaintenanceAction(
         CLEAN = 'CLEAN', _('Clean')
         FIRMWARE = 'FIRMWARE', _('Firmware')
         REPOSITION = 'REPOSITION', _('Move Site')
+        CARRY_OVER = 'CARRY_OVER', _('Carry Over')
         OTHER = 'OTHER', _('Other')
 
     class Meta:
@@ -2484,3 +2492,135 @@ class MaintenanceAction(
         related_name='+',
         verbose_name=_('Created By'),
     )
+
+
+class CarryOverLine(InvenTree.models.InvenTreeModel):
+    """Consumed stock which a swap carries over from the old device to the new one.
+
+    In a swap, parts consumed by the old device's build order (typically the
+    mooring) stay at sea and go on the new device. The manager picks them on
+    the replacement deployment before the trip. While a pick is pending, it
+    covers the matching line of the new device's build order (as allocated
+    stock does). Completing the swap task moves the stock to the new build
+    order; when the swap does not happen, the pick is released.
+
+    Attributes:
+        deployment: The replacement deployment (the new device)
+        stock_item: The consumed stock row of the old device's build order
+        part: The part of the stock row (kept if the row is deleted)
+        quantity: The quantity carried over (all or part of the row)
+        target_line: The line of the new build order which the stock covers
+        status: Pending, moved or released
+        moved_item: The stock row moved to the new build order (a split-off
+            row when only part of the source row moves)
+        task: The swap task which moved or released the pick
+        picked_by: Who picked it
+        picked_at: When it was picked
+        closed_at: When it was moved or released
+    """
+
+    class Status(models.TextChoices):
+        """State of a carry-over pick."""
+
+        PENDING = 'PENDING', _('Pending')
+        MOVED = 'MOVED', _('Moved')
+        RELEASED = 'RELEASED', _('Released')
+
+    class Meta:
+        """Metaclass options for the CarryOverLine model."""
+
+        verbose_name = _('Carry-over Line')
+        verbose_name_plural = _('Carry-over Lines')
+        ordering = ['deployment', 'pk']
+
+    @staticmethod
+    def get_api_url():
+        """Return the API URL associated with the CarryOverLine model."""
+        return reverse('api-fleet-carry-over-list')
+
+    def __str__(self):
+        """String representation of a CarryOverLine."""
+        return f'{self.deployment} - {self.part} x {self.quantity}'
+
+    deployment = models.ForeignKey(
+        Deployment,
+        on_delete=models.CASCADE,
+        related_name='carry_over_lines',
+        verbose_name=_('Deployment'),
+        help_text=_('The replacement deployment'),
+    )
+
+    stock_item = models.ForeignKey(
+        'stock.StockItem',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='fleet_carry_over_lines',
+        verbose_name=_('Stock Item'),
+        help_text=_('Stock consumed by the build order of the old device'),
+    )
+
+    part = models.ForeignKey(
+        'part.Part',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='+',
+        verbose_name=_('Part'),
+    )
+
+    quantity = models.DecimalField(
+        max_digits=15,
+        decimal_places=5,
+        validators=[MinValueValidator(0)],
+        verbose_name=_('Quantity'),
+    )
+
+    target_line = models.ForeignKey(
+        'build.BuildLine',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='fleet_carry_over_lines',
+        verbose_name=_('Build Line'),
+        help_text=_('Line of the new build order which the stock covers'),
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        verbose_name=_('Status'),
+    )
+
+    moved_item = models.ForeignKey(
+        'stock.StockItem',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='+',
+        verbose_name=_('Moved Stock Item'),
+    )
+
+    task = models.ForeignKey(
+        MaintenanceTask,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='carry_over_lines',
+        verbose_name=_('Task'),
+        help_text=_('The swap task which moved or released this line'),
+    )
+
+    picked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='+',
+        verbose_name=_('Picked By'),
+    )
+
+    picked_at = models.DateTimeField(default=timezone.now, verbose_name=_('Picked At'))
+
+    closed_at = models.DateTimeField(blank=True, null=True, verbose_name=_('Closed At'))

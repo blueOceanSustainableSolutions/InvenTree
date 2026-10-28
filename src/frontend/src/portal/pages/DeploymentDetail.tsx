@@ -44,6 +44,7 @@ import AttachmentPanel from '../../components/panels/AttachmentPanel';
 import NotesPanel from '../../components/panels/NotesPanel';
 import { StatusRenderer } from '../../components/render/StatusRenderer';
 import { useApi } from '../../contexts/ApiContext';
+import { CarryOverPanel } from '../../fleet/components/CarryOverPanel';
 import { ComponentTree } from '../../fleet/components/ComponentTree';
 import { DeploymentTimeline } from '../../fleet/components/DeploymentTimeline';
 import {
@@ -378,6 +379,17 @@ export default function DeploymentDetail(): ReactNode {
               ))}
             </Stack>
           )
+      },
+      {
+        name: 'carry-over',
+        label: t`Carry Over`,
+        icon: <IconAnchor />,
+        hidden: deployment.deployment_type != 'REPLACEMENT',
+        content: deployment.pk ? (
+          <Paper withBorder p='sm'>
+            <CarryOverPanel deploymentId={deployment.pk} />
+          </Paper>
+        ) : null
       },
       {
         name: 'components',

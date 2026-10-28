@@ -539,11 +539,12 @@ class BuildLineFilter(FilterSet):
             )
         )
 
+        # Consumed and carried over stock need no allocation
+        required = F('quantity') - F('consumed') - F('carried_over')
+
         if str2bool(value):
-            return queryset.filter(
-                allocated_quantity__gte=F('quantity') - F('consumed')
-            )
-        return queryset.filter(allocated_quantity__lt=F('quantity') - F('consumed'))
+            return queryset.filter(allocated_quantity__gte=required)
+        return queryset.filter(allocated_quantity__lt=required)
 
     consumed = rest_filters.BooleanFilter(label=_('Consumed'), method='filter_consumed')
 
@@ -581,10 +582,11 @@ class BuildLineFilter(FilterSet):
         )
 
         # A query filter construct to determine the total quantity available for this BuildLine,
-        # taking into account any stock which is already allocated or consumed
+        # taking into account any stock which is already allocated, consumed or carried over
         available = (
             F('allocated_quantity')
             + F('consumed')
+            + F('carried_over')
             + F('available_stock')
             + F('available_substitute_stock')
             + F('available_variant_stock')
@@ -744,7 +746,11 @@ class BuildLineDetail(BuildLineMixin, OutputOptionsMixin, RetrieveUpdateDestroyA
 
     def perform_destroy(self, instance):
         """Only remove requirements which have no allocation or consumption history."""
-        if instance.consumed > 0 or instance.allocations.exists():
+        if (
+            instance.consumed > 0
+            or instance.carried_over > 0
+            or instance.allocations.exists()
+        ):
             raise ValidationError(
                 _('A consumed or allocated build requirement cannot be removed')
             )

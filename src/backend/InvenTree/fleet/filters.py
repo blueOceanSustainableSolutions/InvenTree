@@ -8,6 +8,7 @@ from django_filters.rest_framework.filterset import FilterSet
 
 from fleet.models import (
     Alert,
+    CarryOverLine,
     Deployment,
     DeviceState,
     FieldTrip,
@@ -424,3 +425,37 @@ class FieldTripFilter(FilterSet):
         if str2bool(value):
             return queryset.filter(pk__in=ids)
         return queryset.exclude(pk__in=ids)
+
+
+class CarryOverLineFilter(FilterSet):
+    """Filters for the carry-over lines of swaps."""
+
+    class Meta:
+        """Metaclass options."""
+
+        model = CarryOverLine
+        fields = ['deployment', 'status', 'stock_item', 'part', 'target_line']
+
+    task = rest_filters.ModelChoiceFilter(
+        queryset=MaintenanceTask.objects.all(), label=_('Task'), method='filter_task'
+    )
+
+    def filter_task(self, queryset, name, value):
+        """The lines of the task's deployment (pending, or closed by this task)."""
+        return queryset.filter(deployment=value.deployment_id).filter(
+            Q(status=CarryOverLine.Status.PENDING) | Q(task=value)
+        )
+
+    build = rest_filters.NumberFilter(label=_('Build Order'), method='filter_build')
+
+    def filter_build(self, queryset, name, value):
+        """The lines which cover (or covered) a line of this build order."""
+        return queryset.filter(target_line__build=value)
+
+    source_build = rest_filters.NumberFilter(
+        label=_('Source Build Order'), method='filter_source_build'
+    )
+
+    def filter_source_build(self, queryset, name, value):
+        """The lines picked from the consumed stock of this build order."""
+        return queryset.filter(deployment__replaces__device__build=value)

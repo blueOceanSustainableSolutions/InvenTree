@@ -3,6 +3,7 @@ import { Alert, Skeleton, Stack, Text } from '@mantine/core';
 import {
   IconActivityHeartbeat,
   IconAlertTriangle,
+  IconAnchor,
   IconCalendarEvent,
   IconFlag,
   IconInfoCircle,
@@ -46,6 +47,7 @@ import {
   fleetStatusColor,
   userDisplayName
 } from '../../fleet/components/FleetBadges';
+import { CarryOverPanel } from '../../fleet/components/CarryOverPanel';
 import { FleetMapView } from '../../fleet/components/FleetMap';
 import { deploymentDetailFields } from '../../fleet/details/FleetDetailFields';
 import {
@@ -203,6 +205,16 @@ export default function DeploymentDetail() {
         icon: <IconListCheck />,
         content: deployment.pk ? (
           <DeviceMaterialsPanel deployment={deployment} />
+        ) : null
+      },
+      // Consumed parts (the mooring) which a swap takes over from the old device
+      {
+        name: 'carry-over',
+        label: t`Carry Over`,
+        icon: <IconAnchor />,
+        hidden: deployment.deployment_type != 'REPLACEMENT',
+        content: deployment.pk ? (
+          <CarryOverPanel deploymentId={deployment.pk} />
         ) : null
       },
       {

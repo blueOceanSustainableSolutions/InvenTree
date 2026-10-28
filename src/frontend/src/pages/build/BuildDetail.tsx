@@ -15,7 +15,7 @@ import {
   IconShoppingCart,
   IconSitemap
 } from '@tabler/icons-react';
-import { useMemo } from 'react';
+import { type ReactNode, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
@@ -52,6 +52,10 @@ import { PanelGroup } from '../../components/panels/PanelGroup';
 import ParametersPanel from '../../components/panels/ParametersPanel';
 import { StatusRenderer } from '../../components/render/StatusRenderer';
 import { RenderStockLocation } from '../../components/render/Stock';
+import {
+  BuildCarryOverWarning,
+  useBuildCarryOver
+} from '../../fleet/panels/BuildCarryOver';
 import {
   BuildDeploymentPanel,
   useBuildDeployment
@@ -91,10 +95,14 @@ function NoItems() {
  */
 function BuildLinesPanel({
   build,
-  isLoading
+  isLoading,
+  lineBadges,
+  warning
 }: Readonly<{
   build: any;
   isLoading: boolean;
+  lineBadges?: Record<number, ReactNode>;
+  warning?: ReactNode;
 }>) {
   const bomInformation = useInstance({
     endpoint: ApiEndpoints.bom_validate,
@@ -131,7 +139,8 @@ function BuildLinesPanel({
           <RenderStockLocation instance={buildLocation.instance} />
         </Alert>
       )}
-      <BuildLineTable build={build} />
+      {warning}
+      <BuildLineTable build={build} lineBadges={lineBadges} />
     </Stack>
   );
 }
@@ -469,6 +478,12 @@ export default function BuildDetail() {
     user.hasViewRole(UserRoles.fleet)
   );
 
+  // Fleet swaps: lines covered by stock carried over from another device
+  const carryOver = useBuildCarryOver(
+    build.pk,
+    user.hasViewRole(UserRoles.fleet)
+  );
+
   const buildPanels: PanelType[] = useMemo(() => {
     return [
       {
@@ -485,6 +500,8 @@ export default function BuildDetail() {
           <BuildLinesPanel
             build={build}
             isLoading={buildLineQuery.isFetching || buildLineQuery.isLoading}
+            lineBadges={carryOver.badges}
+            warning={<BuildCarryOverWarning shortages={carryOver.shortages} />}
           />
         )
       },
@@ -612,6 +629,7 @@ export default function BuildDetail() {
     id,
     user,
     fleetDeployment,
+    carryOver,
     partRequirements,
     buildStatus,
     globalSettings,

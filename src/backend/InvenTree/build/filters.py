@@ -5,12 +5,16 @@ from django.db.models.functions import Coalesce, Greatest
 
 
 def annotate_required_quantity():
-    """Annotate the 'required' quantity for each build item in the queryset."""
+    """Annotate the 'required' quantity for each build item in the queryset.
+
+    Consumed stock, and stock which another build order carries over, need no allocation.
+    """
     # Note: The use of Max() here is intentional, to avoid aggregation issues in MySQL
     # Ref: https://github.com/inventree/InvenTree/pull/10398
     return Greatest(
         ExpressionWrapper(
-            Max(F('quantity')) - Max(F('consumed')), output_field=DecimalField()
+            Max(F('quantity')) - Max(F('consumed')) - Max(F('carried_over')),
+            output_field=DecimalField(),
         ),
         0,
         output_field=DecimalField(),

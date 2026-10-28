@@ -28,7 +28,7 @@ import {
   IconWand
 } from '@tabler/icons-react';
 import type { DataTableRowExpansionProps } from 'mantine-datatable';
-import { useCallback, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
 import { useApi } from '../../contexts/ApiContext';
@@ -165,11 +165,14 @@ export function BuildLineSubTable({
 export default function BuildLineTable({
   build,
   output,
-  params = {}
+  params = {},
+  lineBadges
 }: Readonly<{
   build: any;
   output?: any;
   params?: any;
+  // Extra badges per build line (e.g. stock carried over from another build order)
+  lineBadges?: Record<number, ReactNode>;
 }>) {
   const api = useApi();
   const user = useUserState();
@@ -340,6 +343,7 @@ export default function BuildLineTable({
                 expanded={table.isRowExpanded(record.pk)}
               />
               <RenderPartColumn part={record.part_detail} />
+              {lineBadges?.[record.pk]}
             </Group>
           );
         }
@@ -521,7 +525,11 @@ export default function BuildLineTable({
           }
 
           const allocated = record.allocatedQuantity ?? 0;
-          let required = Math.max(0, record.quantity - record.consumed);
+          // Stock carried over from another build order needs no allocation
+          let required = Math.max(
+            0,
+            record.quantity - record.consumed - (record.carried_over ?? 0)
+          );
 
           if (output?.pk) {
             // If an output is specified, we show the allocated quantity for that output
@@ -535,7 +543,9 @@ export default function BuildLineTable({
                 <Text size='sm' style={{ fontStyle: 'italic' }}>
                   {record.consumed >= record.quantity
                     ? t`Fully consumed`
-                    : t`Fully allocated`}
+                    : record.carried_over > 0
+                      ? t`Carried over`
+                      : t`Fully allocated`}
                 </Text>
               </Group>
             );
@@ -572,7 +582,7 @@ export default function BuildLineTable({
         }
       }
     ];
-  }, [hasOutput, isActive, table, output, build.quantity]);
+  }, [hasOutput, isActive, table, output, build.quantity, lineBadges]);
 
   const buildOrderFields = useBuildOrderFields({
     create: true,
@@ -858,7 +868,10 @@ export default function BuildLineTable({
 
       const required = Math.max(
         0,
-        record.quantity - record.consumed - record.allocated
+        record.quantity -
+          record.consumed -
+          (record.carried_over ?? 0) -
+          record.allocated
       );
 
       // Can consume
@@ -1034,7 +1047,10 @@ export default function BuildLineTable({
         color='green'
         onClick={() => {
           let rows = table.selectedRecords
-            .filter((r) => r.allocatedQuantity < r.requiredQuantity)
+            .filter(
+              (r) =>
+                r.allocatedQuantity < r.requiredQuantity - (r.carried_over ?? 0)
+            )
             .filter((r) => !r.consumable);
 
           // From the build order, tracked lines go into its only output

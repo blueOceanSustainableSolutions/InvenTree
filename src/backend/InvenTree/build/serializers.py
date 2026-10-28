@@ -1418,6 +1418,7 @@ class BuildLineSerializer(
             'is_custom',
             'quantity',
             'consumed',
+            'carried_over',
             'allocations',
             'part',
             # Build detail fields
@@ -1450,7 +1451,7 @@ class BuildLineSerializer(
             'category_detail',
             'build_detail',
         ]
-        read_only_fields = ['bom_item', 'consumed', 'allocations']
+        read_only_fields = ['bom_item', 'consumed', 'carried_over', 'allocations']
 
     # Build info fields
     build_reference = serializers.CharField(
