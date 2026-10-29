@@ -264,12 +264,13 @@ export function DeploymentTable({
         sortable: true,
         hidden: mode == 'active',
         // Outside view of the build order: reference and status (read only)
+        // The device's build order if the deployment has none of its own
         render: (record: any) =>
-          record.build ? (
+          record.build_detail ? (
             <Group gap='xs' wrap='nowrap'>
               <RenderInlineModel
-                primary={record.build_detail?.reference ?? `#${record.build}`}
-                url={getDetailUrl(ModelType.build, record.build)}
+                primary={record.build_detail.reference}
+                url={getDetailUrl(ModelType.build, record.build_detail.pk)}
                 navigate={navigate}
               />
               {record.build_detail && (

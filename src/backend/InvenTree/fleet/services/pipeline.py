@@ -548,9 +548,16 @@ def ensure_unit_deployment(stock_item, device_type: FleetDeviceType | None = Non
 
     check_not_decommissioned(stock_item)
 
+    # The build order which made the unit, unless it has a deployment already
+    build = stock_item.build
+
+    if build is not None and Deployment.objects.filter(build=build).exists():
+        build = None
+
     deployment = Deployment.objects.create(
         status=DeploymentStatus.READY.value,
         device_type=device_type,
+        build=build,
         device=stock_item,
         deployment_type=Deployment.DeploymentType.NEW_STATION,
     )

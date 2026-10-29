@@ -406,6 +406,40 @@ class PipelineTest(FleetServiceTestBase):
             Deployment.objects.get(device=output).status, DeploymentStatus.READY.value
         )
 
+    def test_unit_row_build_order(self):
+        """A unit row is linked to the unit's build order, unless it has a row already."""
+        # Built before the fleet module: the build order has no deployment
+        build = self.make_build()
+        Build.objects.filter(pk=build.pk).update(status=BuildStatus.COMPLETE.value)
+        unit = StockItem.objects.create(
+            part=self.part,
+            quantity=1,
+            serial='AUR-0090',
+            location=self.store,
+            build=build,
+        )
+
+        sync_stock_deployments()
+
+        dep = Deployment.objects.get(device=unit)
+        self.assertEqual(dep.build, build)
+        self.assertEqual(dep.build_order, build)
+
+        # Recovered and back for a new deployment: the build order keeps the
+        # first row, the new one shows it through the device
+        Deployment.objects.filter(pk=dep.pk).update(
+            status=DeploymentStatus.RECOVERED.value
+        )
+
+        again = pipeline.ensure_unit_deployment(unit)
+        self.assertNotEqual(again, dep)
+        self.assertIsNone(again.build)
+        self.assertEqual(again.build_order, build)
+
+        # A unit without a build order
+        loose = pipeline.ensure_unit_deployment(self.make_device('AUR-0091'))
+        self.assertIsNone(loose.build_order)
+
     def test_readiness_risks(self):
         """NOT_READY and NO_DEPLOY_DATE risks; nothing from inside the build order."""
         today = current_date()

@@ -101,7 +101,7 @@ def common_fields(deployment: Deployment) -> dict:
 
 def deployment_row(deployment: Deployment, today: date) -> dict:
     """A row for a device which is not deployed."""
-    build = deployment.build
+    build = deployment.build_order
     tasks = [
         task
         for task in deployment.tasks.all()
@@ -186,7 +186,13 @@ def plan_rows(
     )
 
     queryset = Deployment.objects.select_related(
-        'site', 'client', 'build', 'device', 'device__part', 'device_type__part'
+        'site',
+        'client',
+        'build',
+        'device',
+        'device__build',
+        'device__part',
+        'device_type__part',
     ).prefetch_related('tasks', 'tasks__trip')
 
     if site:

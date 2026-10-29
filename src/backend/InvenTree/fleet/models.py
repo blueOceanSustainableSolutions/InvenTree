@@ -891,6 +891,22 @@ class Deployment(
                     }
                 )
 
+    @property
+    def build_order(self):
+        """The build order of the device: the deployment's own, else the device's.
+
+        A build order holds one deployment, so a unit which comes back for a
+        new deployment (or was built before the fleet module) shows the build
+        order of its device.
+        """
+        if self.build_id:
+            return self.build
+
+        if self.device is not None:
+            return self.device.build
+
+        return None
+
     # State transitions (the work is done in fleet.services)
 
     @property

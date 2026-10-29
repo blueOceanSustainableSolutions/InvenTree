@@ -366,8 +366,8 @@ def notify_pipeline_alert(alert: Alert) -> None:
     if deployment is not None:
         facts.append((_('Target Date'), deployment.target_date))
 
-        if deployment.build:
-            facts.append((_('Build Order'), deployment.build.reference))
+        if build := deployment.build_order:
+            facts.append((_('Build Order'), build.reference))
 
     notify.notify(
         'pipeline_risk',

@@ -601,13 +601,13 @@ class DeploymentSerializer(
     build_detail = OptionalField(
         serializer_class=BuildBriefSerializer,
         serializer_kwargs={
-            'source': 'build',
+            'source': 'build_order',
             'many': False,
             'read_only': True,
             'allow_null': True,
         },
         default_include=True,
-        prefetch_fields=['build'],
+        prefetch_fields=['build', 'device__build'],
     )
 
     device_detail = OptionalField(
