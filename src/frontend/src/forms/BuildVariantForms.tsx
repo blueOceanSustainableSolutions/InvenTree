@@ -270,14 +270,27 @@ export function useCreateBuildOrderForm({
       part?: any;
       variantData?: Record<string, any>;
     } = {}) => {
-      if (part?.is_template) {
-        variants.open(part, { ...data, ...variantData });
+      const openFor = (instance?: any) => {
+        if (instance?.is_template) {
+          variants.open(instance, { ...data, ...variantData });
+          return;
+        }
+
+        setInitialData(data);
+        setVariantData(variantData);
+        form.open();
+      };
+
+      // Only the part ID is known: look it up to see if it is a template
+      if (!part && data.part) {
+        api
+          .get(apiUrl(ApiEndpoints.part_list, data.part))
+          .then((response) => openFor(response.data))
+          .catch(() => openFor());
         return;
       }
 
-      setInitialData(data);
-      setVariantData(variantData);
-      form.open();
+      openFor(part);
     }
   };
 }

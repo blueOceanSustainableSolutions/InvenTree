@@ -84,6 +84,8 @@ export function useBuildOrderFields({
         filters: {
           assembly: true,
           virtual: false,
+          // Templates are not built: one of their variants is built instead
+          is_template: create ? false : undefined,
           active: globalSettings.isSet('BUILDORDER_REQUIRE_ACTIVE_PART')
             ? true
             : undefined,
