@@ -2939,6 +2939,18 @@ class StockItem(
         """Return a list of test-result objects for this StockItem."""
         return list(self.testResultMap(**kwargs).values())
 
+    def get_rebuild_date(self):
+        """Return when this item was last rebuilt from a disassembled state (or None)."""
+        entry = (
+            self.tracking_info.filter(
+                tracking_type=StockHistoryCode.BUILD_OUTPUT_REBUILT.value
+            )
+            .order_by('-date')
+            .first()
+        )
+
+        return entry.date if entry else None
+
     def requiredTestStatus(self, required_tests=None):
         """Return the status of the tests required for this StockItem.
 
@@ -2954,6 +2966,12 @@ class StockItem(
             required_tests = self.part.getRequiredTests()
 
         results = self.testResultMap()
+
+        # A rebuilt item must pass its tests again
+        if rebuilt := self.get_rebuild_date():
+            results = {
+                key: result for key, result in results.items() if result.date >= rebuilt
+            }
 
         total = len(required_tests)
         passed = 0

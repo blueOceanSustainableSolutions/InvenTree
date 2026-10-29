@@ -920,14 +920,29 @@ class Build(
             tracking = []
             allocations = []
 
-            outputs = stock.models.StockItem._create_serial_numbers(
-                serials,
-                part=self.part,
-                build=self,
-                batch=batch,
-                location=location,
-                is_building=True,
-            )
+            # Disassembled items keep their serial number, and are rebuilt in place
+            rebuilt = self.part.get_rebuildable_items(serials)
+
+            for item in rebuilt.values():
+                self.rebuild_output(item, location=location, batch=batch, user=user)
+
+                if auto_allocate:
+                    if new_allocations := self.auto_allocate_tracked_output(
+                        item, location=self.take_from
+                    ):
+                        allocations.extend(new_allocations)
+
+            new_serials = [serial for serial in serials if serial not in rebuilt]
+
+            if new_serials:
+                outputs = stock.models.StockItem._create_serial_numbers(
+                    new_serials,
+                    part=self.part,
+                    build=self,
+                    batch=batch,
+                    location=location,
+                    is_building=True,
+                )
 
             for output in outputs:
                 # Generate a new historical tracking entry
@@ -957,6 +972,11 @@ class Build(
 
             # Generate stock allocations
             BuildItem.objects.bulk_create(allocations, batch_size=250)
+
+            outputs = stock.models.StockItem.objects.filter(
+                pk__in=[item.pk for item in rebuilt.values()]
+                + [output.pk for output in outputs]
+            )
 
         else:
             """Create a single build output of the given quantity."""
@@ -990,6 +1010,72 @@ class Build(
 
         return outputs
 
+    def rebuild_output(self, item, location=None, batch='', user=None):
+        """Turn a disassembled stock item back into a build output of this order.
+
+        The item keeps its serial number and history. The previous values are
+        recorded, so that a cancelled rebuild can restore them.
+        Only test results recorded after the rebuild count towards the required tests.
+        """
+        deltas = {
+            'buildorder': self.pk,
+            'batch': batch,
+            'location': location.pk if location else None,
+            'previous_buildorder': item.build_id,
+            'previous_batch': item.batch,
+            'previous_location': item.location_id,
+        }
+
+        item.build = self
+        item.is_building = True
+        item.batch = batch
+        item.location = location
+        item.status = StockStatus.OK.value
+        item.save(add_note=False)
+
+        item.add_tracking_entry(
+            StockHistoryCode.BUILD_OUTPUT_REBUILT, user, deltas=deltas
+        )
+
+    def restore_rebuilt_output(self, output) -> bool:
+        """Return a rebuilt output of this order to its disassembled state.
+
+        Returns:
+            True if the output was restored, False if it was not rebuilt by this order
+        """
+        entry = (
+            output.tracking_info.filter(
+                tracking_type=StockHistoryCode.BUILD_OUTPUT_REBUILT.value
+            )
+            .order_by('-date', '-pk')
+            .first()
+        )
+
+        if (
+            entry is None
+            or not output.is_building
+            or (entry.deltas or {}).get('buildorder') != self.pk
+        ):
+            return False
+
+        deltas = entry.deltas
+
+        output.build = Build.objects.filter(
+            pk=deltas.get('previous_buildorder')
+        ).first()
+        output.batch = deltas.get('previous_batch') or ''
+        output.location = stock.models.StockLocation.objects.filter(
+            pk=deltas.get('previous_location')
+        ).first()
+        output.is_building = False
+        output.status = StockStatus.DISASSEMBLED.value
+        output.save(add_note=False)
+
+        # The rebuild never happened, as for a deleted build output
+        entry.delete()
+
+        return True
+
     @transaction.atomic
     def delete_output(self, output):
         """Remove a build output from the database.
@@ -1009,6 +1095,10 @@ class Build(
 
         # Deallocate all build items against the output
         self.deallocate_stock(output=output)
+
+        # A rebuilt item returns to its disassembled state instead
+        if self.restore_rebuilt_output(output):
+            return
 
         # Remove the build output from the database
         # This is a special case where serialized stock can be deleted,

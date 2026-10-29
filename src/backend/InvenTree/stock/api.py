@@ -582,13 +582,16 @@ class StockFilter(FilterSet):
         return queryset.exclude(query)
 
     def filter_disassembled(self, queryset, name, value):
-        """Filter outputs which have been processed by a disassembly operation."""
+        """Filter outputs which have been processed by a disassembly operation.
+
+        An output which was rebuilt since is no longer disassembled.
+        """
         query = Q(
             tracking_info__tracking_type__in=[
                 StockHistoryCode.BUILD_DISASSEMBLED,
                 StockHistoryCode.QUICK_BUILD_DISASSEMBLED,
             ]
-        )
+        ) & Q(status=StockStatus.DISASSEMBLED.value)
 
         if str2bool(value):
             return queryset.filter(query).distinct()

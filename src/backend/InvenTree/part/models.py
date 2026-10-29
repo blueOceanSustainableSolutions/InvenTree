@@ -913,8 +913,42 @@ class Part(
             # This serial number is perfectly valid
             return True
 
-    def find_conflicting_serial_numbers(self, serials: list) -> list:
-        """For a provided list of serials, return a list of those which are conflicting."""
+    def get_rebuildable_items(self, serials: list) -> dict:
+        """Return the disassembled stock items of this part which can be rebuilt.
+
+        A disassembled item keeps its serial number. A new build output with the
+        same serial rebuilds that item, so that its history carries on.
+
+        Returns:
+            A dict of StockItem objects, keyed by serial number
+        """
+        from stock.models import StockItem
+        from stock.status_codes import StockStatus
+
+        items = StockItem.objects.filter(
+            part=self,
+            serial__in=serials,
+            status=StockStatus.DISASSEMBLED.value,
+            is_building=False,
+            quantity=1,
+            belongs_to__isnull=True,
+            consumed_by__isnull=True,
+            consumed_by_quick_build__isnull=True,
+            customer__isnull=True,
+            sales_order__isnull=True,
+        )
+
+        return {item.serial: item for item in items}
+
+    def find_conflicting_serial_numbers(
+        self, serials: list, allow_rebuild: bool = False
+    ) -> list:
+        """For a provided list of serials, return a list of those which are conflicting.
+
+        Arguments:
+            serials: The serial numbers to check
+            allow_rebuild: If True, disassembled items which can be rebuilt are not conflicts
+        """
         # from part.models import Part
         from stock.models import StockItem
 
@@ -929,6 +963,11 @@ class Part(
             parts = Part.objects.filter(tree_id=self.tree_id)
 
         items = StockItem.objects.filter(part__in=parts, serial__in=serials)
+
+        if allow_rebuild:
+            rebuildable = self.get_rebuildable_items(serials)
+            items = items.exclude(pk__in=[item.pk for item in rebuildable.values()])
+
         items = items.order_by('serial_int', 'serial')
 
         for item in items:

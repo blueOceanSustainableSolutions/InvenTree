@@ -421,7 +421,10 @@ class BuildOutputCreateSerializer(serializers.Serializer):
                 raise ValidationError({'serial_numbers': e.messages})
 
             # Check for conflicting serial numbers
-            existing = part.find_conflicting_serial_numbers(self.serials)
+            # (disassembled items with a matching serial are rebuilt)
+            existing = part.find_conflicting_serial_numbers(
+                self.serials, allow_rebuild=True
+            )
 
             if len(existing) > 0:
                 msg = _('The following serial numbers already exist or are invalid')

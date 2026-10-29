@@ -3,16 +3,19 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.urls import reverse
 
 from rest_framework import status
 
 from build.models import Build, BuildItem, BuildLine
 from build.status_codes import BuildStatus
+from build.tasks import cancel_build
 from common.settings import set_global_setting
+from InvenTree.helpers import current_time
 from InvenTree.unit_test import InvenTreeAPITestCase
-from part.models import BomItem, BomItemSubstitute, Part
-from stock.models import StockItem, StockLocation, StockSortOrder
+from part.models import BomItem, BomItemSubstitute, Part, PartTestTemplate
+from stock.models import StockItem, StockItemTestResult, StockLocation, StockSortOrder
 from stock.status_codes import StockHistoryCode, StockStatus
 
 
@@ -1676,6 +1679,160 @@ class BuildOutputDisassembleTest(BuildAPITest):
                 tracking_type=StockHistoryCode.BUILD_DISASSEMBLED.value
             ).exists()
         )
+
+
+class BuildOutputRebuildTest(BuildAPITest):
+    """Tests for rebuilding a disassembled serialized item."""
+
+    def setUp(self):
+        """Create a disassembled unit, with a test it passed before disassembly."""
+        super().setUp()
+
+        self.product = Part.objects.create(
+            name='Rebuild product', assembly=True, trackable=True, testable=True
+        )
+        self.template = PartTestTemplate.objects.create(
+            part=self.product, test_name='Rebuild test', required=True
+        )
+        self.location = StockLocation.objects.create(name='Disassembled stock')
+        self.old_build = Build.objects.create(
+            part=self.product,
+            reference='BO-9910',
+            quantity=1,
+            completed=1,
+            status=BuildStatus.COMPLETE,
+        )
+        self.unit = StockItem.objects.create(
+            part=self.product,
+            quantity=1,
+            serial='5001',
+            batch='OLD',
+            build=self.old_build,
+            location=self.location,
+            status=StockStatus.DISASSEMBLED.value,
+        )
+        StockItemTestResult.objects.create(
+            stock_item=self.unit,
+            template=self.template,
+            result=True,
+            date=current_time() - timedelta(days=30),
+        )
+        self.unit.add_tracking_entry(
+            StockHistoryCode.BUILD_DISASSEMBLED,
+            self.user,
+            deltas={'buildorder': self.old_build.pk},
+        )
+
+        self.build = Build.objects.create(
+            part=self.product, reference='BO-9911', quantity=2
+        )
+        self.create_url = reverse(
+            'api-build-output-create', kwargs={'pk': self.build.pk}
+        )
+
+    def rebuild(self, serials='5001'):
+        """Create build outputs for the given serials on the new build order."""
+        return self.post(
+            self.create_url,
+            {'quantity': len(serials.split(',')), 'serial_numbers': serials},
+            expected_code=201,
+        )
+
+    def test_rebuild_keeps_item(self):
+        """The disassembled item becomes the output, keeping its history."""
+        self.rebuild('5001, 5002')
+
+        self.unit.refresh_from_db()
+        self.assertEqual(self.unit.build, self.build)
+        self.assertTrue(self.unit.is_building)
+        self.assertEqual(self.unit.status, StockStatus.OK)
+        self.assertEqual(
+            StockItem.objects.filter(part=self.product, serial='5001').count(), 1
+        )
+        self.assertTrue(
+            StockItem.objects.filter(
+                part=self.product, serial='5002', build=self.build
+            ).exists()
+        )
+        self.assertTrue(
+            self.unit.tracking_info.filter(
+                tracking_type=StockHistoryCode.BUILD_DISASSEMBLED.value
+            ).exists()
+        )
+        self.assertTrue(
+            self.unit.tracking_info.filter(
+                tracking_type=StockHistoryCode.BUILD_OUTPUT_REBUILT.value
+            ).exists()
+        )
+
+        # Only disassembled items of the same part are rebuilt
+        other = StockItem.objects.create(part=self.product, quantity=1, serial='5003')
+        response = self.post(
+            self.create_url,
+            {'quantity': 1, 'serial_numbers': '5003'},
+            expected_code=400,
+        )
+        self.assertIn('5003', str(response.data['serial_numbers']))
+        other.refresh_from_db()
+        self.assertIsNone(other.build)
+
+    def test_rebuild_requires_new_tests(self):
+        """Test results from before the rebuild do not count."""
+        self.assertTrue(self.unit.passedAllRequiredTests())
+
+        self.rebuild()
+        self.unit.refresh_from_db()
+        self.assertFalse(self.unit.passedAllRequiredTests())
+
+        with self.assertRaises(DjangoValidationError):
+            self.build.complete_build_output(
+                self.unit, self.user, prevent_on_incomplete=True
+            )
+
+        StockItemTestResult.objects.create(
+            stock_item=self.unit, template=self.template, result=True
+        )
+        self.assertTrue(self.unit.passedAllRequiredTests())
+
+        self.build.complete_build_output(
+            self.unit, self.user, prevent_on_incomplete=True
+        )
+        self.unit.refresh_from_db()
+        self.assertFalse(self.unit.is_building)
+        self.assertEqual(self.unit.status, StockStatus.OK)
+
+        # A rebuilt item is no longer listed as disassembled
+        response = self.get(
+            reverse('api-stock-list'), {'disassembled': True, 'part': self.product.pk}
+        )
+        self.assertEqual(len(response.data), 0)
+
+    def test_cancel_rebuild(self):
+        """Cancelling a rebuilt output restores the disassembled item."""
+        self.rebuild()
+
+        self.post(
+            reverse('api-build-output-delete', kwargs={'pk': self.build.pk}),
+            {'outputs': [{'output': self.unit.pk}]},
+            expected_code=200,
+        )
+
+        self.unit.refresh_from_db()
+        self.assertEqual(self.unit.build, self.old_build)
+        self.assertEqual(self.unit.status, StockStatus.DISASSEMBLED)
+        self.assertEqual(self.unit.location, self.location)
+        self.assertEqual(self.unit.batch, 'OLD')
+        self.assertFalse(self.unit.is_building)
+        self.assertIsNone(self.unit.get_rebuild_date())
+
+        # Cancelling the whole order restores it as well
+        self.rebuild('5001, 5002')
+        cancel_build(self.build.pk, self.user.pk, remove_incomplete_outputs=True)
+
+        self.unit.refresh_from_db()
+        self.assertEqual(self.unit.status, StockStatus.DISASSEMBLED)
+        self.assertEqual(self.unit.build, self.old_build)
+        self.assertFalse(StockItem.objects.filter(serial='5002').exists())
 
 
 class BuildOutputCancelTest(BuildAPITest):

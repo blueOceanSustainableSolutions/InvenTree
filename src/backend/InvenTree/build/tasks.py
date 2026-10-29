@@ -233,6 +233,10 @@ def cancel_build(
         build.allocated_stock.all().delete()
 
     if remove_incomplete_outputs:
+        # Rebuilt items return to their disassembled state, the rest are deleted
+        for output in build.build_outputs.filter(is_building=True):
+            build.restore_rebuilt_output(output)
+
         build.build_outputs.filter(is_building=True).delete()
 
     # Notify users that the order has been canceled
