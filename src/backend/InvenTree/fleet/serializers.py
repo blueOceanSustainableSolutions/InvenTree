@@ -990,7 +990,9 @@ class DeployFieldsSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
         label=_('Deployed At'),
-        help_text=_('Defaults to now'),
+        help_text=_(
+            'When the device went into the water, if it was earlier (defaults to now)'
+        ),
     )
 
     def validate(self, data):
@@ -1287,6 +1289,7 @@ class DeploymentBriefSerializer(InvenTreeModelSerializer):
             'health',
             'site',
             'device',
+            'deployed_at',
             'internal_state',
         ]
         read_only_fields = fields
@@ -1661,6 +1664,7 @@ class MaintenanceTaskSerializer(
             'completed_at',
             'completed_by',
             'completed_by_detail',
+            'recorded_at',
             'technicians',
             'technicians_detail',
             'labour_minutes',
@@ -1687,6 +1691,7 @@ class MaintenanceTaskSerializer(
             'started_by',
             'completed_at',
             'completed_by',
+            'recorded_at',
             'verification',
             'verification_override_reason',
             'follow_up_of',
@@ -2259,6 +2264,15 @@ class TaskCompleteSerializer(TaskActionSerializer):
         ),
     )
 
+    completed_at = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        label=_('Completed On'),
+        help_text=_(
+            'When the work was done, if it was earlier (defaults to now). A deployment or swap uses its deployment date'
+        ),
+    )
+
     def save(self):
         """Complete the task."""
         data = self.validated_data
@@ -2268,6 +2282,7 @@ class TaskCompleteSerializer(TaskActionSerializer):
             labour_minutes=data.get('labour_minutes'),
             summary=data.get('summary', ''),
             override_reason=data.get('override_reason', ''),
+            completed_at=data.get('completed_at'),
         )
 
 

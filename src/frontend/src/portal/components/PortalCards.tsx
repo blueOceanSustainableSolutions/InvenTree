@@ -130,7 +130,8 @@ export function TripCard({ trip }: Readonly<{ trip: any }>): ReactNode {
       </Text>
       <Text size='xs' c='dimmed'>
         {t`Tasks`}: {trip.task_count ?? 0} ({t`open`}:{' '}
-        {trip.open_task_count ?? 0})
+        {trip.open_task_count ?? 0}, {t`completed`}:{' '}
+        {trip.completed_task_count ?? 0})
       </Text>
     </LinkCard>
   );

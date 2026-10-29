@@ -29,7 +29,7 @@ import { type ReactNode, useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RenderPart } from '../../components/render/Part';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
-import { useBuildOrderFields } from '../../forms/BuildForms';
+import { useCreateBuildOrderForm } from '../../forms/BuildVariantForms';
 import {
   useAllocateToTransferOrderForm,
   useTransferOrderAllocateSerialsFields,
@@ -238,19 +238,9 @@ export default function TransferOrderLineItemTable({
     parts: partsToOrder
   });
 
-  const buildOrderFields = useBuildOrderFields({
-    create: true,
-    modalId: 'build-order-create-from-transfer-order'
-  });
-
-  const newBuildOrder = useCreateApiFormModal({
-    url: ApiEndpoints.build_order_list,
-    title: t`Create Build Order`,
+  const newBuildOrder = useCreateBuildOrderForm({
     modalId: 'build-order-create-from-transfer-order',
-    fields: buildOrderFields,
-    initialData: initialData,
-    follow: true,
-    modelType: ModelType.build
+    title: t`Create Build Order`
   });
 
   const createLineFields = useTransferOrderLineItemFields({
@@ -400,12 +390,14 @@ export default function TransferOrderLineItemTable({
           icon: <IconTools />,
           color: 'blue',
           onClick: () => {
-            setInitialData({
-              part: record.part,
-              quantity: (record?.quantity ?? 1) - (record?.allocated ?? 0),
-              transfer_order: orderId
+            newBuildOrder.open({
+              data: {
+                part: record.part,
+                quantity: (record?.quantity ?? 1) - (record?.allocated ?? 0),
+                transfer_order: orderId
+              },
+              part: record.part_detail
             });
-            newBuildOrder.open();
           }
         },
         {

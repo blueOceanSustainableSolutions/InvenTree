@@ -9,8 +9,7 @@ import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
 import useTable from '@lib/hooks/UseTable';
 import type { TableFilter } from '@lib/types/Filters';
-import { useBuildOrderFields } from '../../forms/BuildForms';
-import { useCreateApiFormModal } from '../../hooks/UseForm';
+import { useCreateBuildOrderForm } from '../../forms/BuildVariantForms';
 import { useGlobalSettingsState } from '../../states/SettingsStates';
 import { useUserState } from '../../states/UserState';
 import {
@@ -138,24 +137,11 @@ export function BuildOrderTable({
 
   const user = useUserState();
 
-  const buildOrderFields = useBuildOrderFields({
-    create: true,
-    modalId: 'create-build-order'
-  });
-
-  const newBuild = useCreateApiFormModal({
-    url: ApiEndpoints.build_order_list,
-    title: t`Add Build Order`,
+  const newBuild = useCreateBuildOrderForm({
     modalId: 'create-build-order',
-    fields: buildOrderFields,
-    initialData: {
-      part: partId,
-      sales_order: salesOrderId,
-      parent: parentBuildId
-    },
-    follow: true,
-    modelType: ModelType.build,
-    keepOpenOption: true
+    title: t`Add Build Order`,
+    keepOpenOption: true,
+    onFormSuccess: table.refreshTable
   });
 
   const tableActions = useMemo(() => {
@@ -163,11 +149,19 @@ export function BuildOrderTable({
       <AddItemButton
         hidden={!user.hasAddRole(UserRoles.build)}
         tooltip={t`Add Build Order`}
-        onClick={() => newBuild.open()}
+        onClick={() =>
+          newBuild.open({
+            data: {
+              part: partId,
+              sales_order: salesOrderId,
+              parent: parentBuildId
+            }
+          })
+        }
         key='add-build-order'
       />
     ];
-  }, [user]);
+  }, [user, partId, salesOrderId, parentBuildId]);
 
   return (
     <>

@@ -22,7 +22,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from fleet import notify
 from fleet.events import trigger_status_event
-from fleet.helpers import get_model_setting
+from fleet.helpers import check_field_date, get_model_setting, to_local_date
 from fleet.models import (
     Alert,
     ChecklistResult,
@@ -965,6 +965,47 @@ def verify(task: MaintenanceTask, user=None, client=None) -> dict:
     return result
 
 
+def deployed_by_task(task: MaintenanceTask) -> bool:
+    """True if the deploy step of this deployment (or swap) task put its device in the water."""
+    deployment = task.deployment
+
+    return (
+        task.task_type in DEPLOY_TASK_TYPES
+        and deployment is not None
+        and deployment.status == DeploymentStatus.DEPLOYED.value
+        and deployment.deployed_at is not None
+    )
+
+
+def completion_date(task: MaintenanceTask, completed_at=None, now=None):
+    """When the work of a task was done.
+
+    Field work is often entered later: the date can be in the past, and the
+    next PM date counts from it.
+
+    - A deployment (or swap) task which deployed its device: the deployment
+      date, entered at the deploy step (the date given here is ignored)
+    - Otherwise the date given (defaults to now). It cannot be in the future,
+      nor before the deployment of the task.
+    """
+    now = now or timezone.now()
+
+    if deployed_by_task(task):
+        return task.deployment.deployed_at
+
+    if not completed_at:
+        return now
+
+    deployment = task.deployment
+
+    return check_field_date(
+        completed_at,
+        'completed_at',
+        earliest=deployment.deployed_at if deployment is not None else None,
+        now=now,
+    )
+
+
 @transaction.atomic
 def complete(
     task: MaintenanceTask,
@@ -972,19 +1013,24 @@ def complete(
     labour_minutes: int | None = None,
     summary: str = '',
     override_reason: str = '',
+    completed_at=None,
 ) -> MaintenanceTask:
     """Close a task.
 
     1. Every required checklist item must be answered.
     2. A deployed device must have passed verification, or an override
        reason is given (which creates a CORRECTIVE follow-up task).
-    3. The task is COMPLETED, its alerts are resolved (TASK), an
-       acknowledged problem of the device is cleared, the next PM date is
-       recalculated, a FLEET_MAINTENANCE tracking entry is added to
-       the device, and the completion is notified.
+    3. The task is COMPLETED on the date the work was done (see
+       completion_date; recorded_at keeps when it was entered), its alerts
+       are resolved (TASK), an acknowledged problem of the device is
+       cleared, the next PM date is recalculated, a FLEET_MAINTENANCE
+       tracking entry is added to the device, and the completion is notified.
     """
     lock_task(task)
     require_in_progress(task)
+
+    now = timezone.now()
+    done_at = completion_date(task, completed_at, now=now)
 
     pending = task.checklist.filter(
         required=True, result=ChecklistResult.Result.PENDING
@@ -1015,11 +1061,14 @@ def complete(
         else:
             carry_over.release(task.deployment, task=task)
 
-    now = timezone.now()
-
     task.status = TaskStatus.COMPLETED.value
-    task.completed_at = now
+    task.completed_at = done_at
+    task.recorded_at = now
     task.completed_by = user if user is not None and user.is_authenticated else None
+
+    # Work entered later: it cannot have started after it was done
+    if task.started_at is None or task.started_at > done_at:
+        task.started_at = done_at
 
     if labour_minutes is not None:
         task.labour_minutes = labour_minutes
@@ -1046,6 +1095,15 @@ def complete(
     if task.deployment is not None:
         deployment_service.compute_next_pm(task.deployment)
 
+    note = task.summary[:200]
+
+    # The tracking entry is dated when it is entered: keep the work date
+    if to_local_date(done_at) != to_local_date(now):
+        note = (
+            str(_('Done on'))
+            + f' {to_local_date(done_at).isoformat()}. {note}'.rstrip()
+        )
+
     task.device.add_tracking_entry(
         StockHistoryCode.FLEET_MAINTENANCE,
         user,
@@ -1053,8 +1111,9 @@ def complete(
             'maintenance': task.pk,
             'deployment': task.deployment_id,
             'task_type': task.task_type,
+            'completed_at': done_at.isoformat(),
         },
-        notes=task_note(task, task.summary[:200]),
+        notes=task_note(task, note),
     )
 
     notify_completed(task)

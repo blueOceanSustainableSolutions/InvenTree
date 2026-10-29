@@ -192,7 +192,9 @@ export function useDeployFields({
       new_site_latitude: { ...newSite, required: !site },
       new_site_longitude: { ...newSite, required: !site },
       new_site_depth_m: newSite,
-      deployed_at: {}
+      deployed_at: {
+        description: t`When the device went into the water, if it was earlier. Leave empty for now`
+      }
     };
 
     if (withNote) {
@@ -535,10 +537,19 @@ export function recordActionFields(taskId?: number): ApiFormFieldSet {
 }
 
 /**
- * Fields for completing a task
+ * Fields for completing a task. The work can be entered later: "Completed on"
+ * is when it was done (a task which deployed its device uses the deployment
+ * date instead, so the field is not shown).
  */
-export function completeTaskFields(needsOverride: boolean): ApiFormFieldSet {
+export function completeTaskFields(
+  needsOverride: boolean,
+  usesDeployDate = false
+): ApiFormFieldSet {
   return {
+    completed_at: {
+      hidden: usesDeployDate,
+      exclude: usesDeployDate
+    },
     labour_minutes: {},
     summary: {},
     override_reason: {

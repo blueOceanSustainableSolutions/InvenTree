@@ -72,7 +72,7 @@ export function TripTable({
         sortable: false,
         render: (record: any) => (
           <Text size='sm'>
-            {record.open_task_count ?? 0} / {record.task_count ?? 0}
+            {record.completed_task_count ?? 0} / {record.task_count ?? 0}
           </Text>
         )
       },

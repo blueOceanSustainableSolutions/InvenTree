@@ -1497,7 +1497,29 @@ class QuickBuildCreate(CreateAPI):
         )
 
 
+class BuildVariantCreate(CreateAPI):
+    """Create build orders for variants of a template part."""
+
+    queryset = Build.objects.none()
+    serializer_class = build.serializers.BuildVariantCreateSerializer
+
+    @extend_schema(responses={201: build.serializers.BuildSerializer(many=True)})
+    def post(self, *args, **kwargs):
+        """Create one build order per variant, or per unit for a trackable variant."""
+        serializer = self.get_serializer(data=self.request.data)
+        serializer.is_valid(raise_exception=True)
+        builds = serializer.save()
+
+        return Response(
+            build.serializers.BuildSerializer(
+                builds, many=True, context=self.get_serializer_context()
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
 build_api_urls = [
+    path('variants/', BuildVariantCreate.as_view(), name='api-build-variant-create'),
     # Quick builds
     path(
         'quick/',

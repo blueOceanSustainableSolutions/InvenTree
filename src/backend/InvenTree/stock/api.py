@@ -24,7 +24,7 @@ import common.settings
 import InvenTree.helpers
 import InvenTree.permissions
 import stock.serializers as StockSerializers
-from build.models import Build, QuickBuild
+from build.models import Build, BuildLine, QuickBuild
 from build.serializers import BuildSerializer, QuickBuildSerializer
 from company.models import Company, ManufacturerPart, SupplierPart
 from company.serializers import CompanySerializer
@@ -945,6 +945,17 @@ class StockFilter(FilterSet):
     def filter_bom_item(self, queryset, name, bom_item):
         """Filter based on BOM item."""
         return queryset.filter(bom_item.get_stock_filter())
+
+    build_line = rest_filters.ModelChoiceFilter(
+        label=_('Build Line'),
+        queryset=BuildLine.objects.all(),
+        method='filter_build_line',
+    )
+
+    @extend_schema_field(OpenApiTypes.INT)
+    def filter_build_line(self, queryset, name, build_line):
+        """Filter to stock which can be allocated against a build line."""
+        return queryset.filter(part__in=build_line.get_valid_parts_for_allocation())
 
     part_tree = rest_filters.ModelChoiceFilter(
         label=_('Part Tree'), queryset=Part.objects.all(), method='filter_part_tree'

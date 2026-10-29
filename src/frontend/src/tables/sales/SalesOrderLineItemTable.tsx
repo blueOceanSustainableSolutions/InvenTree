@@ -32,7 +32,7 @@ import type { TableColumn } from '@lib/types/Tables';
 import { RenderPart } from '../../components/render/Part';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
 import { formatCurrency, formatDecimal } from '../../defaults/formatters';
-import { useBuildOrderFields } from '../../forms/BuildForms';
+import { useCreateBuildOrderForm } from '../../forms/BuildVariantForms';
 import {
   useAllocateToSalesOrderForm,
   useSalesOrderAllocateSerialsFields,
@@ -302,19 +302,9 @@ export default function SalesOrderLineItemTable({
     table: table
   });
 
-  const buildOrderFields = useBuildOrderFields({
-    create: true,
-    modalId: 'build-order-create-from-sales-order'
-  });
-
-  const newBuildOrder = useCreateApiFormModal({
-    url: ApiEndpoints.build_order_list,
-    title: t`Create Build Order`,
+  const newBuildOrder = useCreateBuildOrderForm({
     modalId: 'build-order-create-from-sales-order',
-    fields: buildOrderFields,
-    initialData: initialData,
-    follow: true,
-    modelType: ModelType.build
+    title: t`Create Build Order`
   });
 
   const [selectedItems, setSelectedItems] = useState<any[]>([]);
@@ -506,12 +496,14 @@ export default function SalesOrderLineItemTable({
           icon: <IconTools />,
           color: 'blue',
           onClick: () => {
-            setInitialData({
-              part: record.part,
-              quantity: (record?.quantity ?? 1) - (record?.allocated ?? 0),
-              sales_order: orderId
+            newBuildOrder.open({
+              data: {
+                part: record.part,
+                quantity: (record?.quantity ?? 1) - (record?.allocated ?? 0),
+                sales_order: orderId
+              },
+              part: record.part_detail
             });
-            newBuildOrder.open();
           }
         },
         {

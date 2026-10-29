@@ -877,6 +877,41 @@ class TaskLifecycleTest(MaintenanceTestBase):
         with self.assertRaises(ValidationError):
             maintenance.cancel(task)
 
+    def test_complete_entered_later(self):
+        """Work entered later is completed on the day it was done."""
+        dep = self.deploy('AUR-0205', site=self.site, days_ago=200)
+        task = self.started_task(dep)
+        self.answer_checklist(task)
+        self.report_fresh(dep)
+        maintenance.verify(task, user=self.user)
+
+        # Not in the future, nor before the deployment
+        for completed_at in [
+            timezone.now() + timedelta(days=1),
+            dep.deployed_at - timedelta(days=1),
+        ]:
+            with self.assertRaises(ValidationError):
+                maintenance.complete(task, user=self.user, completed_at=completed_at)
+
+        done_at = timezone.now() - timedelta(days=12)
+        maintenance.complete(task, user=self.user, completed_at=done_at)
+
+        task.refresh_from_db()
+        dep.refresh_from_db()
+
+        self.assertEqual(task.completed_at, done_at)
+        self.assertGreater(task.recorded_at, done_at)
+        # It cannot have started after it was done
+        self.assertEqual(task.started_at, done_at)
+
+        # The next PM counts from the day the work was done
+        self.assertEqual(dep.next_pm_date, done_at.date() + timedelta(days=180))
+
+        entry = StockItemTracking.objects.filter(
+            item=dep.device, tracking_type=StockHistoryCode.FLEET_MAINTENANCE.value
+        ).latest('pk')
+        self.assertIn(done_at.date().isoformat(), entry.notes)
+
     def test_workshop_task(self):
         """A task on a unit in stock needs no verification."""
         device = self.make_device('AUR-0204', battery='BAT-0400')

@@ -60,6 +60,10 @@ class AutoCreateBuildsPlugin(EventMixin, InvenTreePlugin):
         ):
             subassembly = bom_item.sub_part
 
+            # Templates are not built: a person picks which variants to build
+            if subassembly.is_template:
+                continue
+
             with_variants = bom_item.allow_variants
 
             # Quantity required for this particular build order

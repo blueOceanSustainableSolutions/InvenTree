@@ -424,6 +424,18 @@ export function taskDetailFields(task: any): FleetDetailFields {
       hidden: !task.completed_at
     },
     {
+      // Work entered later than it was done
+      type: 'date',
+      name: 'recorded_at',
+      label: t`Recorded`,
+      icon: 'calendar',
+      showTime: true,
+      hidden:
+        !task.recorded_at ||
+        !task.completed_at ||
+        task.recorded_at.slice(0, 10) == task.completed_at.slice(0, 10)
+    },
+    {
       type: 'string',
       name: 'started_by',
       label: t`Started By`,

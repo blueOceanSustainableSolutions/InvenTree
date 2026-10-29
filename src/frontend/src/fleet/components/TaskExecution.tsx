@@ -32,6 +32,7 @@ import { apiUrl } from '@lib/functions/Api';
 import useTable from '@lib/hooks/UseTable';
 import type { TableColumn } from '@lib/types/Tables';
 import { useApi } from '../../contexts/ApiContext';
+import { formatDate } from '../../defaults/formatters';
 import { useComponentServiceForms } from '../../forms/ComponentServiceForms';
 import {
   completeTaskFields,
@@ -208,6 +209,14 @@ export function TaskExecution({
     );
   const isSwap = task.task_type == 'SWAP';
 
+  // A deployment or swap task which deployed its device is completed on the
+  // deployment date (entered at the deploy step)
+  const deployedAt =
+    DEPLOY_TASK_TYPES.includes(task.task_type) &&
+    task.deployment_detail?.status == deploymentStatus.DEPLOYED
+      ? task.deployment_detail?.deployed_at
+      : null;
+
   // The deployment (its planned site pre-fills the deploy form)
   const { instance: deployment } = useInstance({
     endpoint: ApiEndpoints.fleet_deployment_list,
@@ -291,16 +300,31 @@ export function TaskExecution({
   const complete = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.fleet_task_complete, task.pk),
     title: t`Complete Task`,
-    fields: completeTaskFields(needsOverride),
+    fields: completeTaskFields(needsOverride, !!deployedAt),
     initialData: {
       labour_minutes: task.labour_minutes,
       summary: task.summary
     },
-    preFormContent: needsOverride ? (
-      <Alert color='orange' title={t`Data check not passed`}>
-        {t`Run "Verify data" first, or give a reason to close the task anyway. A follow-up task is then created.`}
-      </Alert>
-    ) : undefined,
+    preFormContent: (
+      <Stack gap='xs'>
+        {deployedAt ? (
+          <Alert color='blue'>
+            {t`Completed on the deployment date`}:{' '}
+            {formatDate(deployedAt, { showTime: true })}.{' '}
+            {t`The next maintenance counts from that date.`}
+          </Alert>
+        ) : (
+          <Alert color='blue'>
+            {t`Entering the work later? Set "Completed on" to when it was done: the next maintenance counts from that date.`}
+          </Alert>
+        )}
+        {needsOverride && (
+          <Alert color='orange' title={t`Data check not passed`}>
+            {t`Run "Verify data" first, or give a reason to close the task anyway. A follow-up task is then created.`}
+          </Alert>
+        )}
+      </Stack>
+    ),
     successMessage: t`Task completed`,
     onFormSuccess: onUpdate
   });

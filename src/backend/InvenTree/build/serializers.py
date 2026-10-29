@@ -2222,3 +2222,183 @@ class QuickBuildCreateSerializer(QuickBuildRequirementsSerializer):
             )
         except DjangoValidationError as exc:
             raise ValidationError(serializers.as_serializer_error(exc))
+
+
+class BuildVariantItemSerializer(serializers.Serializer):
+    """How many of one variant to build."""
+
+    part = serializers.PrimaryKeyRelatedField(
+        queryset=part_models.Part.objects.all(), required=True, label=_('Variant')
+    )
+
+    quantity = InvenTreeDecimalField(
+        required=False, allow_null=True, label=_('Quantity')
+    )
+
+
+class BuildVariantSharedFieldsSerializer(InvenTreeModelSerializer):
+    """Build order fields shared by every build order created for the variants."""
+
+    class Meta:
+        """Serializer metaclass."""
+
+        model = Build
+        fields = [
+            'title',
+            'parent',
+            'sales_order',
+            'project_code',
+            'priority',
+            'start_date',
+            'target_date',
+            'take_from',
+            'destination',
+            'responsible',
+        ]
+
+
+class BuildVariantCreateSerializer(serializers.Serializer):
+    """Build variants of a template part instead of the template itself.
+
+    One build order is created per variant, or one per unit for a trackable variant.
+    Given a build line, the new build orders are its children, and the line accepts
+    variant stock for its build order.
+    """
+
+    part = serializers.PrimaryKeyRelatedField(
+        queryset=part_models.Part.objects.filter(is_template=True, assembly=True),
+        required=True,
+        label=_('Template'),
+    )
+
+    build_line = serializers.PrimaryKeyRelatedField(
+        queryset=BuildLine.objects.all(),
+        required=False,
+        allow_null=True,
+        label=_('Build Line'),
+    )
+
+    items = BuildVariantItemSerializer(many=True, required=True)
+
+    def get_fields(self):
+        """Add the shared build order fields."""
+        fields = super().get_fields()
+        fields.update(BuildVariantSharedFieldsSerializer().get_fields())
+        return fields
+
+    def validate(self, data):
+        """Check that each requested part is a buildable variant of the template."""
+        data = super().validate(data)
+
+        template = data['part']
+        line = data.get('build_line')
+
+        if line:
+            if line.part_id != template.pk:
+                raise ValidationError({
+                    'build_line': _('Build line does not require this part')
+                })
+
+            data['parent'] = line.build
+
+        variants = set(
+            template.get_descendants(include_self=False).values_list('pk', flat=True)
+        )
+
+        row_errors = [{} for _item in data['items']]
+        total = 0
+
+        for idx, item in enumerate(data['items']):
+            variant = item['part']
+            quantity = item.get('quantity') or 0
+
+            if quantity < 0:
+                row_errors[idx]['quantity'] = [_('Quantity cannot be negative')]
+            elif quantity == 0:
+                continue
+            elif variant.pk not in variants:
+                row_errors[idx]['part'] = [
+                    _('Part is not a variant of the selected template')
+                ]
+            elif variant.is_template:
+                row_errors[idx]['part'] = [
+                    _('Template parts cannot be built. Select one of its variants.')
+                ]
+            elif variant.trackable and quantity != int(quantity):
+                row_errors[idx]['quantity'] = [
+                    _('Trackable parts are built in whole units')
+                ]
+
+            total += quantity
+
+        if any(row_errors):
+            raise ValidationError({'items': row_errors})
+
+        if total <= 0:
+            raise ValidationError({
+                'items': _('Enter a quantity for at least one variant')
+            })
+
+        return data
+
+    def save(self):
+        """Create the build orders, one per variant (or per unit if trackable)."""
+        data = self.validated_data
+        request = self.context.get('request')
+
+        shared = {
+            name: getattr(data[name], 'pk', data[name])
+            for name in BuildVariantSharedFieldsSerializer.Meta.fields
+            if name in data
+        }
+
+        builds = []
+
+        with transaction.atomic():
+            for idx, item in enumerate(data['items']):
+                quantity = item.get('quantity') or 0
+
+                if quantity <= 0:
+                    continue
+
+                variant = item['part']
+
+                # A trackable assembly is built one serialized unit per build order
+                quantities = (
+                    [Decimal(1)] * int(quantity) if variant.trackable else [quantity]
+                )
+
+                for build_quantity in quantities:
+                    serializer = BuildSerializer(
+                        data={
+                            **shared,
+                            'part': variant.pk,
+                            'quantity': build_quantity,
+                            'reference': Build.generate_reference(),
+                        },
+                        context=self.context,
+                    )
+
+                    if not serializer.is_valid():
+                        errors = dict(serializer.errors)
+                        row = {
+                            key: errors.pop(key)
+                            for key in ['part', 'quantity']
+                            if key in errors
+                        }
+                        errors['items'] = [
+                            row if i == idx else {} for i in range(len(data['items']))
+                        ]
+                        raise ValidationError(errors)
+
+                    builds.append(
+                        serializer.save(issued_by=request.user if request else None)
+                    )
+
+            line = data.get('build_line')
+
+            if line and not line.allow_variants:
+                line.custom_allow_variants = True
+                line.save()
+
+        return builds

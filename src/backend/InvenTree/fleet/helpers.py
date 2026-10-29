@@ -1,5 +1,6 @@
 """Helper functions for the fleet app."""
 
+from datetime import timedelta
 from datetime import timezone as dt_timezone
 
 from django.conf import settings
@@ -66,3 +67,47 @@ def normalize_datetime(value):
         return timezone.make_naive(value)
 
     return value
+
+
+# Clock difference allowed between the device which enters a date and the server
+FIELD_DATE_TOLERANCE = timedelta(minutes=5)
+
+
+def check_field_date(value, field: str, earliest=None, now=None):
+    """Check a date of field work entered by hand (it can be in the past).
+
+    Field work is often entered later, when the technician is back online:
+    the date is when the work was done, not when it was entered.
+
+    Arguments:
+        value: The date entered
+        field: The form field which reports an error
+        earliest: The date cannot be before this one (e.g. the deployment)
+        now: The current time (defaults to timezone.now())
+
+    Returns:
+        The date, comparable with timezone.now()
+
+    Raises:
+        ValidationError: The date is in the future, or before the earliest one
+    """
+    from django.core.exceptions import ValidationError
+    from django.utils.formats import date_format
+    from django.utils.translation import gettext_lazy as _
+
+    value = normalize_datetime(value)
+    now = now or timezone.now()
+
+    if value > now + FIELD_DATE_TOLERANCE:
+        raise ValidationError({field: _('The date cannot be in the future')})
+
+    earliest = normalize_datetime(earliest)
+
+    if earliest is not None and value < earliest:
+        raise ValidationError({
+            field: _('The date cannot be before')
+            + ' '
+            + date_format(earliest, 'SHORT_DATETIME_FORMAT')
+        })
+
+    return min(value, now)

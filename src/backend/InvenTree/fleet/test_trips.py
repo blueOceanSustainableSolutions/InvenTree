@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.urls import include, path, reverse
+from django.utils import timezone
 
 from drf_spectacular.generators import SchemaGenerator
 from drf_spectacular.validation import validate_schema
@@ -403,6 +404,42 @@ class Scenario7SwapTest(TripTestBase):
                 device=old_device, status=DeploymentStatus.READY.value
             ).exists()
         )
+
+
+    def test_swap_entered_later(self):
+        """A swap entered later: one date for the deploy, recovery and completion."""
+        old = self.deploy('AUR-0162', site=self.site)
+        new = self.replacement(old, 'AUR-0201')
+
+        trip = self.new_trip(deployments=[new])
+        task = MaintenanceTask.objects.get(deployment=new)
+
+        trips.prepare_kit(trip, [{'stock_item': new.device}], user=self.user)
+        trips.start_trip(trip, user=self.user)
+        maintenance.start(task, user=self.user)
+
+        # Not in the future, nor before the replaced device went in
+        for deployed_at in [
+            timezone.now() + timedelta(days=1),
+            old.deployed_at - timedelta(days=1),
+        ]:
+            with self.assertRaises(ValidationError):
+                maintenance.deploy(task, user=self.user, deployed_at=deployed_at)
+
+        done_at = timezone.now() - timedelta(days=5)
+        maintenance.deploy(task, user=self.user, deployed_at=done_at)
+
+        old.refresh_from_db()
+        self.assertEqual(old.recovered_at, done_at)
+
+        # The date given at completion is ignored: the deploy date counts
+        self.complete(task, new)
+        task.refresh_from_db()
+        new.refresh_from_db()
+
+        self.assertEqual(task.completed_at, done_at)
+        self.assertEqual(task.started_at, done_at)
+        self.assertEqual(new.next_pm_date, done_at.date() + timedelta(days=180))
 
 
 class TripRulesTest(TripTestBase):
@@ -1000,6 +1037,31 @@ class TripAPITest(TripDataMixin, InvenTreeAPITestCase):
         kit = trip.kit_location.pk
         self.delete(self.trip_url(trip), expected_code=204)
         self.assertFalse(StockLocation.objects.filter(pk=kit).exists())
+
+    def test_task_counts(self):
+        """The trip counts its open and completed tasks."""
+        dep = self.deploy('AUR-0315')
+        done = maintenance.create_task(dep.device, task_type=TaskType.PREVENTIVE)
+        other = maintenance.create_task(dep.device, task_type=TaskType.PREVENTIVE)
+        trip = trips.create_trip(
+            title='Counts', start_date=current_date(), tasks=[done, other]
+        )
+        trips.start_trip(trip, user=self.user)
+
+        maintenance.start(done, user=self.user)
+        done.checklist.update(result=ChecklistResult.Result.OK)
+        maintenance.complete(done, user=self.user, override_reason='No data link')
+
+        listed = self.get(reverse('api-fleet-trip-list')).data
+
+        for data in [
+            self.get(self.trip_url(trip)).data,
+            next(row for row in listed if row['pk'] == trip.pk),
+        ]:
+            self.assertEqual(data['completed_task_count'], 1)
+            self.assertEqual(
+                data['open_task_count'], trip.tasks.exclude(pk=done.pk).count()
+            )
 
     def test_alert_create_task_with_trip(self):
         """Creating a task from an alert can put it on a trip."""

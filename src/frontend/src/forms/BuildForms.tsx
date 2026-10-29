@@ -53,10 +53,13 @@ import { TagsField } from './CommonFields';
  */
 export function useBuildOrderFields({
   create,
-  modalId
+  modalId,
+  onTemplatePart
 }: {
   create: boolean;
   modalId: string;
+  // Called when a template part is selected: its variants are built instead
+  onTemplatePart?: (part: any) => void;
 }): ApiFormFieldSet {
   const [destination, setDestination] = useState<number | null | undefined>(
     null
@@ -89,6 +92,11 @@ export function useBuildOrderFields({
             : undefined
         },
         onValueChange(value: any, record?: any) {
+          if (create && record?.is_template && onTemplatePart) {
+            onTemplatePart(record);
+            return;
+          }
+
           // Adjust the destination location for the build order
           if (record) {
             setDestination(

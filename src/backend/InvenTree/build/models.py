@@ -232,6 +232,14 @@ class Build(
                     {'responsible': _('Responsible user or group must be specified')}
                 )
 
+        # A template is never built itself: one of its variants is built instead
+        if self._state.adding and self.part_id and self.part.is_template:
+            raise ValidationError({
+                'part': _(
+                    'Build orders cannot be created for template parts. Build one of its variants instead.'
+                )
+            })
+
         # A trackable assembly is built one serialized unit per build order
         if (
             self.part_id
@@ -1224,15 +1232,7 @@ class Build(
                 return line
 
         for line in lines:
-            if line.bom_item_id:
-                if sub_part in line.bom_item.get_valid_parts_for_allocation():
-                    return line
-            elif (
-                line.allow_variants
-                and line.custom_part.get_descendants(include_self=False)
-                .filter(pk=sub_part.pk)
-                .exists()
-            ):
+            if sub_part in line.get_valid_parts_for_allocation():
                 return line
 
         return None
@@ -1803,6 +1803,13 @@ class Build(
                 else [line_item.part]
             )
 
+            # Variants allowed on this BOM line for this build order only
+            if bom_item and line_item.custom_allow_variants:
+                available_parts = [
+                    *available_parts,
+                    *line_item.part.get_descendants(include_self=False),
+                ]
+
             # Find stock items which match the output serial number
             available_stock = stock.models.StockItem.objects.filter(
                 part__in=list(available_parts),
@@ -1940,6 +1947,15 @@ class Build(
                 if line_item.allow_variants
                 else [line_item.part]
             )
+
+            # Variants allowed on this BOM line for this build order only
+            if bom_item and line_item.custom_allow_variants:
+                available_parts = [
+                    *available_parts,
+                    *line_item.part.get_descendants(include_self=False).filter(
+                        active=True
+                    ),
+                ]
 
             # Look for available stock items
             available_stock = stock.models.StockItem.objects.filter(
@@ -2394,12 +2410,26 @@ class BuildLine(report.mixins.InvenTreeReportMixin, InvenTree.models.InvenTreeMo
 
     @property
     def allow_variants(self):
-        """Return the applicable variant-allocation setting for this line."""
-        return (
-            self.bom_item.allow_variants
-            if self.bom_item_id
-            else self.custom_allow_variants
-        )
+        """Return the applicable variant-allocation setting for this line.
+
+        A BOM line can also allow variants for this build order only (custom_allow_variants),
+        e.g. once variants of a template part have been built for it.
+        """
+        if self.bom_item_id:
+            return self.bom_item.allow_variants or self.custom_allow_variants
+        return self.custom_allow_variants
+
+    def get_valid_parts_for_allocation(self) -> set:
+        """Return the parts whose stock can be allocated against this line."""
+        if self.bom_item_id:
+            parts = set(self.bom_item.get_valid_parts_for_allocation())
+        else:
+            parts = {self.custom_part}
+
+        if self.allow_variants:
+            parts.update(self.part.get_descendants(include_self=False))
+
+        return parts
 
     @property
     def inherited(self):
@@ -2522,16 +2552,10 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
         valid = False
 
         if self.build_line and self.build_line.custom_part_id:
-            valid_parts = [self.build_line.custom_part_id]
-
-            if self.build_line.allow_variants:
-                valid_parts.extend(
-                    self.build_line.custom_part.get_descendants(
-                        include_self=False
-                    ).values_list('pk', flat=True)
-                )
-
-            valid = self.stock_item.part_id in valid_parts
+            valid = (
+                self.stock_item.part
+                in self.build_line.get_valid_parts_for_allocation()
+            )
 
         elif self.bom_item and self.build:
             """
@@ -2553,6 +2577,13 @@ class BuildItem(InvenTree.models.InvenTreeMetadataModel):
                     include_self=False
                 ):
                     valid = self.bom_item.is_stock_item_valid(self.stock_item)
+
+            # Variants allowed on this BOM line for this build order only
+            if not valid and self.build_line.custom_allow_variants:
+                valid = (
+                    self.stock_item.part
+                    in self.build_line.get_valid_parts_for_allocation()
+                )
 
         # If the existing BomItem is *not* valid, try to find a match
         if not valid and self.build and self.stock_item:

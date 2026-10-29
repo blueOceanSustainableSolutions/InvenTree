@@ -35,9 +35,9 @@ import { useApi } from '../../contexts/ApiContext';
 import {
   useAllocateStockToBuildForm,
   useBuildAutoAllocateFields,
-  useBuildOrderFields,
   useConsumeBuildLinesForm
 } from '../../forms/BuildForms';
+import { useCreateBuildOrderForm } from '../../forms/BuildVariantForms';
 import useBackgroundTask from '../../hooks/UseBackgroundTask';
 import {
   useCreateApiFormModal,
@@ -243,7 +243,6 @@ export default function BuildLineTable({
   }, []);
 
   const renderAvailableColumn = useCallback((record: any) => {
-    const bom_item = record?.bom_item_detail ?? {};
     const extra: any[] = [];
     let available = record?.available_stock;
 
@@ -258,7 +257,7 @@ export default function BuildLineTable({
     }
 
     // Account for variant stock
-    if (bom_item.allow_variants && record.available_variant_stock > 0) {
+    if (record.allow_variants && record.available_variant_stock > 0) {
       available += record.available_variant_stock;
       extra.push(
         <Text key='variant' size='sm'>
@@ -584,13 +583,6 @@ export default function BuildLineTable({
     ];
   }, [hasOutput, isActive, table, output, build.quantity, lineBadges]);
 
-  const buildOrderFields = useBuildOrderFields({
-    create: true,
-    modalId: 'new-build-order'
-  });
-
-  const [initialData, setInitialData] = useState<any>({});
-
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
 
   const [selectedRequirement, setSelectedRequirement] = useState<number>(0);
@@ -656,14 +648,10 @@ export default function BuildLineTable({
     onFormSuccess: table.refreshTable
   });
 
-  const newBuildOrder = useCreateApiFormModal({
-    url: ApiEndpoints.build_order_list,
-    title: t`Create Build Order`,
-    fields: buildOrderFields,
+  const newBuildOrder = useCreateBuildOrderForm({
     modalId: 'new-build-order',
-    initialData: initialData,
-    follow: true,
-    modelType: ModelType.build
+    title: t`Create Build Order`,
+    onFormSuccess: table.refreshTable
   });
 
   const [allocateTaskId, setAllocateTaskId] = useState<string>('');
@@ -975,12 +963,15 @@ export default function BuildLineTable({
           hidden: !canBuild || !isActive,
           color: 'blue',
           onClick: () => {
-            setInitialData({
-              part: record.part,
-              parent: build.pk,
-              quantity: record.quantity - record.allocated
+            newBuildOrder.open({
+              data: {
+                part: record.part,
+                parent: build.pk,
+                quantity: record.quantity - record.allocated
+              },
+              part: record.part_detail,
+              variantData: { build_line: record.pk }
             });
-            newBuildOrder.open();
           }
         },
         RowViewAction({

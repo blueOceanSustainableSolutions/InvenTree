@@ -172,6 +172,7 @@ export default function TaskDetail(): ReactNode {
                 fields.scheduled_date,
                 fields.started_at,
                 fields.completed_at,
+                fields.recorded_at,
                 fields.completed_by,
                 fields.technicians,
                 fields.labour_minutes,

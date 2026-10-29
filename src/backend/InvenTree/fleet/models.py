@@ -1951,8 +1951,9 @@ class MaintenanceTask(
         scheduled_date: When the task is scheduled
         started_at: When work started
         started_by: Who started the work
-        completed_at: When work was completed
+        completed_at: When the work was done (can be earlier than when it was entered)
         completed_by: Who completed the work
+        recorded_at: When the completion was entered
         technicians: Users who worked on the task
         labour_minutes: Time spent (minutes)
         as_found: Condition of the device as found
@@ -2220,7 +2221,10 @@ class MaintenanceTask(
     )
 
     completed_at = models.DateTimeField(
-        blank=True, null=True, verbose_name=_('Completed At')
+        blank=True,
+        null=True,
+        verbose_name=_('Completed At'),
+        help_text=_('When the work was done'),
     )
 
     completed_by = models.ForeignKey(
@@ -2230,6 +2234,13 @@ class MaintenanceTask(
         null=True,
         related_name='+',
         verbose_name=_('Completed By'),
+    )
+
+    recorded_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        verbose_name=_('Recorded At'),
+        help_text=_('When the completion was entered'),
     )
 
     technicians = models.ManyToManyField(

@@ -90,6 +90,7 @@ export enum ApiEndpoints {
 
   // Build API endpoints
   build_order_list = 'build/',
+  build_order_variants = 'build/variants/',
   build_order_issue = 'build/:id/issue/',
   build_order_cancel = 'build/:id/cancel/',
   build_order_raw_materials = 'build/:id/raw-materials/',

@@ -21,7 +21,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from fleet.events import trigger_status_event, trigger_status_events
-from fleet.helpers import to_local_date
+from fleet.helpers import check_field_date, to_local_date
 from fleet.models import (
     Alert,
     Coverage,
@@ -90,8 +90,11 @@ def deploy(
     - Ships a unit in stock on its own from its sales order; a unit already
       shipped keeps its customer. Adds a FLEET_DEPLOYED tracking entry
     - Recovers the deployment it replaces, if any (a return order brings
-      that device to the office)
+      that device to the office), on the same date
     - Computes the next preventive maintenance date
+
+    The deployment date can be in the past (the deploy is entered after the
+    field work), but not in the future, nor before the replaced deployment.
     """
     # Lock the row, and work on the caller's instance so that it stays current
     Deployment.objects.select_for_update().filter(pk=deployment.pk).first()
@@ -146,12 +149,26 @@ def deploy(
 
     # Recover the device being replaced first: a site has one active deployment
     replaced = deployment.replaces
+    swapped = (
+        replaced is not None and replaced.status == DeploymentStatus.DEPLOYED.value
+    )
 
-    if replaced is not None and replaced.status == DeploymentStatus.DEPLOYED.value:
+    deployed_at = (
+        check_field_date(
+            deployed_at,
+            'deployed_at',
+            earliest=replaced.deployed_at if swapped else None,
+        )
+        if deployed_at
+        else timezone.now()
+    )
+
+    if swapped:
         recover(
             replaced,
             user=user,
             notes=str(_('Replaced by')) + f' {deployment.reference}',
+            recovered_at=deployed_at,
         )
 
     active = (
@@ -169,7 +186,7 @@ def deploy(
         )
 
     deployment.client = customer
-    deployment.deployed_at = deployed_at or timezone.now()
+    deployment.deployed_at = deployed_at
     deployment.status = DeploymentStatus.DEPLOYED.value
     deployment.save()
 
@@ -225,8 +242,11 @@ def create_return_order(deployment: Deployment, device, user=None, notes: str = 
 
 
 @transaction.atomic
-def recover(deployment: Deployment, user=None, notes: str = ''):
+def recover(deployment: Deployment, user=None, notes: str = '', recovered_at=None):
     """Recover a deployed device: it goes back to the office on a return order.
+
+    recovered_at is when the device left the water (defaults to now): a swap
+    recovers the replaced device on the date of the new deployment.
 
     - The deployment is RECOVERED and its open alerts are resolved
     - A return order (issued) brings the device to the office; the office
@@ -243,7 +263,7 @@ def recover(deployment: Deployment, user=None, notes: str = ''):
     now = timezone.now()
 
     deployment.status = DeploymentStatus.RECOVERED.value
-    deployment.recovered_at = now
+    deployment.recovered_at = recovered_at or now
     deployment.save()
 
     text = f'Recovered {deployment.reference}'
