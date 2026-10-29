@@ -388,12 +388,17 @@ class Scenario7SwapTest(TripTestBase):
         new.refresh_from_db()
         self.assertEqual(new.next_pm_date, current_date() + timedelta(days=180))
 
-        # Reconcile closes the trip; the office receives the old device on
-        # its return order
+        # Reconcile lists the old device, receives it on its return order
+        # (into the workshop) and closes the trip
+        self.assertEqual(list(trips.recovered_devices(trip)), [old_device])
+
         result = trips.reconcile(trip, user=self.user)
         self.assertTrue(result['closed'])
+        self.assertEqual(result['received'], 1)
+        self.assertFalse(trips.recovered_devices(trip).exists())
 
-        return_line.order.receive_line_item(return_line, self.workshop, self.user)
+        return_line.refresh_from_db()
+        self.assertIsNotNone(return_line.received_date)
         old_device.refresh_from_db()
         self.assertIsNone(old_device.customer)
         self.assertEqual(old_device.location, self.workshop)
@@ -440,6 +445,69 @@ class Scenario7SwapTest(TripTestBase):
         self.assertEqual(task.completed_at, done_at)
         self.assertEqual(task.started_at, done_at)
         self.assertEqual(new.next_pm_date, done_at.date() + timedelta(days=180))
+
+
+class RecoveryTaskTest(TripTestBase):
+    """A recovery task recovers its device, which reconcile puts back in stock."""
+
+    def test_recovery_task(self):
+        """Completing the task recovers the device (no data check); reconcile receives it."""
+        dep = self.deploy('AUR-0170', site=self.site)
+        device = dep.device
+
+        task = maintenance.create_task(device, TaskType.RECOVERY)
+        trip = self.new_trip(tasks=[task])
+        trips.start_trip(trip, user=self.user)
+
+        task.refresh_from_db()
+        maintenance.start(task, user=self.user)
+        task.checklist.filter(result=ChecklistResult.Result.PENDING).update(
+            result=ChecklistResult.Result.OK
+        )
+
+        # Out of the water: no "Verify data", no override reason
+        self.assertTrue(maintenance.recovers_device(task))
+        self.assertFalse(maintenance.needs_verification(task))
+
+        with self.assertRaises(ValidationError):
+            maintenance.verify(task)
+
+        done_at = timezone.now() - timedelta(days=1)
+        maintenance.complete(task, user=self.user, completed_at=done_at)
+
+        task.refresh_from_db()
+        dep.refresh_from_db()
+        device.refresh_from_db()
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED.value)
+        self.assertEqual(task.verification_override_reason, '')
+        self.assertFalse(MaintenanceTask.objects.filter(follow_up_of=task).exists())
+
+        # The same as Recover: the deployment is closed on the completion
+        # date, and a return order brings the device back
+        self.assertEqual(dep.status, DeploymentStatus.RECOVERED.value)
+        self.assertEqual(dep.recovered_at, done_at)
+        return_line = pipeline.get_return_line(device)
+        self.assertIsNotNone(return_line)
+        self.assertEqual(device.customer, self.customer)
+
+        # Reconcile shows the device, and receives it where chosen
+        self.assertEqual(list(trips.recovered_devices(trip)), [device])
+
+        result = trips.reconcile(
+            trip,
+            user=self.user,
+            returns=[{'stock_item': device, 'location': self.store}],
+        )
+
+        self.assertTrue(result['closed'])
+        self.assertEqual(result['received'], 1)
+
+        device.refresh_from_db()
+        return_line.refresh_from_db()
+        self.assertIsNone(device.customer)
+        self.assertEqual(device.location, self.store)
+        self.assertIsNotNone(return_line.received_date)
 
 
 class TripRulesTest(TripTestBase):

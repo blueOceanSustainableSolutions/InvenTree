@@ -198,7 +198,14 @@ export function TaskExecution({
     task.deployment_detail?.status == deploymentStatus.DEPLOYED &&
     task.deployment_detail?.internal_state != 'DOCKED';
   const verification = task.verification;
-  const needsOverride = deployed && !verification?.passed;
+
+  // Completing a recovery task of a deployed device recovers it (as the
+  // Recover action does): it comes out of the water, so no data check
+  const isRecovery = task.task_type == 'RECOVERY';
+  const recovers =
+    isRecovery && task.deployment_detail?.status == deploymentStatus.DEPLOYED;
+  const verifiable = deployed && !isRecovery;
+  const needsOverride = verifiable && !verification?.passed;
 
   // A deployment or swap task whose device is not in the water yet
   const canDeploy =
@@ -249,7 +256,7 @@ export function TaskExecution({
         </Alert>
         {isSwap && (
           <Alert color='orange' title={t`Swap`}>
-            {t`The device it replaces is recovered into the "Removed" location of the field trip (or the fleet workshop without a trip). Reconciling the trip moves it to the workshop.`}
+            {t`The device it replaces is recovered: a return order brings it back. Reconciling the trip receives it into the workshop (or another location you choose).`}
           </Alert>
         )}
       </Stack>
@@ -316,6 +323,11 @@ export function TaskExecution({
         ) : (
           <Alert color='blue'>
             {t`Entering the work later? Set "Completed on" to when it was done: the next maintenance counts from that date.`}
+          </Alert>
+        )}
+        {recovers && (
+          <Alert color='orange' title={t`Recover Device`}>
+            {t`Completing the task recovers the device on the completion date: the deployment is closed and a return order brings the device to the office.`}
           </Alert>
         )}
         {needsOverride && (
@@ -386,7 +398,7 @@ export function TaskExecution({
                   <Title order={5}>{t`Deploy`}</Title>
                   <Text size='sm' c='dimmed'>
                     {isSwap
-                      ? t`Put the new device in the water. The replaced device goes to the "Removed" location of the trip.`
+                      ? t`Put the new device in the water. The replaced device is recovered, and received into stock when the trip is reconciled.`
                       : t`Put the device in the water.`}
                   </Text>
                   <Group gap='xs'>
@@ -457,20 +469,24 @@ export function TaskExecution({
             <Paper withBorder p='sm'>
               <Stack gap='xs'>
                 <Title order={5}>{t`Verify and Close`}</Title>
-                {deployed ? (
+                {verifiable ? (
                   <>
                     <Text size='sm' c='dimmed'>
                       {t`Check that every essential stream has sent data since the work started.`}
                     </Text>
                     {verification && <VerifyResult result={verification} />}
                   </>
+                ) : recovers ? (
+                  <Text size='sm' c='dimmed'>
+                    {t`Completing the task recovers the device: it comes out of the water, so no data check is needed.`}
+                  </Text>
                 ) : (
                   <Text size='sm' c='dimmed'>
                     {t`The device is not in the water, so no data check is needed.`}
                   </Text>
                 )}
                 <Group gap='xs'>
-                  {deployed && (
+                  {verifiable && (
                     <Button
                       variant='outline'
                       leftSection={<IconRefresh size={18} />}
@@ -484,12 +500,21 @@ export function TaskExecution({
                   <Button
                     color='green'
                     leftSection={<IconCircleCheck size={18} />}
-                    disabled={!canChange || task.checklist_pending > 0}
+                    disabled={
+                      !canChange ||
+                      task.checklist_pending > 0 ||
+                      (recovers && !canService)
+                    }
                     onClick={() => complete.open()}
                   >
                     {t`Complete`}
                   </Button>
                 </Group>
+                {recovers && !canService && (
+                  <Text size='xs' c='dimmed'>
+                    {t`Recovering also needs the stock change permission.`}
+                  </Text>
+                )}
                 {task.checklist_pending > 0 && (
                   <Text size='xs' c='orange'>
                     {t`Required checklist items to answer`}:{' '}

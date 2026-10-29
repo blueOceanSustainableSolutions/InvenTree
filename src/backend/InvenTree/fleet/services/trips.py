@@ -21,9 +21,15 @@ import structlog
 from fleet import notify
 from fleet.events import trigger_status_event
 from fleet.helpers import get_model_setting
-from fleet.models import Deployment, FieldTrip, MaintenanceTask, TripKitLine
+from fleet.models import (
+    Deployment,
+    FieldTrip,
+    MaintenanceTask,
+    TaskType,
+    TripKitLine,
+)
 from fleet.services import deployment as deployment_service
-from fleet.services import maintenance
+from fleet.services import maintenance, pipeline
 from fleet.status_codes import (
     DeploymentStatus,
     TaskStatus,
@@ -132,6 +138,40 @@ def removed_stock(trip: FieldTrip):
         customer=None,
         consumed_by=None,
     )
+
+
+def recovered_devices(trip: FieldTrip):
+    """Devices taken out of the water on the trip, still to be received into stock.
+
+    The device of a completed recovery task, and the device replaced by a
+    swap task, while its return order line is open.
+    """
+    from order.models import ReturnOrderLineItem
+    from order.status_codes import ReturnOrderStatusGroups
+
+    ids = set()
+
+    for task in trip.tasks.filter(
+        status=TaskStatus.COMPLETED.value,
+        task_type__in=[TaskType.RECOVERY, TaskType.SWAP],
+    ).select_related('deployment__replaces'):
+        if task.task_type == TaskType.RECOVERY:
+            device_id = task.device_id
+        elif task.deployment is not None and task.deployment.replaces is not None:
+            device_id = task.deployment.replaces.device_id
+        else:
+            continue
+
+        if device_id is not None:
+            ids.add(device_id)
+
+    returning = ReturnOrderLineItem.objects.filter(
+        item__in=ids,
+        received_date__isnull=True,
+        order__status__in=ReturnOrderStatusGroups.OPEN,
+    ).values('item')
+
+    return StockItem.objects.filter(pk__in=returning)
 
 
 def kit_locations():
@@ -495,13 +535,16 @@ def reconcile(trip: FieldTrip, user=None, returns=None) -> dict:
       pk to a location), else the part's default location.
     - Components in "Removed" go to FLEET_WORKSHOP_LOCATION (unless another
       location is given), keeping their status (e.g. DAMAGED).
+    - Devices recovered on the trip (recovery and swap tasks) are received on
+      their return order into FLEET_WORKSHOP_LOCATION (unless another location
+      is given).
     - Tasks which were not started go back to PROPOSED, without the trip.
     - The trip is CLOSED once the kit is empty and every task is completed or
       cancelled; otherwise it stays RECONCILING, and the result says why.
 
     Returns:
-        {'returned': n, 'to_workshop': n, 'released': n, 'missing_location':
-        [items], 'open_tasks': [references], 'closed': bool}
+        {'returned': n, 'to_workshop': n, 'received': n, 'released': n,
+        'missing_location': [items], 'open_tasks': [references], 'closed': bool}
     """
     lock_trip(trip)
 
@@ -567,6 +610,19 @@ def reconcile(trip: FieldTrip, user=None, returns=None) -> dict:
         move_removed(item, location, notes, user)
         to_workshop += 1
 
+    received = 0
+
+    for item in recovered_devices(trip):
+        location = returns.get(item.pk) or workshop
+
+        if location is None or location.pk in kit_ids or location.structural:
+            missing.append(item)
+            continue
+
+        line = pipeline.get_return_line(item)
+        line.order.receive_line_item(line, location, user, note=notes)
+        received += 1
+
     released = release_tasks(trip)
 
     open_tasks = list(
@@ -586,6 +642,7 @@ def reconcile(trip: FieldTrip, user=None, returns=None) -> dict:
     return {
         'returned': returned,
         'to_workshop': to_workshop,
+        'received': received,
         'released': released,
         'missing_location': [str(item) for item in missing],
         'open_tasks': open_tasks,

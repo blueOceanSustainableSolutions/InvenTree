@@ -2703,7 +2703,7 @@ class KitLineAvailabilitySerializer(serializers.Serializer):
 
 
 class TripKitSerializer(serializers.Serializer):
-    """The kit of a trip: planned lines, the kit contents and removed components."""
+    """The kit of a trip: planned lines, the kit contents, removed components and recovered devices."""
 
     trip = serializers.IntegerField()
     kit_location = serializers.IntegerField(allow_null=True)
@@ -2711,6 +2711,9 @@ class TripKitSerializer(serializers.Serializer):
     lines = KitLineAvailabilitySerializer(many=True)
     contents = KitStockSerializer(many=True)
     removed = KitStockSerializer(many=True)
+    recovered = KitStockSerializer(
+        many=True, help_text='Devices recovered on the trip, still on their return order'
+    )
 
 
 class TripAddTasksSerializer(TripActionSerializer):
@@ -2847,7 +2850,7 @@ class TripReconcileSerializer(TripActionSerializer):
         required=False,
         label=_('Returns'),
         help_text=_(
-            'Destination per stock item (default: the part default location; removed components go to the workshop)'
+            'Destination per stock item (default: the part default location; removed components and recovered devices go to the workshop)'
         ),
     )
 
@@ -2865,6 +2868,7 @@ class TripReconcileResultSerializer(serializers.Serializer):
 
     returned = serializers.IntegerField()
     to_workshop = serializers.IntegerField()
+    received = serializers.IntegerField()
     released = serializers.IntegerField()
     missing_location = serializers.ListField(child=serializers.CharField())
     open_tasks = serializers.ListField(child=serializers.CharField())

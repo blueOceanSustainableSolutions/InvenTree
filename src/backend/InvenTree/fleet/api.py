@@ -48,7 +48,15 @@ from fleet.models import (
     StreamTemplate,
     TripKitLine,
 )
-from fleet.services import carry_over, device_state, monitoring, pipeline, plan, trips
+from fleet.services import (
+    carry_over,
+    device_state,
+    maintenance,
+    monitoring,
+    pipeline,
+    plan,
+    trips,
+)
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -1003,9 +1011,24 @@ class TaskVerify(TaskActionMixin, CreateAPI):
 
 
 class TaskComplete(TaskActionMixin, CreateAPI):
-    """Close a task."""
+    """Close a task.
+
+    Completing a recovery task of a deployed device recovers it, so it also
+    needs the stock change role, as the Recover action does.
+    """
 
     serializer_class = fleet_serializers.TaskCompleteSerializer
+
+    def post(self, request, *args, **kwargs):
+        """Check the stock role of a recovery, then close the task."""
+        if maintenance.recovers_device(self.get_target()) and not check_user_role(
+            request.user, 'stock', 'change'
+        ):
+            raise PermissionDenied(
+                _('This action also requires the role') + ' stock.change'
+            )
+
+        return super().post(request, *args, **kwargs)
 
 
 class TaskCancel(TaskActionMixin, CreateAPI):
@@ -1290,6 +1313,9 @@ def trip_kit_data(trip: FieldTrip) -> dict:
             .select_related('part', 'location')
             .order_by('part__name', 'serial', 'pk'),
             'removed': trips.removed_stock(trip)
+            .select_related('part', 'location')
+            .order_by('part__name', 'serial', 'pk'),
+            'recovered': trips.recovered_devices(trip)
             .select_related('part', 'location')
             .order_by('part__name', 'serial', 'pk'),
         }

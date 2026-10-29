@@ -931,13 +931,24 @@ def deploy(
     return record
 
 
+def recovers_device(task: MaintenanceTask) -> bool:
+    """True if completing the task recovers its device (a recovery task of a deployed device)."""
+    return (
+        task.task_type == TaskType.RECOVERY
+        and task.deployment is not None
+        and task.deployment.can_recover
+    )
+
+
 def needs_verification(task: MaintenanceTask) -> bool:
     """Whether the task must pass "Verify data" (a device in the water).
 
-    A docked device is deployed but on land, so it is not verified.
+    A docked device is deployed but on land, so it is not verified. Nor is
+    the device of a recovery task: it is taken out of the water.
     """
     return (
-        task.deployment is not None
+        task.task_type != TaskType.RECOVERY
+        and task.deployment is not None
         and task.deployment.status == DeploymentStatus.DEPLOYED.value
         and not device_state.is_docked(task.deployment)
     )
@@ -1019,8 +1030,12 @@ def complete(
 
     1. Every required checklist item must be answered.
     2. A deployed device must have passed verification, or an override
-       reason is given (which creates a CORRECTIVE follow-up task).
-    3. The task is COMPLETED on the date the work was done (see
+       reason is given (which creates a CORRECTIVE follow-up task). A
+       recovery task is not verified.
+    3. A recovery task of a deployed device recovers it on the completion
+       date, the same as the Recover action (a return order brings it to
+       the office).
+    4. The task is COMPLETED on the date the work was done (see
        completion_date; recorded_at keeps when it was entered), its alerts
        are resolved (TASK), an acknowledged problem of the device is
        cleared, the next PM date is recalculated, a FLEET_MAINTENANCE
@@ -1061,6 +1076,15 @@ def complete(
         else:
             carry_over.release(task.deployment, task=task)
 
+    recovered = recovers_device(task)
+
+    if recovered:
+        task.deployment.recover(
+            user=user,
+            notes=str(_('Recovery task')) + f' {task.reference}',
+            recovered_at=done_at,
+        )
+
     task.status = TaskStatus.COMPLETED.value
     task.completed_at = done_at
     task.recorded_at = now
@@ -1092,7 +1116,8 @@ def complete(
         task.device, str(_('Cleared: task completed')) + f' ({task.reference})', user
     )
 
-    if task.deployment is not None:
+    # A recovered deployment keeps its PM date, as with the Recover action
+    if task.deployment is not None and not recovered:
         deployment_service.compute_next_pm(task.deployment)
 
     note = task.summary[:200]

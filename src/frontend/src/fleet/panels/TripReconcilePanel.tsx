@@ -104,11 +104,18 @@ function ReturnTable({
 
 /** Result of the last reconcile */
 function ReconcileResult({ result }: Readonly<{ result: any }>): ReactNode {
+  const counts = (
+    <>
+      {t`Returned to stock`}: {result.returned} · {t`To the workshop`}:{' '}
+      {result.to_workshop} · {t`Devices received`}: {result.received} ·{' '}
+      {t`Tasks released`}: {result.released}
+    </>
+  );
+
   if (result.closed) {
     return (
       <Alert color='green' icon={<IconCircleCheck />} title={t`Trip closed`}>
-        {t`Returned to stock`}: {result.returned} · {t`To the workshop`}:{' '}
-        {result.to_workshop} · {t`Tasks released`}: {result.released}
+        {counts}
       </Alert>
     );
   }
@@ -120,10 +127,7 @@ function ReconcileResult({ result }: Readonly<{ result: any }>): ReactNode {
       title={t`The trip is not closed yet`}
     >
       <Stack gap='xs'>
-        <Text size='sm'>
-          {t`Returned to stock`}: {result.returned} · {t`To the workshop`}:{' '}
-          {result.to_workshop} · {t`Tasks released`}: {result.released}
-        </Text>
+        <Text size='sm'>{counts}</Text>
         {result.missing_location?.length > 0 && (
           <>
             <Text size='sm' fw={500}>
@@ -199,6 +203,7 @@ export function TripReconcilePanel({
 
   const contents: any[] = kit?.contents ?? [];
   const removed: any[] = kit?.removed ?? [];
+  const recovered: any[] = kit?.recovered ?? [];
 
   const reconcile = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.fleet_trip_reconcile, trip.pk),
@@ -207,7 +212,8 @@ export function TripReconcilePanel({
       <Stack gap='xs'>
         <Text size='sm'>
           {t`Kit leftovers`}: {contents.length} · {t`Removed components`}:{' '}
-          {removed.length} · {t`Other destinations`}: {returns.length}
+          {removed.length} · {t`Recovered devices`}: {recovered.length} ·{' '}
+          {t`Other destinations`}: {returns.length}
         </Text>
         <Text size='sm' c='dimmed'>
           {t`Tasks which were not started go back to proposed. The trip closes when the kit is empty and no task is in progress.`}
@@ -257,6 +263,19 @@ export function TripReconcilePanel({
             </Text>
             <ReturnTable
               items={removed}
+              defaultText={() => t`Fleet workshop`}
+              onChange={setDestination}
+            />
+          </Stack>
+        </Paper>
+        <Paper withBorder p='sm'>
+          <Stack gap='xs'>
+            <Title order={5}>{t`Recovered Devices`}</Title>
+            <Text size='sm' c='dimmed'>
+              {t`Devices taken out of the water on this trip (recovery and swap tasks). They are received on their return order into the fleet workshop, unless you choose another destination.`}
+            </Text>
+            <ReturnTable
+              items={recovered}
               defaultText={() => t`Fleet workshop`}
               onChange={setDestination}
             />
