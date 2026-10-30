@@ -74,7 +74,7 @@ from generic.states.api import StatusView
 from InvenTree.api import meta_path
 from InvenTree.fields import InvenTreeOutputOption, OutputConfiguration
 from InvenTree.filters import SEARCH_ORDER_FILTER
-from InvenTree.helpers import current_date
+from InvenTree.helpers import current_date, str2bool
 from InvenTree.mixins import (
     CreateAPI,
     ListAPI,
@@ -1510,6 +1510,11 @@ class FleetPlan(FleetReadView):
                 'kind', type=str, description="'deployment' or 'maintenance'"
             ),
             OpenApiParameter('site', type=int, description='Site'),
+            OpenApiParameter(
+                'manually_planned',
+                type=bool,
+                description='Only the deployments planned (or not) with New Deployment',
+            ),
             OpenApiParameter('search', type=str, description='Search text'),
             OpenApiParameter('limit', type=int, description='Page size'),
             OpenApiParameter('offset', type=int, description='Page offset'),
@@ -1528,6 +1533,15 @@ class FleetPlan(FleetReadView):
         rows = plan.plan_rows(
             kind=params.get('kind'), site=site, search=params.get('search')
         )
+
+        if params.get('manually_planned') not in [None, '']:
+            manual = str2bool(params.get('manually_planned'))
+            rows = [
+                row
+                for row in rows
+                if row['kind'] == plan.KIND_DEPLOYMENT
+                and row['manually_planned'] == manual
+            ]
         data = fleet_serializers.PlanRowSerializer(rows, many=True).data
 
         if 'limit' not in params:

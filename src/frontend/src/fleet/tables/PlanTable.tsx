@@ -1,6 +1,6 @@
 import { t } from '@lingui/core/macro';
 import { Badge, Group, Stack, Text, Tooltip } from '@mantine/core';
-import { IconCalendarEvent } from '@tabler/icons-react';
+import { IconCalendarEvent, IconRoute } from '@tabler/icons-react';
 import { useCallback, useMemo, useState } from 'react';
 
 import { AddItemButton } from '@lib/components/AddItemButton';
@@ -18,7 +18,10 @@ import useStatusCodes from '../../hooks/UseStatusCodes';
 import { useUserState } from '../../states/UserState';
 import { InvenTreeTable } from '../../tables/InvenTreeTable';
 import { FleetStatus, FleetStatusBadge, RiskBadges } from '../components/FleetBadges';
-import { useTripSelectionActions } from '../components/TripSelection';
+import {
+  AddToTripModal,
+  useTripSelectionActions
+} from '../components/TripSelection';
 import {
   useDeploymentActions,
   useNewDeploymentForm
@@ -74,6 +77,9 @@ export function PlanTable({
   // "Set Site and Date" on a deployment row
   const [selected, setSelected] = useState<any>({});
 
+  // "Add to Trip" on one row
+  const [tripRow, setTripRow] = useState<number | null>(null);
+
   const rowDeploymentActions = useDeploymentActions({
     deployment: selected,
     onUpdate: () => table.refreshTable()
@@ -96,6 +102,14 @@ export function PlanTable({
 
   const rowActions = useCallback(
     (record: any): RowAction[] => [
+      {
+        title: t`Add to Trip`,
+        tooltip: t`Put this device on an open field trip`,
+        icon: <IconRoute />,
+        color: 'green',
+        hidden: !canSelect(record) || !user.hasChangeRole(UserRoles.fleet),
+        onClick: () => setTripRow(record.pk)
+      },
       {
         title: t`Set Site and Date`,
         tooltip: t`Where and when the device is deployed`,
@@ -121,7 +135,7 @@ export function PlanTable({
         }
       }
     ],
-    [user, rowDeploymentActions]
+    [user, rowDeploymentActions, canSelect]
   );
 
   const today = new Date().toISOString().slice(0, 10);
@@ -133,7 +147,18 @@ export function PlanTable({
         title: t`Type`,
         sortable: false,
         switchable: false,
-        render: (record: any) => <KindBadge kind={record.kind} />
+        render: (record: any) => (
+          <Group gap={4} wrap='nowrap'>
+            <KindBadge kind={record.kind} />
+            {record.kind == 'deployment' && record.manually_planned && (
+              <Tooltip label={t`Planned by hand with New Deployment`}>
+                <Badge color='violet' variant='filled' size='sm'>
+                  {t`Manual`}
+                </Badge>
+              </Tooltip>
+            )}
+          </Group>
+        )
       },
       {
         accessor: 'date',
@@ -267,6 +292,11 @@ export function PlanTable({
           { value: 'deployment', label: t`Deployment` },
           { value: 'maintenance', label: t`Maintenance` }
         ]
+      },
+      {
+        name: 'manually_planned',
+        label: t`Manually Planned`,
+        description: t`Deployments planned by hand with New Deployment`
       }
     ],
     []
@@ -291,6 +321,13 @@ export function PlanTable({
       {newDeployment.modal}
       {tripSelection.modals}
       {rowDeploymentActions.modals}
+      <AddToTripModal
+        opened={tripRow != null}
+        onClose={() => setTripRow(null)}
+        kind='deployments'
+        ids={tripRow == null ? [] : [tripRow]}
+        onAdded={() => table.refreshTable()}
+      />
       <InvenTreeTable
         url={apiUrl(ApiEndpoints.fleet_plan)}
         tableState={table}

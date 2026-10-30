@@ -806,6 +806,8 @@ class Deployment(
         client: Customer company (defaults from the site)
         coverage: Service coverage (copied from the site)
         target_date: Planned deployment date
+        manually_planned: Whether the deployment was planned by hand (New
+            Deployment), rather than only entering the pipeline on its own
         deployed_at: When the device was deployed
         recovered_at: When the device was recovered
         next_pm_date: Next preventive maintenance date
@@ -1108,6 +1110,12 @@ class Deployment(
         null=True,
         verbose_name=_('Target Date'),
         help_text=_('Planned deployment date'),
+    )
+
+    manually_planned = models.BooleanField(
+        default=False,
+        verbose_name=_('Manually Planned'),
+        help_text=_('The deployment was planned by hand with New Deployment'),
     )
 
     deployed_at = models.DateTimeField(

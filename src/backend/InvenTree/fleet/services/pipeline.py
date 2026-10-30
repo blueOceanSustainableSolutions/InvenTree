@@ -587,6 +587,7 @@ def new_deployment(
 
     deployment.site = site
     deployment.target_date = target_date
+    deployment.manually_planned = True
 
     if deployment_type:
         deployment.deployment_type = deployment_type

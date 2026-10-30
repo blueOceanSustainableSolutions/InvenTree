@@ -672,6 +672,17 @@ class DeploymentAPITest(FleetAPITestBase):
         self.assertEqual(rows[1]['build_title'], 'Early unit')
         self.assertIsNone(rows[0]['build_title'])
 
+        # Only the unit planned with "New Deployment" is marked as planned by hand
+        self.assertEqual(
+            [row['manually_planned'] for row in rows], [True, False, False, False]
+        )
+
+        url = reverse('api-fleet-plan')
+        rows = self.get(url, {'manually_planned': 'true'}).data
+        self.assertEqual([row['pk'] for row in rows], [ready.pk])
+        rows = self.get(url, {'manually_planned': 'false'}).data
+        self.assertEqual([row['pk'] for row in rows], [early.pk, late.pk, planned.pk])
+
     def test_schema(self):
         """The fleet endpoints publish a valid OpenAPI schema."""
         schema = SchemaGenerator(

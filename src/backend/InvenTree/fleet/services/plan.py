@@ -96,6 +96,7 @@ def common_fields(deployment: Deployment) -> dict:
         'site': site.pk if site else None,
         'site_name': site.name if site else None,
         'client_name': deployment.client.name if deployment.client else None,
+        'manually_planned': deployment.manually_planned,
     }
 
 

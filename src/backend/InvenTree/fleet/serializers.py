@@ -546,6 +546,7 @@ class DeploymentSerializer(
             'client_detail',
             'coverage',
             'target_date',
+            'manually_planned',
             'deployed_at',
             'recovered_at',
             'next_pm_date',
@@ -578,6 +579,7 @@ class DeploymentSerializer(
             'status_custom_key',
             'build',
             'device',
+            'manually_planned',
             'deployed_at',
             'recovered_at',
             'health',
@@ -1172,6 +1174,9 @@ class PlanRowSerializer(serializers.Serializer):
     site = serializers.IntegerField(read_only=True, allow_null=True)
     site_name = serializers.CharField(read_only=True, allow_null=True)
     client_name = serializers.CharField(read_only=True, allow_null=True)
+    manually_planned = serializers.BooleanField(
+        read_only=True, help_text='Planned by hand with New Deployment'
+    )
     build = serializers.IntegerField(read_only=True, allow_null=True)
     build_reference = serializers.CharField(read_only=True, allow_null=True)
     build_title = serializers.CharField(
