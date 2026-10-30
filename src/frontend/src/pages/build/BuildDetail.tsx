@@ -530,11 +530,12 @@ export default function BuildDetail() {
           <StockItemTable
             allowAdd={false}
             tableName='build-consumed'
-            showLocation={false}
             allowReturn
             defaultInStock={null}
+            // Stock recovered by disassembly stays listed, but is no longer consumed
+            isRecordSelectable={(record: any) => record.consumed_by == build.pk}
             params={{
-              consumed_by: id
+              consumed_by_build: id
             }}
           />
         )
@@ -561,8 +562,8 @@ export default function BuildDetail() {
             allowAdd={false}
             tableName='completed-build-outputs'
             params={{
-              build: id,
-              is_building: false
+              // Includes outputs rebuilt since by a later build order
+              completed_by_build: id
             }}
           />
         )

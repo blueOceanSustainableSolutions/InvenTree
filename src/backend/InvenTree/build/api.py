@@ -45,7 +45,7 @@ from InvenTree.mixins import (
     SerializerContextMixin,
 )
 from part.raw_materials import BuildRawMaterials
-from stock.status_codes import StockStatus
+from stock.status_codes import StockHistoryCode, StockStatus
 from users.models import Owner
 
 
@@ -86,6 +86,32 @@ class BuildFilter(FilterSet):
     parent = rest_filters.ModelChoiceFilter(
         queryset=Build.objects.all(), label=_('Parent Build'), field_name='parent'
     )
+
+    built_item = rest_filters.ModelChoiceFilter(
+        queryset=stock_models.StockItem.objects.all(),
+        label=_('Built Stock Item'),
+        method='filter_built_item',
+    )
+
+    def filter_built_item(self, queryset, name, item):
+        """Build orders which built (or rebuilt) the given stock item.
+
+        A stock item links to its latest build order only, so earlier orders
+        are read from its tracking history.
+        """
+        pks = {item.build_id} if item.build_id else set()
+
+        for deltas in item.tracking_info.filter(
+            tracking_type__in=[
+                StockHistoryCode.BUILD_OUTPUT_COMPLETED.value,
+                StockHistoryCode.BUILD_OUTPUT_REBUILT.value,
+            ]
+        ).values_list('deltas', flat=True):
+            for key in ['buildorder', 'previous_buildorder']:
+                if (deltas or {}).get(key):
+                    pks.add(deltas[key])
+
+        return queryset.filter(pk__in=pks)
 
     include_variants = rest_filters.BooleanFilter(
         label=_('Include Variants'), method='filter_include_variants'

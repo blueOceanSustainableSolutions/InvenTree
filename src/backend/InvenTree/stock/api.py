@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import Exists, F, OuterRef, Q
 from django.urls import include, path
 from django.utils.translation import gettext_lazy as _
 
@@ -580,6 +580,81 @@ class StockFilter(FilterSet):
             return queryset.filter(query)
 
         return queryset.exclude(query)
+
+    completed_by_build = rest_filters.ModelChoiceFilter(
+        label=_('Completed by Build Order'),
+        queryset=Build.objects.all(),
+        method='filter_completed_by_build',
+    )
+
+    def filter_completed_by_build(self, queryset, name, build):
+        """Outputs completed by this build order, including items rebuilt by a later order.
+
+        A rebuild moves the item to the new order, so the completion entry
+        written by this order is used to find it.
+        """
+        completed = StockItemTracking.objects.filter(
+            item=OuterRef('pk'),
+            tracking_type=StockHistoryCode.BUILD_OUTPUT_COMPLETED.value,
+            deltas__buildorder=build.pk,
+        )
+
+        return queryset.filter(Q(build=build, is_building=False) | Exists(completed))
+
+    consumed_by_build = rest_filters.ModelChoiceFilter(
+        label=_('Consumed by Build Order'),
+        queryset=Build.objects.all(),
+        method='filter_consumed_by_build',
+    )
+
+    def filter_consumed_by_build(self, queryset, name, build):
+        """Stock consumed by this build order, including stock recovered by disassembly.
+
+        Disassembly returns consumed stock to stock (clearing consumed_by), but the
+        build order still consumed it, so it is found through its tracking history:
+        - Untracked stock: the 'Recovered by disassembly' entry for this order,
+          plus the pieces split off it since (e.g. partly used by a later order)
+        - Tracked stock: installed by this order, then removed from an output
+          which this order disassembled
+
+        Stock moved to another build order (split order) is not included.
+        """
+        tracking = StockItemTracking.objects.filter(item=OuterRef('pk'))
+
+        # Recovered stock, and the stock split off it after the recovery
+        recovered = Q(pk__in=[])
+
+        for pk, tree_id, lft, rght, date in StockItem.objects.filter(
+            tracking_info__tracking_type=StockHistoryCode.DISASSEMBLY_RECOVERED.value,
+            tracking_info__deltas__build_order=build.pk,
+        ).values_list('pk', 'tree_id', 'lft', 'rght', 'tracking_info__date'):
+            split_after = tracking.filter(
+                tracking_type=StockHistoryCode.SPLIT_FROM_PARENT.value,
+                date__gte=date,
+            )
+            recovered |= Q(pk=pk) | (
+                Q(tree_id=tree_id, lft__gt=lft, rght__lt=rght) & Exists(split_after)
+            )
+
+        disassembled_outputs = list(
+            StockItemTracking.objects.filter(
+                tracking_type=StockHistoryCode.BUILD_DISASSEMBLED.value,
+                deltas__buildorder=build.pk,
+            ).values_list('item_id', flat=True)
+        )
+
+        installed = tracking.filter(
+            tracking_type=StockHistoryCode.INSTALLED_INTO_ASSEMBLY.value,
+            deltas__buildorder=build.pk,
+        )
+        removed = tracking.filter(
+            tracking_type=StockHistoryCode.REMOVED_FROM_ASSEMBLY.value,
+            deltas__stockitem__in=disassembled_outputs,
+        )
+
+        return queryset.filter(
+            Q(consumed_by=build) | recovered | (Exists(installed) & Exists(removed))
+        )
 
     def filter_disassembled(self, queryset, name, value):
         """Filter outputs which have been processed by a disassembly operation.

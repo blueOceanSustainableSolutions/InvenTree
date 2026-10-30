@@ -338,9 +338,11 @@ export function StockItemTable({
   allowDisassemble = false,
   initialFilters,
   defaultInStock = true,
+  isRecordSelectable,
   tableName = 'stockitems'
 }: Readonly<{
   params?: any;
+  isRecordSelectable?: (record: any) => boolean;
   allowAdd?: boolean;
   showLocation?: boolean;
   showPricing?: boolean;
@@ -509,6 +511,7 @@ export function StockItemTable({
         props={{
           enableDownload: true,
           enableSelection: true,
+          isRecordSelectable: isRecordSelectable,
           enableLabels: true,
           enableReports: true,
           tableFilters: tableFilters,

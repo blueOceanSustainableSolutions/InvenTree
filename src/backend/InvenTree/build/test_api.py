@@ -1594,6 +1594,11 @@ class BuildOutputDisassembleTest(BuildAPITest):
         installed = StockItem.objects.create(
             part=tracked_part, quantity=1, belongs_to=output, consumed_by=build
         )
+        installed.add_tracking_entry(
+            StockHistoryCode.INSTALLED_INTO_ASSEMBLY,
+            self.user,
+            deltas={'stockitem': output.pk, 'buildorder': build.pk},
+        )
         BuildLine.objects.create(
             build=build, custom_part=untracked_part, quantity=2, consumed=2
         )
@@ -1678,6 +1683,72 @@ class BuildOutputDisassembleTest(BuildAPITest):
             output.tracking_info.filter(
                 tracking_type=StockHistoryCode.BUILD_DISASSEMBLED.value
             ).exists()
+        )
+
+        # Recovered stock is still listed as consumed by the build order,
+        # but stock moved to another build order is not
+        other_build = Build.objects.create(
+            part=product, reference='BO-9902', quantity=1
+        )
+        moved = StockItem.objects.create(
+            part=untracked_part, quantity=1, consumed_by=other_build
+        )
+        moved.add_tracking_entry(
+            StockHistoryCode.BUILD_CONSUMED,
+            self.user,
+            deltas={'buildorder': build.pk, 'quantity': 1.0},
+        )
+
+        response = self.get(
+            reverse('api-stock-list'), {'consumed_by_build': build.pk}
+        )
+        self.assertEqual(
+            {item['pk'] for item in response.data},
+            {installed.pk, consumed_a.pk, consumed_b.pk},
+        )
+
+        # Reused by another build order, it stays listed under both
+        output_b = StockItem.objects.create(
+            part=product, quantity=1, build=other_build, is_building=True
+        )
+        output_b.installStockItem(installed, 1, self.user, '', build=other_build)
+
+        response = self.get(
+            reverse('api-stock-list'), {'consumed_by_build': build.pk}
+        )
+        self.assertIn(installed.pk, {item['pk'] for item in response.data})
+        response = self.get(
+            reverse('api-stock-list'), {'consumed_by_build': other_build.pk}
+        )
+        self.assertEqual(
+            {item['pk'] for item in response.data}, {installed.pk, moved.pk}
+        )
+
+        # Recovered stock partly used by another build order: the piece split
+        # off it is listed under both, a piece split off before the recovery is not
+        consumed_a.quantity = 2
+        consumed_a.save()
+        earlier = consumed_a.splitStock(1, None, self.user)
+        earlier.tracking_info.update(date=current_time() - timedelta(days=1))
+
+        consumed_b.quantity = 4
+        consumed_b.save()
+        piece, _line = other_build.consume_stock_item(consumed_b, 1, self.user)
+        self.assertNotEqual(piece.pk, consumed_b.pk)
+
+        response = self.get(
+            reverse('api-stock-list'), {'consumed_by_build': build.pk}
+        )
+        self.assertEqual(
+            {item['pk'] for item in response.data},
+            {installed.pk, consumed_a.pk, consumed_b.pk, piece.pk},
+        )
+        response = self.get(
+            reverse('api-stock-list'), {'consumed_by_build': other_build.pk}
+        )
+        self.assertEqual(
+            {item['pk'] for item in response.data},
+            {installed.pk, moved.pk, piece.pk},
         )
 
 
@@ -1833,6 +1904,63 @@ class BuildOutputRebuildTest(BuildAPITest):
         self.assertEqual(self.unit.status, StockStatus.DISASSEMBLED)
         self.assertEqual(self.unit.build, self.old_build)
         self.assertFalse(StockItem.objects.filter(serial='5002').exists())
+
+    def test_rebuilt_output_listed_by_both_orders(self):
+        """A rebuilt output stays among the completed outputs of its first order."""
+        self.unit.add_tracking_entry(
+            StockHistoryCode.BUILD_OUTPUT_COMPLETED,
+            self.user,
+            deltas={'buildorder': self.old_build.pk, 'quantity': 1.0},
+        )
+        stock_url = reverse('api-stock-list')
+        build_url = reverse('api-build-list')
+
+        def completed_by(build):
+            response = self.get(stock_url, {'completed_by_build': build.pk})
+            return [item['pk'] for item in response.data]
+
+        def built_item():
+            response = self.get(build_url, {'built_item': self.unit.pk})
+            return sorted(build['pk'] for build in response.data)
+
+        self.assertEqual(completed_by(self.old_build), [self.unit.pk])
+        self.assertEqual(built_item(), [self.old_build.pk])
+
+        self.rebuild()
+
+        # Still listed by the first order, and in production on the new one
+        self.assertEqual(completed_by(self.old_build), [self.unit.pk])
+        self.assertEqual(completed_by(self.build), [])
+        response = self.get(stock_url, {'build': self.build.pk, 'is_building': True})
+        self.assertEqual([item['pk'] for item in response.data], [self.unit.pk])
+        self.assertEqual(built_item(), sorted([self.old_build.pk, self.build.pk]))
+
+        # Once completed, both orders list it exactly once
+        StockItemTestResult.objects.create(
+            stock_item=self.unit, template=self.template, result=True
+        )
+        self.build.complete_build_output(self.unit, self.user)
+
+        self.assertEqual(completed_by(self.old_build), [self.unit.pk])
+        self.assertEqual(completed_by(self.build), [self.unit.pk])
+        self.assertEqual(built_item(), sorted([self.old_build.pk, self.build.pk]))
+
+    def test_cancelled_rebuild_not_listed(self):
+        """A cancelled rebuild leaves the item with its first order only."""
+        self.rebuild()
+        self.post(
+            reverse('api-build-output-delete', kwargs={'pk': self.build.pk}),
+            {'outputs': [{'output': self.unit.pk}]},
+            expected_code=200,
+        )
+
+        response = self.get(reverse('api-build-list'), {'built_item': self.unit.pk})
+        self.assertEqual([build['pk'] for build in response.data], [self.old_build.pk])
+
+        response = self.get(
+            reverse('api-stock-list'), {'completed_by_build': self.old_build.pk}
+        )
+        self.assertEqual([item['pk'] for item in response.data], [self.unit.pk])
 
 
 class BuildOutputCancelTest(BuildAPITest):

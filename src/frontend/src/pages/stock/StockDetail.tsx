@@ -1,6 +1,7 @@
 import { t } from '@lingui/core/macro';
 import {
   Accordion,
+  Anchor,
   Button,
   Grid,
   Group,
@@ -29,7 +30,7 @@ import {
 } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { type ReactNode, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { ActionButton } from '@lib/components/ActionButton';
 import { StylishText } from '@lib/components/StylishText';
@@ -149,6 +150,24 @@ export default function StockDetail() {
   const findBySerialNumber = useFindSerialNumberForm({
     partId: stockitem.part
   });
+
+  // Build orders which built this item before its current one (rebuilt outputs)
+  const previousBuildsQuery = useQuery({
+    queryKey: ['previous-builds', stockitem.pk, stockitem.build],
+    enabled: !!stockitem.pk && !!stockitem.part_detail?.assembly,
+    queryFn: () =>
+      api
+        .get(apiUrl(ApiEndpoints.build_order_list), {
+          params: { built_item: stockitem.pk }
+        })
+        .then((response) =>
+          (response.data?.results ?? response.data ?? []).filter(
+            (build: any) => build.pk != stockitem.build
+          )
+        )
+  });
+
+  const previousBuilds: any[] = previousBuildsQuery.data ?? [];
 
   const detailsPanel = useMemo(() => {
     const data = { ...stockitem };
@@ -375,6 +394,27 @@ export default function StockDetail() {
       },
       {
         type: 'text',
+        name: 'previous_builds',
+        label: t`Previous Build Orders`,
+        icon: 'build',
+        hidden: previousBuilds.length == 0,
+        value_formatter: () => (
+          <Group gap='xs'>
+            {previousBuilds.map((build: any) => (
+              <Anchor
+                key={build.pk}
+                component={Link}
+                to={getDetailUrl(ModelType.build, build.pk)}
+                size='sm'
+              >
+                {build.reference}
+              </Anchor>
+            ))}
+          </Group>
+        )
+      },
+      {
+        type: 'text',
         name: 'quick_build_reference',
         label: t`Quick Build`,
         hidden: !stockitem.quick_build,
@@ -497,7 +537,8 @@ export default function StockDetail() {
     serialNumbers,
     serialNumbersQuery.isFetching,
     instanceQuery.isFetching,
-    enableExpiry
+    enableExpiry,
+    previousBuilds
   ]);
 
   const showBuildAllocations: boolean = useMemo(() => {
