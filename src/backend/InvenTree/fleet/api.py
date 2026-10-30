@@ -1175,6 +1175,15 @@ class DeploymentCarryOver(CarryOverActionMixin, CreateAPI):
     serializer_class = fleet_serializers.DeploymentCarryOverSerializer
 
 
+class DeploymentCarryOverValidate(CarryOverActionMixin, CreateAPI):
+    """Validate the carry-over of a replacement: it can then go on a trip."""
+
+    queryset = Deployment.objects.all()
+    model = Deployment
+    context_key = 'deployment'
+    serializer_class = fleet_serializers.DeploymentCarryOverValidateSerializer
+
+
 class TaskCarryOver(CarryOverActionMixin, CreateAPI):
     """The parts which a swap task carries over (editable until it is closed)."""
 
@@ -1936,6 +1945,11 @@ fleet_api_urls = [
                                 'set-pm-date/',
                                 DeploymentSetPMDate.as_view(),
                                 name='api-fleet-deployment-set-pm-date',
+                            ),
+                            path(
+                                'carry-over/validate/',
+                                DeploymentCarryOverValidate.as_view(),
+                                name='api-fleet-deployment-carry-over-validate',
                             ),
                             path(
                                 'carry-over/',

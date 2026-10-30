@@ -1193,6 +1193,12 @@ class PlanRowSerializer(serializers.Serializer):
     next_pm_date = serializers.DateField(read_only=True, allow_null=True)
     next_pm_manual = serializers.BooleanField(read_only=True)
     risks = ReadinessRiskSerializer(many=True, read_only=True)
+    carry_over = serializers.ChoiceField(
+        choices=['', 'TO_VALIDATE', 'VALIDATED'],
+        read_only=True,
+        allow_blank=True,
+        help_text='Carry-over of a replacement: to validate (before it goes on a trip), validated, or none',
+    )
 
 
 class FleetOverviewSerializer(serializers.Serializer):
@@ -3055,6 +3061,13 @@ class CarryOverSerializer(serializers.Serializer):
     task_reference = serializers.CharField(allow_blank=True)
     editable = serializers.BooleanField()
     reason = serializers.CharField(allow_blank=True)
+    validation = serializers.ChoiceField(
+        choices=['', 'TO_VALIDATE', 'VALIDATED'],
+        allow_blank=True,
+        help_text='To validate before the replacement goes on a trip, validated, or none',
+    )
+    validated_at = serializers.DateTimeField(allow_null=True)
+    validated_by = UserSerializer(allow_null=True, read_only=True)
     lines = CarryOverCandidateSerializer(many=True)
     history = CarryOverLineSerializer(many=True)
 
@@ -3081,6 +3094,16 @@ class DeploymentCarryOverSerializer(DeploymentActionSerializer):
         from fleet.services import carry_over
 
         carry_over.set_picks(self.target, self.validated_data['lines'], user=self.user)
+
+
+class DeploymentCarryOverValidateSerializer(DeploymentActionSerializer):
+    """Validate the carry-over of a replacement (needed before it goes on a trip)."""
+
+    def save(self):
+        """Validate what is picked."""
+        from fleet.services import carry_over
+
+        carry_over.validate(self.target, user=self.user)
 
 
 class TaskCarryOverSerializer(TaskActionSerializer):

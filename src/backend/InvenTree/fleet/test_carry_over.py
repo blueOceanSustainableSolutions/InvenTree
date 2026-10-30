@@ -222,6 +222,7 @@ class CarryOverDataMixin(TripDataMixin):
             picks = self.picks(rows, self.buoy, self.spliced, self.chain, self.anchor)
 
         carry_over.set_picks(new, picks(rows) if callable(picks) else picks, self.user)
+        carry_over.validate(new, self.user)
 
         self.complete_build(build)
         new.refresh_from_db()
@@ -335,6 +336,15 @@ class CarryOverScenarioTest(CarryOverTestBase):
 
         # Nothing moves before the swap
         self.assertEqual(rows[self.buoy.pk].consumed_by, old_build)
+
+        # Not on a trip before the manager validates the carry-over
+        self.assertEqual(carry_over.validation_state(new), carry_over.TO_VALIDATE)
+
+        with self.assertRaisesRegex(ValidationError, 'Validate the carry-over'):
+            self.new_trip(deployments=[new])
+
+        carry_over.validate(new, self.user)
+        self.assertEqual(carry_over.validation_state(new), carry_over.VALIDATED)
 
         # The trip: the technician deploys the new device and completes the swap
         _trip, task = self.start_swap(new)
@@ -609,8 +619,11 @@ class CarryOverReleaseTest(CarryOverTestBase):
         trips.cancel_trip(trip, user=self.user)
         self.assert_released(rows, build, new)
 
-        # They can be picked again for the next trip: covered again
+        # They can be picked again for the next trip: covered again, and
+        # validated again before that trip
         new.refresh_from_db()
+        self.assertIsNone(new.carry_over_validated_at)
+        self.assertEqual(carry_over.validation_state(new), carry_over.TO_VALIDATE)
         carry_over.set_picks(new, self.picks(rows, self.spliced), self.user)
         self.assertEqual(self.line(build, self.rope).carried_over, 529)
         self.assertFalse(
@@ -742,10 +755,59 @@ class CarryOverValidationTest(CarryOverTestBase):
         with self.assertRaisesRegex(ValidationError, 'no build order'):
             self.pick(self.rows[self.buoy.pk], 1, deployment=new)
 
+    def test_validation(self):
+        """Validated before a trip; changing the picks clears it."""
+        self.assertEqual(
+            carry_over.validation_state(self.new), carry_over.TO_VALIDATE
+        )
+
+        # A replacement which is not built yet waits for its validation too
+        with self.assertRaisesRegex(ValidationError, 'Validate the carry-over'):
+            self.new_trip(deployments=[self.new])
+
+        # Nothing picked: validating means nothing is carried over
+        carry_over.validate(self.new, self.user)
+        self.new.refresh_from_db()
+        self.assertEqual(self.new.carry_over_validated_by, self.user)
+        self.assertIsNotNone(self.new.carry_over_validated_at)
+
+        data = carry_over.candidates(self.new)
+        self.assertEqual(data['validation'], carry_over.VALIDATED)
+        self.assertEqual(data['validated_by'], self.user)
+
+        # Saving the same picks keeps it; a change clears it
+        carry_over.set_picks(self.new, [], self.user)
+        self.new.refresh_from_db()
+        self.assertEqual(
+            carry_over.validation_state(self.new), carry_over.VALIDATED
+        )
+
+        self.pick(self.rows[self.buoy.pk], 1)
+        validated = carry_over.validate(self.new, self.user)
+        self.pick(self.rows[self.buoy.pk], 1)
+        self.new.refresh_from_db()
+        self.assertEqual(
+            self.new.carry_over_validated_at, validated.carry_over_validated_at
+        )
+
+        self.pick(self.rows[self.chain.pk], 20)
+        self.new.refresh_from_db()
+        self.assertIsNone(self.new.carry_over_validated_at)
+        self.assertIsNone(self.new.carry_over_validated_by)
+
+        # A deployment which carries nothing over needs no validation
+        unit = plan_unit(self.make_device('HT-S-091'), self.device_type)
+        self.assertEqual(carry_over.validation_state(unit), '')
+        carry_over.check_validated(unit)
+
+        with self.assertRaisesRegex(ValidationError, 'replacement'):
+            carry_over.validate(unit, self.user)
+
     def test_task_rules(self):
         """From a task: only its open swap task."""
         self.build_output(self.build)
         self.pick(self.rows[self.buoy.pk], 1)
+        carry_over.validate(self.new, self.user)
         self.complete_build(self.build)
         self.new.refresh_from_db()
 
@@ -757,6 +819,10 @@ class CarryOverValidationTest(CarryOverTestBase):
             self.pick(self.rows[self.chain.pk], 20, task=other)
 
         self.pick(self.rows[self.chain.pk], 20, task=task)
+        self.new.refresh_from_db()
+        self.assertEqual(
+            carry_over.validation_state(self.new), carry_over.VALIDATED
+        )
 
         maintenance.cancel(task, user=self.user)
         task.refresh_from_db()
@@ -860,9 +926,32 @@ class CarryOverAPITest(CarryOverDataMixin, InvenTreeAPITestCase):
         )
         self.assertIn('installed', str(response.data))
 
-        # From the swap task
+        # Validated before it goes on a trip; the plan list shows it
         self.build_output(self.build)
         self.complete_build(self.build)
+
+        def plan_row():
+            rows = self.get(reverse('api-fleet-plan'), {'kind': 'deployment'}).data
+            return next(row for row in rows if row['pk'] == self.new.pk)
+
+        self.assertEqual(plan_row()['carry_over'], 'TO_VALIDATE')
+        self.assertEqual(data['validation'], 'TO_VALIDATE')
+
+        with self.assertRaisesRegex(ValidationError, 'Validate the carry-over'):
+            trips.create_trip(
+                title='Swap', start_date=timezone.now().date(), deployments=[self.new]
+            )
+
+        data = self.post(
+            self.url('api-fleet-deployment-carry-over-validate', self.new),
+            {},
+            expected_code=200,
+        ).data
+        self.assertEqual(data['validation'], 'VALIDATED')
+        self.assertEqual(data['validated_by']['username'], self.user.username)
+        self.assertEqual(plan_row()['carry_over'], 'VALIDATED')
+
+        # From the swap task
         trip = trips.create_trip(
             title='Swap', start_date=timezone.now().date(), deployments=[self.new]
         )
@@ -926,12 +1015,22 @@ class CarryOverAPITest(CarryOverDataMixin, InvenTreeAPITestCase):
         self.assignRole('stock.change')
         self.post(url, body, expected_code=200)
 
+        # Validating needs the same roles
+        validate_url = self.url('api-fleet-deployment-carry-over-validate', self.new)
+        self.clearRoles()
+        self.assignRole('fleet.view')
+        self.assignRole('fleet.change')
+        self.post(validate_url, {}, expected_code=403)
+        self.assignRole('stock.change')
+        self.post(validate_url, {}, expected_code=200)
+
     def test_options_and_schema(self):
         """The forms load, and the endpoints publish a valid OpenAPI schema."""
         task = maintenance.create_task(self.old.device)
 
         for url in [
             self.url('api-fleet-deployment-carry-over', self.new),
+            self.url('api-fleet-deployment-carry-over-validate', self.new),
             self.url('api-fleet-task-carry-over', task),
             reverse('api-fleet-carry-over-list'),
         ]:
@@ -950,6 +1049,9 @@ class CarryOverAPITest(CarryOverDataMixin, InvenTreeAPITestCase):
             self.assertIn('get', schema['paths'][url])
             self.assertIn('post', schema['paths'][url])
 
+        self.assertIn(
+            'post', schema['paths']['/api/fleet/deployment/{id}/carry-over/validate/']
+        )
         self.assertIn('get', schema['paths']['/api/fleet/carry-over/'])
 
     def test_no_missing_migrations(self):

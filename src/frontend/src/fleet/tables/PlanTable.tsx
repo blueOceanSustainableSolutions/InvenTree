@@ -1,7 +1,12 @@
 import { t } from '@lingui/core/macro';
 import { Badge, Group, Stack, Text, Tooltip } from '@mantine/core';
-import { IconCalendarEvent, IconRoute } from '@tabler/icons-react';
+import {
+  IconAnchor,
+  IconCalendarEvent,
+  IconRoute
+} from '@tabler/icons-react';
 import { useCallback, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { AddItemButton } from '@lib/components/AddItemButton';
 import type { RowAction } from '@lib/components/RowActions';
@@ -9,6 +14,7 @@ import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
 import { ModelType } from '@lib/enums/ModelType';
 import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
+import { getDetailUrl } from '@lib/functions/Navigation';
 import useTable from '@lib/hooks/UseTable';
 import type { TableFilter } from '@lib/types/Filters';
 import type { TableColumn } from '@lib/types/Tables';
@@ -40,6 +46,33 @@ function KindBadge({ kind }: Readonly<{ kind: string }>) {
   );
 }
 
+/** Badge for the carry-over of a replacement: to validate, or validated */
+function CarryOverBadge({ state }: Readonly<{ state?: string }>) {
+  if (state == 'TO_VALIDATE') {
+    return (
+      <Tooltip
+        label={t`Validate the carry-over (Carry Over tab of the deployment) before adding it to a trip`}
+      >
+        <Badge color='orange' variant='light' size='sm'>
+          {t`Carry-over to validate`}
+        </Badge>
+      </Tooltip>
+    );
+  }
+
+  if (state == 'VALIDATED') {
+    return (
+      <Tooltip label={t`The parts carried over from the replaced device are validated`}>
+        <Badge color='green' variant='light' size='sm'>
+          {t`Carry-over validated`}
+        </Badge>
+      </Tooltip>
+    );
+  }
+
+  return null;
+}
+
 /**
  * The fleet plan: one list of the deployments to do (devices which are not
  * deployed: in production, built, or on their way back) and the deployed
@@ -50,7 +83,7 @@ function KindBadge({ kind }: Readonly<{ kind: string }>) {
  * dates. Rows on the same date (and the rows without a date) go by
  * readiness: ready, in production, planned, then by build target date.
  * Rows can be ticked and grouped into a field trip ("Create Field Trip" /
- * "Add to Trip").
+ * "Add to Trip"); a replacement only once its carry-over is validated.
  */
 export function PlanTable({
   params = {},
@@ -61,6 +94,7 @@ export function PlanTable({
 }>) {
   const table = useTable(tableName);
   const user = useUserState();
+  const navigate = useNavigate();
   const deploymentStatus = useStatusCodes({ modelType: ModelType.deployment });
 
   const tripSelection = useTripSelectionActions({
@@ -87,16 +121,18 @@ export function PlanTable({
 
   // A row which can be put on a trip, if not already on one: a deployed
   // device (its maintenance), or a device to deploy, built or not (a device
-  // which is not built yet can only be deployed once it is ready)
+  // which is not built yet can only be deployed once it is ready). A
+  // replacement needs its carry-over validated first.
   const canSelect = useCallback(
     (record: any): boolean =>
       !record.trip &&
       (record.kind == 'maintenance' ||
-        [
+        ([
           deploymentStatus.PLANNED,
           deploymentStatus.IN_PRODUCTION,
           deploymentStatus.READY
-        ].includes(record.status)),
+        ].includes(record.status) &&
+          record.carry_over != 'TO_VALIDATE')),
     [deploymentStatus]
   );
 
@@ -109,6 +145,17 @@ export function PlanTable({
         color: 'green',
         hidden: !canSelect(record) || !user.hasChangeRole(UserRoles.fleet),
         onClick: () => setTripRow(record.pk)
+      },
+      {
+        title: t`Validate Carry-over`,
+        tooltip: t`Check and validate the parts carried over from the replaced device, before adding it to a trip`,
+        icon: <IconAnchor />,
+        color: 'orange',
+        hidden: record.carry_over != 'TO_VALIDATE',
+        onClick: () =>
+          navigate(
+            `${getDetailUrl(ModelType.deployment, record.deployment)}carry-over`
+          )
       },
       {
         title: t`Set Site and Date`,
@@ -135,7 +182,7 @@ export function PlanTable({
         }
       }
     ],
-    [user, rowDeploymentActions, canSelect]
+    [user, rowDeploymentActions, canSelect, navigate]
   );
 
   const today = new Date().toISOString().slice(0, 10);
@@ -230,6 +277,7 @@ export function PlanTable({
                   </Badge>
                 </Tooltip>
               )}
+              <CarryOverBadge state={record.carry_over} />
             </Group>
           ) : (
             <FleetStatusBadge type={FleetStatus.health} status={record.health} />

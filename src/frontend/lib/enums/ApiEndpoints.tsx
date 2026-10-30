@@ -285,6 +285,7 @@ export enum ApiEndpoints {
   fleet_deployment_set_state = 'fleet/deployment/:id/set-state/',
   fleet_deployment_set_pm_date = 'fleet/deployment/:id/set-pm-date/',
   fleet_deployment_carry_over = 'fleet/deployment/:id/carry-over/',
+  fleet_deployment_carry_over_validate = 'fleet/deployment/:id/carry-over/validate/',
   fleet_carry_over_list = 'fleet/carry-over/',
   fleet_calendar = 'fleet/calendar/',
   fleet_overview = 'fleet/overview/',

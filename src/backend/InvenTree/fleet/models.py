@@ -808,6 +808,9 @@ class Deployment(
         target_date: Planned deployment date
         manually_planned: Whether the deployment was planned by hand (New
             Deployment), rather than only entering the pipeline on its own
+        carry_over_validated_at: When the carry-over of a replacement was
+            validated (needed before it goes on a trip)
+        carry_over_validated_by: Who validated the carry-over
         deployed_at: When the device was deployed
         recovered_at: When the device was recovered
         next_pm_date: Next preventive maintenance date
@@ -1116,6 +1119,24 @@ class Deployment(
         default=False,
         verbose_name=_('Manually Planned'),
         help_text=_('The deployment was planned by hand with New Deployment'),
+    )
+
+    carry_over_validated_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        verbose_name=_('Carry-over Validated At'),
+        help_text=_(
+            'When the carry-over was validated: a replacement goes on a trip only once its carry-over is validated'
+        ),
+    )
+
+    carry_over_validated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='+',
+        verbose_name=_('Carry-over Validated By'),
     )
 
     deployed_at = models.DateTimeField(

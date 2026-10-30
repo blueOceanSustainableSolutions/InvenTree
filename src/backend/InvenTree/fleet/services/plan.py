@@ -18,7 +18,7 @@ from django.db.models import Q
 
 from common.settings import get_global_setting
 from fleet.models import Coverage, Deployment, MaintenanceTask
-from fleet.services import device_state
+from fleet.services import carry_over, device_state
 from fleet.services.maintenance import DEPLOY_TASK_TYPES
 from fleet.services.pipeline import readiness_risks, sold_q
 from fleet.status_codes import (
@@ -128,6 +128,8 @@ def deployment_row(deployment: Deployment, today: date) -> dict:
         'next_pm_date': None,
         'next_pm_manual': False,
         'risks': readiness_risks(deployment, today=today),
+        # A replacement goes on a trip only once its carry-over is validated
+        'carry_over': carry_over.validation_state(deployment),
     }
 
 
@@ -162,6 +164,7 @@ def maintenance_row(deployment: Deployment) -> dict:
         'next_pm_date': deployment.next_pm_date,
         'next_pm_manual': deployment.next_pm_manual,
         'risks': [],
+        'carry_over': '',
     }
 
 
@@ -194,6 +197,7 @@ def plan_rows(
         'device__build',
         'device__part',
         'device_type__part',
+        'replaces__device__build',
     ).prefetch_related('tasks', 'tasks__trip')
 
     if site:

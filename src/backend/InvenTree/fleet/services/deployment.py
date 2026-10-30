@@ -383,9 +383,14 @@ def schedule(deployment: Deployment, trip) -> MaintenanceTask:
       deployment keeps its status (so NOT_READY still warns). The task has no
       device until the build output exists; see attach_unit().
 
+    A replacement which carries parts over goes on a trip only once its
+    carry-over is validated (see carry_over.check_validated).
+
     Returns:
         The deployment (or swap) task
     """
+    from fleet.services import carry_over
+
     Deployment.objects.select_for_update().filter(pk=deployment.pk).first()
     deployment.refresh_from_db()
 
@@ -402,6 +407,9 @@ def schedule(deployment: Deployment, trip) -> MaintenanceTask:
             + f' ({deployment.reference}). '
             + _('Allocate it to a sales order before planning its deployment')
         )
+
+    # A replacement goes with the parts it takes over: validated beforehand
+    carry_over.check_validated(deployment)
 
     device = deployment.device
     built = deployment.status not in DeploymentStatusGroups.UNBUILT

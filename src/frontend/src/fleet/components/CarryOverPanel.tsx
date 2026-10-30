@@ -14,7 +14,9 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
+  IconAlertTriangle,
   IconAnchor,
+  IconCircleCheck,
   IconDeviceFloppy,
   IconInfoCircle,
   IconSquareOff
@@ -35,6 +37,7 @@ import { useApi } from '../../contexts/ApiContext';
 import { formatDate, formatDecimal } from '../../defaults/formatters';
 import { showApiErrorMessage } from '../../functions/notifications';
 import { useUserState } from '../../states/UserState';
+import { userDisplayName } from './FleetBadges';
 
 type Pick = { checked: boolean; quantity: number };
 
@@ -61,6 +64,10 @@ export function carryOverStatusColor(status: string): string {
  * "None". Saving replaces the picks. Editable until the swap task is completed
  * (with the fleet change and stock change roles); afterwards, and for picks
  * which were released, the history is listed.
+ *
+ * On the deployment page the saved picks are then validated ("Validate
+ * Carry-over"): a replacement goes on a trip only once its carry-over is
+ * validated, and changing the picks there clears the validation.
  *
  * Used by the replacement deployment page, the swap task page and the portal
  * Work tab of the swap task (pass taskId there).
@@ -176,6 +183,32 @@ export function CarryOverPanel({
       .finally(() => setSaving(false));
   }, [api, url, data, picks, query, onChange]);
 
+  const [validating, setValidating] = useState<boolean>(false);
+
+  const validate = useCallback(() => {
+    setValidating(true);
+
+    api
+      .post(
+        apiUrl(ApiEndpoints.fleet_deployment_carry_over_validate, data?.deployment),
+        {}
+      )
+      .then((response) => {
+        query.refetch();
+        notifications.show({
+          title: t`Carry-over validated`,
+          message: t`The replacement can now be added to a trip`,
+          color: 'green'
+        });
+        onChange?.();
+        return response;
+      })
+      .catch((error) =>
+        showApiErrorMessage({ error: error, title: t`Carry-over not validated` })
+      )
+      .finally(() => setValidating(false));
+  }, [api, data, query, onChange]);
+
   const pickedCount = useMemo(
     () => Object.values(picks).filter((pick) => pick.checked).length,
     [picks]
@@ -208,6 +241,59 @@ export function CarryOverPanel({
       {data.reason && (
         <Alert color='blue' icon={<IconInfoCircle />}>
           {data.reason}
+        </Alert>
+      )}
+      {data.validation == 'TO_VALIDATE' && (
+        <Alert
+          color='orange'
+          icon={<IconAlertTriangle />}
+          title={t`Carry-over not validated`}
+        >
+          <Stack gap='xs'>
+            <Text size='sm'>
+              {t`Check the parts picked below (or pick none), save them, then validate. The replacement can only be added to a trip once its carry-over is validated.`}
+            </Text>
+            {canEdit && !taskId && (
+              <Group gap='xs'>
+                <Button
+                  size='xs'
+                  color='green'
+                  leftSection={<IconCircleCheck size={16} />}
+                  disabled={dirty}
+                  loading={validating}
+                  onClick={validate}
+                >
+                  {t`Validate Carry-over`}
+                </Button>
+                {dirty && (
+                  <Text size='xs' c='dimmed'>
+                    {t`Save the changes first`}
+                  </Text>
+                )}
+              </Group>
+            )}
+          </Stack>
+        </Alert>
+      )}
+      {data.validation == 'VALIDATED' && (
+        <Alert
+          color='green'
+          icon={<IconCircleCheck />}
+          title={t`Carry-over validated`}
+        >
+          <Text size='sm'>
+            {[
+              userDisplayName(data.validated_by),
+              formatDate(data.validated_at, { showTime: true })
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
+          {canEdit && !taskId && (
+            <Text size='xs' c='dimmed'>
+              {t`Saving a change to the picks clears the validation: validate again before adding it to a trip.`}
+            </Text>
+          )}
         </Alert>
       )}
       {lines.length > 0 && (

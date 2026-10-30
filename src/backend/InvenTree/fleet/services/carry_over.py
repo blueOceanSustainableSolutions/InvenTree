@@ -9,13 +9,18 @@ device which carries it:
   which the new device takes over (a whole row or part of it). A pending pick
   covers the matching line of the new build order (BuildLine.carried_over), so
   that build order can be completed without allocating those lines.
+- The manager then validates the carry-over (even when nothing is picked): a
+  replacement goes on a trip only once its carry-over is validated. Changing
+  the picks from the deployment clears the validation (changing them from the
+  swap task, on the trip, does not).
 - Completing the swap task (after the deploy step) moves the picked rows to the
   new build order, with stock history (FLEET_CARRY_OVER). Deploying the
   replacement directly, without a task, moves them at once.
 - When the swap does not happen (task or trip cancelled, deployment taken off
-  its trip or cancelled), nothing moves: the picks are released and the lines
-  of the new build order need stock again (a completed build order is not
-  reopened; it shows a shortage warning instead).
+  its trip or cancelled), nothing moves: the picks are released, the
+  validation is cleared and the lines of the new build order need stock again
+  (a completed build order is not reopened; it shows a shortage warning
+  instead).
 
 Only consumed rows (belongs_to NULL, not serialized) can be picked: installed
 and tracked components are out of scope. The build app knows nothing of the
@@ -45,6 +50,10 @@ from stock.models import StockItem
 from stock.status_codes import StockHistoryCode
 
 Status = CarryOverLine.Status
+
+# Validation state of the carry-over of a deployment ('' when it has none)
+TO_VALIDATE = 'TO_VALIDATE'
+VALIDATED = 'VALIDATED'
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +163,64 @@ def check_editable(deployment: Deployment, task: MaintenanceTask | None = None):
         raise ValidationError(reason)
 
 
+def validation_state(deployment: Deployment) -> str:
+    """Whether the carry-over of a deployment is validated.
+
+    Returns:
+        '' when the deployment carries nothing over (not a replacement, or a
+        build order is missing), else TO_VALIDATE or VALIDATED
+    """
+    if unavailable_reason(deployment):
+        return ''
+
+    return VALIDATED if deployment.carry_over_validated_at else TO_VALIDATE
+
+
+def check_validated(deployment: Deployment):
+    """Raise unless a replacement which carries parts over has been validated."""
+    if validation_state(deployment) == TO_VALIDATE:
+        raise ValidationError(
+            _(
+                'Validate the carry-over of {reference} before adding it to a trip'
+            ).format(reference=deployment.reference)
+        )
+
+
+@transaction.atomic
+def validate(deployment: Deployment, user=None) -> Deployment:
+    """Validate the carry-over of a replacement: what is picked is what goes.
+
+    Allowed while the picks can change. Validating with nothing picked means
+    that nothing is carried over.
+    """
+    Deployment.objects.select_for_update().filter(pk=deployment.pk).first()
+    deployment.refresh_from_db()
+
+    check_editable(deployment)
+
+    deployment.carry_over_validated_at = timezone.now()
+    deployment.carry_over_validated_by = (
+        user if user is not None and user.is_authenticated else None
+    )
+    deployment.save(
+        update_fields=['carry_over_validated_at', 'carry_over_validated_by']
+    )
+
+    return deployment
+
+
+def clear_validation(deployment: Deployment) -> None:
+    """Clear the validation of the carry-over (it must be validated again)."""
+    if deployment.carry_over_validated_at is None:
+        return
+
+    deployment.carry_over_validated_at = None
+    deployment.carry_over_validated_by = None
+    deployment.save(
+        update_fields=['carry_over_validated_at', 'carry_over_validated_by']
+    )
+
+
 def mooring_categories() -> set[int]:
     """The mooring part category (FLEET_MOORING_CATEGORY) and its subcategories."""
     category = get_model_setting('FLEET_MOORING_CATEGORY')
@@ -235,6 +302,9 @@ def candidates(deployment: Deployment) -> dict:
         'task_reference': task.reference if task else '',
         'editable': not (reason or closed),
         'reason': reason or closed,
+        'validation': validation_state(deployment),
+        'validated_at': deployment.carry_over_validated_at,
+        'validated_by': deployment.carry_over_validated_by,
         'lines': [],
         'history': list(
             deployment.carry_over_lines.exclude(status=Status.PENDING)
@@ -300,6 +370,7 @@ def set_picks(
 
     Allowed until the swap task is completed: refused once the swap is
     completed, the task (if given) is closed, or the deployment is closed.
+    A change made without the task clears the validation.
 
     Returns:
         The pending picks
@@ -376,6 +447,7 @@ def set_picks(
         )
     }
 
+    changed = {pk: line.quantity for pk, line in existing.items()} != wanted
     touched = {line.target_line_id for line in existing.values()}
     target_lines = list(new_build.build_lines.select_related('bom_item', 'custom_part'))
     now = timezone.now()
@@ -408,6 +480,9 @@ def set_picks(
     ).delete()
 
     refresh_coverage(touched)
+
+    if changed and task is None:
+        clear_validation(deployment)
 
     return picks
 
@@ -558,7 +633,8 @@ def release(deployment: Deployment, task: MaintenanceTask | None = None) -> int:
 
     Nothing moves. The lines of the new build order lose their cover (they
     need stock again); a completed build order is not reopened, it shows a
-    shortage warning (see is_short).
+    shortage warning (see is_short). The validation is cleared: planned
+    again, the carry-over is picked and validated again.
 
     Returns:
         The number of released picks
@@ -576,5 +652,10 @@ def release(deployment: Deployment, task: MaintenanceTask | None = None) -> int:
         pick.save()
 
     refresh_coverage({pick.target_line_id for pick in picks})
+
+    deployment.refresh_from_db(
+        fields=['carry_over_validated_at', 'carry_over_validated_by']
+    )
+    clear_validation(deployment)
 
     return len(picks)

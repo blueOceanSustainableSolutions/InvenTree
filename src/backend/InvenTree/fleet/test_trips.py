@@ -32,7 +32,14 @@ from fleet.models import (
     TaskType,
     TripKitLine,
 )
-from fleet.services import maintenance, monitoring, pipeline, planning, trips
+from fleet.services import (
+    carry_over,
+    maintenance,
+    monitoring,
+    pipeline,
+    planning,
+    trips,
+)
 from fleet.status_codes import (
     AlertSeverity,
     AlertStatus,
@@ -333,7 +340,9 @@ class Scenario7SwapTest(TripTestBase):
 
         self.assertEqual(new.status, DeploymentStatus.READY.value)
 
-        # The manager adds the ready replacement to a trip: a SWAP task
+        # The manager validates the carry-over (nothing picked here), then
+        # adds the ready replacement to a trip: a SWAP task
+        carry_over.validate(new, self.user)
         trip = self.new_trip(deployments=[new])
         new.refresh_from_db()
 
@@ -415,6 +424,7 @@ class Scenario7SwapTest(TripTestBase):
         """A swap entered later: one date for the deploy, recovery and completion."""
         old = self.deploy('AUR-0162', site=self.site)
         new = self.replacement(old, 'AUR-0201')
+        carry_over.validate(new, self.user)
 
         trip = self.new_trip(deployments=[new])
         task = MaintenanceTask.objects.get(deployment=new)

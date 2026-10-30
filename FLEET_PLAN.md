@@ -976,6 +976,14 @@ Product owner's design (2026-10-28, not to be redesigned): on a maintenance trip
 
 **Results:** see phase P10 in section 7.
 
+**Validation before the trip (product owner, 2026-10-30):** the manager validates the carry-over before the replacement goes on a trip.
+- `Deployment.carry_over_validated_at` / `carry_over_validated_by` (migration `fleet.0015_deployment_carry_over_validated`; replacements whose swap task is already on a trip are marked validated by the migration).
+- `carry_over.validation_state(deployment)`: `''` when the deployment carries nothing over (not a replacement, or a build order is missing), else `TO_VALIDATE` / `VALIDATED`. `validate(deployment, user)` is allowed while the picks can change; validating with nothing picked means nothing is carried over.
+- `deployment.schedule()` (every path onto a trip: create trip, add to trip, add the task) calls `check_validated`: "Validate the carry-over of DP-xxxx before adding it to a trip".
+- Changing the picks from the deployment clears the validation (saving the same picks does not); changing them from the Swap task (on the trip) keeps it. `release()` clears it: planned again, the carry-over is picked and validated again.
+- API: `POST deployment/<pk>/carry-over/validate/` (fleet change + stock change, answers with the candidates). The candidates add `validation`, `validated_at`, `validated_by`; the plan rows add `carry_over`.
+- Frontend: the Carry Over panel shows an orange "Carry-over not validated" box with *Validate Carry-over* (deployment page only; disabled while there are unsaved changes), or a green "Carry-over validated" box with who and when. The plan list shows a "Carry-over to validate" / "Carry-over validated" badge in the Status column; a row to validate cannot be ticked or added to a trip and has the row action *Validate Carry-over* (opens the deployment's Carry Over tab).
+
 **Open points for the product owner:** (1) a Swap task **cancelled after** *Deploy Device* releases the picks as the rule says, although the new device is in the water: the mooring then stays on the old BO (complete the task instead); (2) a released carry-over on a completed BO only warns: fixing it (new parts, or picking again for the next trip) is manual.
 
 ## 3. Frontend: shared building blocks (`F/src/fleet/`)
