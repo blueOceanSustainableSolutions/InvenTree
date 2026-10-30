@@ -1827,6 +1827,64 @@ class Build(
 
         self.save()
 
+        self.allocate_output_to_parent(output)
+
+    def allocate_output_to_parent(self, output: stock.models.StockItem) -> None:
+        """Allocate a completed output to the parent build order which needs it.
+
+        A child build order supplies its parent, so its completed stock is allocated
+        to the first parent line which accepts the part and still needs stock.
+        Nothing happens if no line needs it: the stock stays available.
+        """
+        parent = self.parent
+
+        if parent is None or not parent.is_active or not output.in_stock:
+            return
+
+        lines = [
+            line
+            for line in parent.build_lines.all()
+            if not line.consumable
+            and output.part in line.get_valid_parts_for_allocation()
+        ]
+
+        # Lines for exactly this part come first
+        lines.sort(key=lambda line: line.part_id != output.part_id)
+
+        for line in lines:
+            quantity = min(output.unallocated_quantity(), line.unallocated_quantity())
+
+            if quantity <= 0:
+                continue
+
+            # Tracked parts go into the parent's only incomplete output
+            install_into = None
+
+            if line.part.trackable:
+                install_into = parent.single_incomplete_output()
+
+                if install_into is None:
+                    continue
+
+            try:
+                with transaction.atomic():
+                    BuildItem.objects.create(
+                        build_line=line,
+                        stock_item=output,
+                        quantity=quantity,
+                        install_into=install_into,
+                    )
+            except ValidationError:
+                logger.exception(
+                    'Could not allocate build output %s to build order %s',
+                    output.pk,
+                    parent.pk,
+                )
+                continue
+
+            if output.unallocated_quantity() <= 0:
+                return
+
     @transaction.atomic
     def auto_allocate_stock(
         self, item_type: str = BuildItemTypes.UNTRACKED, **kwargs

@@ -1212,6 +1212,7 @@ class PartRequirementsSerializer(InvenTree.serializers.InvenTreeModelSerializer)
             'ordering',
             'building',
             'scheduled_to_build',
+            'building_for_build_orders',
             'required_for_build_orders',
             'allocated_to_build_orders',
             'required_for_sales_orders',
@@ -1237,6 +1238,27 @@ class PartRequirementsSerializer(InvenTree.serializers.InvenTreeModelSerializer)
     scheduled_to_build = serializers.IntegerField(
         read_only=True, label=_('Scheduled to Build'), source='quantity_being_built'
     )
+
+    building_for_build_orders = serializers.SerializerMethodField(
+        read_only=True, label=_('Being Built for Build Orders')
+    )
+
+    def get_building_for_build_orders(self, part) -> float:
+        """Return the quantity scheduled to build by child build orders.
+
+        This stock is built for an open parent build order, and is allocated to it
+        when it is completed. It is part of 'scheduled_to_build', not extra stock.
+        """
+        from build.models import Build
+        from build.status_codes import BuildStatusGroups
+
+        builds = Build.objects.filter(
+            part__in=part.get_descendants(include_self=True),
+            status__in=BuildStatusGroups.ACTIVE_CODES,
+            parent__status__in=BuildStatusGroups.ACTIVE_CODES,
+        )
+
+        return float(sum(build.remaining for build in builds))
 
     required_for_build_orders = serializers.FloatField(
         source='required_build_order_quantity',

@@ -437,6 +437,16 @@ export default function PartDetail() {
             partRequirements.allocated_to_build_orders <= 0)
       },
       {
+        // Built by child build orders, and allocated to the parent when completed
+        type: 'number',
+        name: 'building_for_build_orders',
+        icon: 'builds',
+        unit: part.units,
+        label: t`Being Built for Build Orders`,
+        hidden:
+          fetching || !(partRequirements.building_for_build_orders > 0)
+      },
+      {
         type: 'progressbar',
         icon: 'sales_orders',
         name: 'allocated_to_sales_orders',
@@ -451,7 +461,7 @@ export default function PartDetail() {
       {
         type: 'progressbar',
         name: 'building',
-        label: t`In Production`,
+        label: t`Build Outputs Started`,
         progress: partRequirements.building,
         total: partRequirements.scheduled_to_build,
         hidden:
@@ -994,7 +1004,7 @@ export default function PartDetail() {
         key='on_order'
       />,
       <DetailsBadge
-        label={`${t`In Production`}: ${formatDecimal(partRequirements.scheduled_to_build)}`}
+        label={`${t`Scheduled to Build`}: ${formatDecimal(partRequirements.scheduled_to_build)}`}
         color='blue'
         visible={partRequirements.scheduled_to_build > 0}
         key='in_production'

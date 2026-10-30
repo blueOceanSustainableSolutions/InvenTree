@@ -10,11 +10,12 @@ import { ModelType } from '@lib/enums/ModelType';
 import { UserRoles } from '@lib/enums/Roles';
 import { apiUrl } from '@lib/functions/Api';
 import { formatDecimal } from '@lib/functions/Formatting';
+import { getDetailUrl } from '@lib/functions/Navigation';
 import useTable from '@lib/hooks/UseTable';
 import type { TableFilter } from '@lib/types/Filters';
 import type { RowAction, TableColumn } from '@lib/types/Tables';
 import { t } from '@lingui/core/macro';
-import { Alert, Group, Paper, Text } from '@mantine/core';
+import { Alert, Anchor, Group, Paper, Stack, Text } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import {
   IconArrowRight,
@@ -29,7 +30,7 @@ import {
 } from '@tabler/icons-react';
 import type { DataTableRowExpansionProps } from 'mantine-datatable';
 import { type ReactNode, useCallback, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import OrderPartsWizard from '../../components/wizards/OrderPartsWizard';
 import { useApi } from '../../contexts/ApiContext';
 import {
@@ -156,6 +157,38 @@ export function BuildLineSubTable({
         }}
       />
     </Paper>
+  );
+}
+
+/**
+ * Render the open child build orders which build stock for a build line.
+ *
+ * Their completed stock is allocated to the line automatically,
+ * so the line is covered although nothing is allocated yet.
+ */
+function ChildBuildCoverage({ record }: Readonly<{ record: any }>) {
+  if (!(record.childBuildQuantity > 0)) {
+    return null;
+  }
+
+  return (
+    <Group gap={4} wrap='nowrap'>
+      <IconTool size={14} color='var(--mantine-color-blue-6)' />
+      <Text size='xs' c='blue'>
+        {t`Being built`}: {formatDecimal(record.childBuildQuantity)}
+      </Text>
+      {record.child_builds.map((child: any) => (
+        <Anchor
+          key={child.pk}
+          size='xs'
+          component={Link}
+          to={getDetailUrl(ModelType.build, child.pk)}
+          onClick={(event: any) => event.stopPropagation()}
+        >
+          {child.reference}
+        </Anchor>
+      ))}
+    </Group>
   );
 }
 
@@ -293,7 +326,19 @@ export default function BuildLineTable({
       );
     }
 
-    const sufficient = available >= record.quantity - record.allocated;
+    // Stock built by child build orders is allocated to this line when completed
+    if (record.childBuildQuantity > 0) {
+      extra.push(
+        <Text key='child-builds' size='sm'>
+          {t`Being built for this order`}:{' '}
+          {formatDecimal(record.childBuildQuantity)}
+        </Text>
+      );
+    }
+
+    const sufficient =
+      available + (record.childBuildQuantity ?? 0) >=
+      record.quantity - record.allocated;
 
     if (!sufficient) {
       extra.push(
@@ -551,11 +596,14 @@ export default function BuildLineTable({
           }
 
           return (
-            <ProgressBar
-              progressLabel={true}
-              value={allocated}
-              maximum={required}
-            />
+            <Stack gap={2}>
+              <ProgressBar
+                progressLabel={true}
+                value={allocated}
+                maximum={required}
+              />
+              <ChildBuildCoverage record={record} />
+            </Stack>
           );
         }
       },
@@ -967,7 +1015,13 @@ export default function BuildLineTable({
               data: {
                 part: record.part,
                 parent: build.pk,
-                quantity: record.quantity - record.allocated
+                // Less what open child build orders already build for this line
+                quantity: Math.max(
+                  record.quantity -
+                    record.allocated -
+                    (record.childBuildQuantity ?? 0),
+                  0
+                )
               },
               part: record.part_detail,
               variantData: { build_line: record.pk }
@@ -1119,8 +1173,18 @@ export default function BuildLineTable({
           requiredQuantity = output.quantity * unitQuantity;
         }
 
+        // Open child build orders cover the whole line, not a single output
+        let childBuildQuantity = 0;
+
+        if (!output?.pk) {
+          (record.child_builds ?? []).forEach((child: any) => {
+            childBuildQuantity += child.quantity;
+          });
+        }
+
         return {
           ...record,
+          childBuildQuantity: childBuildQuantity,
           filteredAllocations: allocations,
           requiredQuantity: requiredQuantity,
           allocatedQuantity: allocatedQuantity

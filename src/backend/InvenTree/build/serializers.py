@@ -53,7 +53,7 @@ from stock.status_codes import StockStatus
 from users.serializers import OwnerSerializer, UserSerializer
 
 from .models import Build, BuildItem, BuildLine, QuickBuild, QuickBuildLine
-from .status_codes import BuildStatus
+from .status_codes import BuildStatus, BuildStatusGroups
 
 
 class BuildSerializer(
@@ -1396,7 +1396,7 @@ class BuildLineSerializer(
 ):
     """Serializer for a BuildItem object."""
 
-    export_exclude_fields = ['allocations']
+    export_exclude_fields = ['allocations', 'child_builds']
 
     export_child_fields = [
         'build_detail.reference',
@@ -1443,6 +1443,7 @@ class BuildLineSerializer(
             'available_substitute_stock',
             'available_variant_stock',
             'external_stock',
+            'child_builds',
             # Related fields
             'allocations',
             # Extra fields only for data export
@@ -1651,6 +1652,51 @@ class BuildLineSerializer(
     available_variant_stock = serializers.FloatField(
         read_only=True, label=_('Available Variant Stock')
     )
+
+    child_builds = serializers.SerializerMethodField(
+        read_only=True, label=_('Child Build Orders')
+    )
+
+    def get_child_builds(self, obj) -> list[dict]:
+        """Return the open child build orders which build stock for this line.
+
+        A child build order supplies its parent: its completed stock is allocated to
+        the line when it is completed, so the line is covered while it is open.
+        """
+        # Fetch the open child builds once per build order, not once per line
+        cache = self.context.setdefault('child_builds', {})
+
+        if obj.build_id not in cache:
+            cache[obj.build_id] = list(
+                Build.objects.filter(
+                    parent=obj.build_id, status__in=BuildStatusGroups.ACTIVE_CODES
+                ).select_related('part')
+            )
+
+        line_part = obj.part
+
+        def builds_for_line(child):
+            if child.part_id == line_part.pk:
+                return True
+
+            # Variants of a template part are built for its line
+            return (
+                obj.allow_variants
+                and child.part.tree_id == line_part.tree_id
+                and child.part.lft > line_part.lft
+                and child.part.rght < line_part.rght
+            )
+
+        return [
+            {
+                'pk': child.pk,
+                'reference': child.reference,
+                'part': child.part_id,
+                'quantity': float(child.remaining),
+            }
+            for child in cache[obj.build_id]
+            if child.remaining > 0 and builds_for_line(child)
+        ]
 
     @staticmethod
     def annotate_queryset(queryset, build=None):
